@@ -338,6 +338,16 @@ def clean_sample(exiftool, corpus, sample, workdir):
     return record
 
 
+def complete(native):
+    """Whether a cached macOS fingerprint holds every result and may be reused.
+    One taken where the renderer failed (in a sandbox, say) is taken again."""
+    if native is None:  # no renderer on this system
+        return True
+    return (not native.get("error") and native.get("hdr", "") is not None
+            and all(not frame.get("error") and None not in (frame.get("raw"), frame.get("srgb"), frame.get("p3"))
+                    for frame in native.get("frames", [])))
+
+
 def input_fingerprints(corpus, samples, renderer, exiftool, workers):
     """Inputs never change, so their fingerprints are cached by content hash."""
     cache_path = corpus / ".cache" / "inputs.json"
@@ -350,7 +360,8 @@ def input_fingerprints(corpus, samples, renderer, exiftool, workers):
         cache = {"key": key, "files": {}}
     paths = {sample["id"]: corpus / sample["file"] for sample in samples}
     hashes = {ident: sha256_file(path) for ident, path in paths.items()}
-    missing = [ident for ident in paths if hashes[ident] not in cache["files"]]
+    missing = [ident for ident in paths if hashes[ident] not in cache["files"]
+               or not complete(cache["files"][hashes[ident]]["native"])]
     if missing:
         with concurrent.futures.ThreadPoolExecutor(workers) as pool:
             pillow = dict(zip(missing, pool.map(lambda i: pillow_fingerprint(paths[i]), missing)))
@@ -443,7 +454,9 @@ def check_against_input(record):
     if source["pillow"] and output["pillow"] != source["pillow"]:
         problems.append("Pillow decodes different pixels or timing")
     before, after = source["native"], output["native"]
-    if before and after:
+    if (before is None) != (after is None):
+        problems.append("no macOS fingerprint of the " + ("input" if before is None else "output"))
+    elif before and after:
         # BMP becomes PNG: the decoder's raw layout may differ, rendered pixels may not.
         converted = record["input_suffix"].lower() == ".bmp"
         problems.extend(native_differences(before, after, converted))
@@ -451,18 +464,30 @@ def check_against_input(record):
 
 
 def native_differences(before, after, converted):
-    problems = []
+    """Differences between the macOS fingerprints of an input and its output.
+    A result missing on either side is a problem too: two failed decodes
+    compare equal, but prove nothing."""
+    problems = ["macOS cannot open the %s" % side for side, native in (("input", before), ("output", after))
+                if native.get("error")]
     if before.get("count") != after.get("count"):
         problems.append("macOS sees %s images instead of %s" % (after.get("count"), before.get("count")))
     for index, (a, b) in enumerate(zip(before.get("frames", []), after.get("frames", []))):
         fields = ["size", "orientation", "srgb", "p3"] + ([] if converted else ["raw"])
+        missing = [field for field in fields if a.get(field) is None or b.get(field) is None]
+        if a.get("error") or b.get("error") or missing:
+            problems.append("frame %d not verified in macOS: %s" % (index, ", ".join(missing) or "cannot decode"))
+            continue
         changed = [field for field in fields if a.get(field) != b.get(field)]
         if display_dpi(a) != display_dpi(b):
             changed.append("DPI %s -> %s" % (display_dpi(a), display_dpi(b)))
         if changed:
             problems.append("frame %d differs in macOS: %s" % (index, ", ".join(changed)))
     for field in ("hdr", "apple_gain_map", "iso_gain_map"):
-        if field in before and before[field] != after.get(field):
+        if field not in before:
+            continue
+        if before[field] is None or (field == "hdr" and after.get(field) is None):
+            problems.append("macOS %s not verified" % field.replace("_", " "))
+        elif before[field] != after.get(field):
             problems.append("macOS %s differs" % field.replace("_", " "))
     added = set(after.get("auxiliaries", [])) - set(before.get("auxiliaries", []))
     if added:
