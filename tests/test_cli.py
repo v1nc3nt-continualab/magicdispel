@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 from PIL import Image
 
-from magicdispel import __version__, cli, exiftool, messages
+from magicdispel import __version__, cli, core, exiftool, messages
 
 
 def run(*arguments, language="en"):
@@ -73,6 +73,31 @@ class WithoutExifToolTests(unittest.TestCase):
             code, output = self.run_main(str(photo))
             self.assertEqual(code, 0)
             self.assertTrue(Path(folder, "photo_clean.jpg").exists())
+
+
+class AnonymousNameTests(unittest.TestCase):
+    def test_outputs_get_random_names_that_never_replace_a_file(self):
+        with tempfile.TemporaryDirectory(prefix="cli-") as temp:
+            folder = Path(temp, "中文 空格")
+            folder.mkdir()
+            source = folder / "姓名_2026-09-23.JPG"
+            Image.new("RGB", (24, 32), "blue").save(source)
+            original = source.read_bytes()
+            result = run("--anonymous", str(source))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            outputs = list(folder.glob("photo_*.jpg"))
+            self.assertEqual(len(outputs), 1)
+            self.assertRegex(outputs[0].name, r"^photo_[0-9a-f]{32}\.jpg$")
+            self.assertEqual(source.read_bytes(), original)
+            taken = folder / ("photo_" + "a" * 32 + ".jpg")
+            taken.write_bytes(b"KEEP_EXISTING")
+            with patch.object(core.secrets, "token_hex", side_effect=["a" * 32, "b" * 32]):
+                output = core.publish(outputs[0].read_bytes(), source, ".JPG", anonymous=True)
+            self.assertEqual(output.name, "photo_" + "b" * 32 + ".jpg")
+            self.assertEqual(taken.read_bytes(), b"KEEP_EXISTING")
+            bmp = folder / "姓名.bmp"
+            Image.new("RGB", (8, 8), "red").save(bmp)
+            self.assertRegex(core.clean(str(bmp), anonymous=True).name, r"^photo_[0-9a-f]{32}\.png$")
 
 
 class LanguageTests(unittest.TestCase):

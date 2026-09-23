@@ -60,3 +60,8 @@
 - **ExifTool is no longer required.** Every format is rebuilt by MagicDispel itself;
   when ExifTool 12.73+ is installed it double-checks each result, and `--check` reports
   whether that second check is on. The ExifTool-based cleaning pipeline is removed.
+- HEIF items are read by one parser and removed in one pass. Damaged HEIF files are now
+  reported as damaged; boxes in the item container other than the item tables (such as
+  XML boxes) are emptied; image sequences without an item container are accepted; and
+  the check before saving also confirms that no editing image, thumbnail or item name
+  remains.

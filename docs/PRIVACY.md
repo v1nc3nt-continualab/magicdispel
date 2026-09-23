@@ -31,8 +31,8 @@ anonymization.
 Everything not listed above, including: EXIF capture time, camera, lens, serial numbers,
 location and maker notes; XMP (except gain-map fields); IPTC and Photoshop blocks; comments and
 text chunks; C2PA manifests; embedded thumbnails and previews, which may show an uncropped
-original; HEIF depth maps, lens calibration, portrait and semantic mattes, style maps and Apple
-property lists; JPEG MPF image IDs; image-sequence creation times, handler and encoder names
+original; HEIF depth maps, lens calibration, portrait and semantic mattes, style maps, Apple
+property lists and item names; JPEG MPF image IDs; image-sequence creation times, handler and encoder names
 and user data; TIFF EXIF and GPS directories, descriptions, private tags and sub-images; and
 unknown or private data blocks and data after the end of an image.
 
@@ -45,18 +45,18 @@ edits. Tested HEIC and HDR JPEG files render identically on macOS in SDR and HDR
   with a fixed size must have exactly that size, so they cannot carry extra bytes. PNG image data
   must inflate to exactly the scanlines the header describes, with nothing after the compressed
   stream. JPEG multi-picture indexes are written fresh.
-- **HEIF in place.** HEIF files are cleaned without moving anything, so every offset stays
-  valid: removed items and boxes are zero-filled, bytes that no remaining item or sample uses
-  are zeroed, and boxes at the end of the file are dropped. This is why HEIC files do not shrink
-  much.
+- **HEIF in place.** HEIF files are cleaned without moving any image data, so every offset
+  stays valid: the item tables are rewritten in the space they had, removed items and boxes are
+  zero-filled, bytes that no remaining item or sample uses are zeroed, and boxes at the end of
+  the file are dropped. This is why HEIC files do not shrink much.
 - **Fail closed.** Anything that cannot be handled safely is refused, not passed through: an
   unknown critical PNG chunk, an unknown HEIF item type or auxiliary image, an image that depends
   on a removed layer, fragmented image sequences, media stored outside the file, BigTIFF,
   old-style JPEG in TIFF, metadata inside JPEG-compressed TIFF strips, unrecognized ICC tags.
 - **Checked before saving.** The rebuilder parses its own result independently and compares it
   with what the original should yield: for HEIF, for instance, that every retained image item is
-  byte-identical, XMP holds only gain-map fields, profiles are sanitized, and unused bytes are
-  zero; for TIFF, that no byte of the file is unaccounted for. Pillow must then decode identical
+  byte-identical, XMP holds only gain-map fields, no editing image, thumbnail or item name
+  remains, profiles are sanitized, and unused bytes are zero; for TIFF, that no byte of the file is unaccounted for. Pillow must then decode identical
   pixels, frames, timing and transparency (all formats but HEIC). If ExifTool 12.73+ is
   installed, it reads the result as a second opinion, and any warning, private field or data it
   cannot identify stops the save. The original's hash is compared before and after, so a file
