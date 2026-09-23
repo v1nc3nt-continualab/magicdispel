@@ -39,60 +39,41 @@ data blocks, wherever a format stores them.
 **This is not an anonymity tool.** What the picture shows, a match with a copy published
 earlier, or the account it is shared from can still identify people and places. Removing
 depth and style data also limits later portrait, depth-of-field and style edits.
-See [privacy and format details](docs/PRIVACY.md).
+See [privacy and format details](https://github.com/v1nc3nt-continualab/magicdispel/blob/main/docs/PRIVACY.md).
 
 ## Install
 
-Python **3.10+** is required. [ExifTool](https://exiftool.org/) is optional: when version
-12.73 or newer is installed, MagicDispel uses it to double-check every result.
+One command installs MagicDispel and everything it needs. It uses
+[uv](https://docs.astral.sh/uv/), which brings its own Python when the system has none that fits,
+and ends by showing the MagicDispel logo.
 
-### macOS
-
-With [Homebrew](https://brew.sh/):
+macOS and Linux:
 
 ```sh
-brew install pipx
-pipx ensurepath
-pipx install "https://github.com/v1nc3nt-continualab/magicdispel/archive/refs/tags/v0.1.0.zip"
+curl -LsSf https://raw.githubusercontent.com/v1nc3nt-continualab/magicdispel/main/install.sh | sh
 ```
 
-Optional second check: `brew install exiftool`.
-
-### Windows (PowerShell)
+Windows (PowerShell):
 
 ```powershell
-winget install --exact --id Python.Python.3.12
+powershell -ExecutionPolicy ByPass -c "irm https://raw.githubusercontent.com/v1nc3nt-continualab/magicdispel/main/install.ps1 | iex"
 ```
 
-Open a new PowerShell window, then:
+If `magicdispel` is not found afterwards, open a new terminal window.
 
-```powershell
-py -3.12 -m pip install --user pipx
-py -3.12 -m pipx ensurepath
-py -3.12 -m pipx install "https://github.com/v1nc3nt-continualab/magicdispel/archive/refs/tags/v0.1.0.zip"
-```
-
-Optional second check: `winget install --exact --id OliverBetz.ExifTool`.
-
-### Linux
-
-On Ubuntu 24.04+ or a recent Debian:
+Already using uv or pipx (Python 3.10 or newer):
 
 ```sh
-sudo apt install pipx
-pipx ensurepath
-pipx install "https://github.com/v1nc3nt-continualab/magicdispel/archive/refs/tags/v0.1.0.zip"
+uv tool install magicdispel
+pipx install magicdispel
 ```
 
-Optional second check: `sudo apt install libimage-exiftool-perl`.
+To update, run the install command again, or `uv tool upgrade magicdispel`. To remove
+MagicDispel, run `uv tool uninstall magicdispel`.
 
-### Already using uv?
-
-```sh
-uv tool install "https://github.com/v1nc3nt-continualab/magicdispel/archive/refs/tags/v0.1.0.zip"
-```
-
-Then open a new terminal and run `magicdispel --check`.
+[ExifTool](https://exiftool.org/) is optional: when version 12.73 or newer is installed,
+MagicDispel uses it to double-check every result. Install it with `brew install exiftool`,
+`sudo apt install libimage-exiftool-perl` or `winget install --exact --id OliverBetz.ExifTool`.
 
 ## Usage
 
@@ -159,9 +140,10 @@ when available), that no probe marker survives, and, against a baseline, that no
 changes outcome or gains metadata. Pure refactors should also pass `--identical`, and
 `--without-exiftool` checks the path users without ExifTool take.
 
-The workflow `.github/workflows/test.yml` is prepared for macOS, Windows and Linux with
-Python 3.10 and 3.13 but has not run yet: Windows and Linux support remains to be verified
-before release. Local macOS results do not establish support for other systems.
+`.github/workflows/test.yml` runs the tests on macOS, Windows and Linux with Python 3.10 and
+3.13, and the install scripts on all three. `release.yml` publishes a tagged version to PyPI
+once those pass. Neither has run yet: Windows and Linux support remains to be verified before
+release. Local macOS results do not establish support for other systems.
 
 ## License and attribution
 

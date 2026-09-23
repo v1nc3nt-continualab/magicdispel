@@ -22,6 +22,10 @@
 - Clean macOS screenshots, whose display profiles carry Apple parametric curves
   (`aarg`/`aagg`/`aabg`, kept) and display identity/setup tags (`dscm`, `mmod`,
   `ndin`, `vcgt`, `vcgp`, removed). Previously these files were refused.
+- One-command installers for macOS/Linux (`install.sh`) and Windows (`install.ps1`). They
+  install uv when needed, then MagicDispel, and end by showing the logo. CI runs them on
+  all three systems and cleans a screenshot with the installed command; tagging a version
+  publishes to PyPI through trusted publishing.
 - Rewritten help screen, in English. Running `magicdispel` on its own shows the
   MagicDispel logo in color with the credits, the tagline and how to use it; outside a
   terminal, or with `NO_COLOR` set, it is plain text.

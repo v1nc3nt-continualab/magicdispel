@@ -1,9 +1,10 @@
-name: Format and privacy checks
+name: Tests
 
 on:
   push:
   pull_request:
   workflow_dispatch:
+  workflow_call:
 
 permissions:
   contents: read
@@ -17,14 +18,12 @@ jobs:
         python: ['3.10', '3.13']
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
-    env:
-      PYTHONUTF8: '1'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}
-      - name: Install and check command
+      - name: Install and check the command
         run: |
           python -m pip install .
           magicdispel --check
@@ -45,3 +44,45 @@ jobs:
         run: |
           magicdispel --check
           python -m unittest discover -s tests -v
+
+  # The way users install: the install script, which also installs uv (and a
+  # Python) on a runner that lacks them, then a photo cleaned by the command.
+  installer:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the package
+        shell: bash
+        run: pipx run build --wheel --outdir dist
+      - name: Install with install.sh
+        if: runner.os != 'Windows'
+        run: MAGICDISPEL_PACKAGE="$(ls dist/*.whl)" sh install.sh
+      - name: Install with install.ps1
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $env:MAGICDISPEL_PACKAGE = (Get-ChildItem dist\*.whl).FullName
+          ./install.ps1
+      - name: Clean a screenshot with the installed command
+        shell: bash
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+          magicdispel --check
+          uv run --no-project python - <<'EOF'
+          import struct, zlib
+          def chunk(kind, data):
+              return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
+          rows = b"".join(b"\0" + b"\x80\x40\x20" * 8 for _ in range(8))
+          png = (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 8, 8, 8, 2, 0, 0, 0))
+                 + chunk(b"tEXt", b"Comment\0PRIVATE_MARKER") + chunk(b"IDAT", zlib.compress(rows))
+                 + chunk(b"IEND", b""))
+          open("Screenshot 2026-09-23 at 15.14.15.png", "wb").write(png)
+          EOF
+          magicdispel "Screenshot 2026-09-23 at 15.14.15.png"
+          test -f Screenshot_clean.png
+          ! grep -q PRIVATE_MARKER Screenshot_clean.png
