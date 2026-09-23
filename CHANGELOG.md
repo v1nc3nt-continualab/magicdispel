@@ -18,3 +18,10 @@
 - Add synthetic auxiliary-graph and filename tests; prepare, but do not yet execute,
   the Windows/Linux/macOS CI matrix.
 - Explicit dependency checks and English/Chinese installation documentation.
+- Clean macOS screenshots, whose display profiles carry Apple parametric curves
+  (`aarg`/`aagg`/`aabg`, kept) and display identity/setup tags (`dscm`, `mmod`,
+  `ndin`, `vcgt`, `vcgp`, removed). Previously these files were refused.
+- Command line in English and Simplified Chinese, following the system language
+  or `MAGICDISPEL_LANG`; rewritten help screen.
+- Regression harness (`scripts/regression.py`) for local sample corpora, with macOS
+  ImageIO/ColorSync render checks and synthetic leak probes (`scripts/make_probes.py`).

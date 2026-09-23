@@ -2,7 +2,8 @@
 """Run MagicDispel over a local sample corpus and check that nothing regressed.
 
 A corpus is a folder of images plus manifest.json: [{"id", "label", "file",
-"name"}, ...]. Keep it outside the repository; it usually holds personal photos.
+"name"}, ...], created from the folder's images on first use. Keep it outside
+the repository; it usually holds personal photos.
 
     python scripts/regression.py CORPUS
     python scripts/regression.py CORPUS --baseline CORPUS/runs/<run>.json
@@ -351,8 +352,23 @@ def input_fingerprints(corpus, samples, renderer, workers):
     return {ident: dict(cache["files"][hashes[ident]], sha256=hashes[ident]) for ident in paths}
 
 
+IMAGE_SUFFIXES = {".jpg", ".jpeg", ".jpe", ".png", ".apng", ".heic", ".heif", ".hif", ".avif",
+                  ".webp", ".gif", ".tif", ".tiff", ".bmp"}
+
+
+def load_manifest(corpus):
+    """Read manifest.json, creating it from the folder's images on first use."""
+    path = corpus / "manifest.json"
+    if not path.exists():
+        images = sorted(p.name for p in corpus.iterdir() if p.suffix.lower() in IMAGE_SUFFIXES)
+        entries = [{"id": "F%02d" % n, "label": name, "file": name, "name": name}
+                   for n, name in enumerate(images, 1)]
+        path.write_text(json.dumps(entries, ensure_ascii=False, indent=2) + "\n")
+    return json.loads(path.read_text())
+
+
 def run(corpus, workers, keep):
-    samples = json.loads((corpus / "manifest.json").read_text())
+    samples = load_manifest(corpus)
     exiftool = core.find_exiftool()
     core.check_dependency(exiftool)
     renderer = NativeRenderer(corpus / ".cache")

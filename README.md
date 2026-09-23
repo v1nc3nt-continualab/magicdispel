@@ -151,7 +151,21 @@ python -m build
 ```
 
 Integration tests generate synthetic images and require ExifTool. No personal photos
-are included. The local workflow `.github/workflows/test.yml` is prepared for macOS,
+are included.
+
+Before and after any change to the cleaning code, run the regression harness over
+a folder of real sample photos kept outside the repository:
+
+```sh
+python scripts/make_probes.py ~/magicdispel-corpus    # adds synthetic leak probes
+python scripts/regression.py ~/magicdispel-corpus     # saves a run under runs/
+python scripts/regression.py ~/magicdispel-corpus --baseline ~/magicdispel-corpus/runs/<run>.json
+```
+
+It checks that every output looks identical to its input (Pillow, and macOS
+ImageIO/ColorSync when available), that no probe marker survives, and, against a
+baseline, that no sample changes outcome or gains metadata. Pure refactors should
+also pass `--identical`. The local workflow `.github/workflows/test.yml` is prepared for macOS,
 Windows and Linux with Python 3.10/3.13. It has not been dispatched: Windows/Linux
 execution remains a release prerequisite. Local macOS results do not establish support
 for those systems. Synthetic HEIF graph tests do not replace actual HEIC decoder tests.

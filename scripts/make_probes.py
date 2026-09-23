@@ -20,6 +20,8 @@ from pathlib import Path
 
 from PIL import Image, TiffImagePlugin
 
+from regression import load_manifest
+
 MARKER = b"SECRET-40.7128N-74.0060W-JaneDoe"
 
 
@@ -115,8 +117,8 @@ def main():
         sys.exit(__doc__)
     corpus = Path(sys.argv[1])
     manifest_path = corpus / "manifest.json"
-    manifest = json.loads(manifest_path.read_text()) if manifest_path.exists() else []
-    manifest = [entry for entry in manifest if not entry["id"].startswith("P")]
+    # List the folder's own photos first, so the probes are added alongside them.
+    manifest = [entry for entry in load_manifest(corpus) if not entry["id"].startswith("P")]
     for ident, label, name, build in PROBES:
         data = build()
         if data is None:
