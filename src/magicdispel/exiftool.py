@@ -13,7 +13,7 @@ import tempfile
 from pathlib import Path
 
 from . import xmp
-from .errors import LocalizedError, VerificationError
+from .errors import UserError, VerificationError
 
 # Display fields a clean file may hold, as ExifTool names them. TIFF keeps its
 # decoding tags in the same EXIF group.
@@ -63,7 +63,7 @@ def find():
         candidate = shutil.which(configured) or os.path.expanduser(configured)
         if Path(candidate).is_file() and os.access(candidate, os.X_OK):
             return candidate
-        raise LocalizedError("exiftool_misconfigured", path=configured)
+        raise UserError("exiftool_misconfigured", path=configured)
     for candidate in (shutil.which("exiftool"), "/opt/homebrew/bin/exiftool", "/usr/local/bin/exiftool"):
         if candidate and Path(candidate).is_file() and os.access(candidate, os.X_OK):
             return candidate

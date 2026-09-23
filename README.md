@@ -4,8 +4,6 @@ Remove private metadata from photos on your own computer, without touching image
 
 **Unpublished draft:** the installation instructions below work once the first release is published.
 
-[中文说明](README.zh-CN.md)
-
 ```console
 magicdispel photo.jpg
 magicdispel "photo one.heic" screenshot.png
@@ -109,9 +107,8 @@ magicdispel -- "-filename-starts-with-a-dash.jpg"
 
 Quote paths containing spaces, or drag the files into the terminal. On Windows, drag-and-drop
 depends on the terminal; a quoted path always works. Folders are not processed recursively.
-The interface follows the system language (English or Simplified Chinese); set
-`MAGICDISPEL_LANG=en` or `zh` to choose. If ExifTool is installed somewhere unusual, set
-`MAGICDISPEL_EXIFTOOL` to its full path.
+Run `magicdispel` on its own to see the logo and how to use it. If ExifTool is installed
+somewhere unusual, set `MAGICDISPEL_EXIFTOOL` to its full path.
 
 Exit codes: `0` success or help, `1` one or more files not cleaned, `2` invalid arguments,
 `130` interrupted. A failed file does not stop the rest of a batch.

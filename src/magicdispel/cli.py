@@ -3,14 +3,14 @@
 import argparse
 import sys
 
-from . import __version__, exiftool
+from . import __version__, banner, exiftool
 from .core import clean
-from .errors import LocalizedError
+from .errors import UserError
 from .messages import message
 
 
 class Parser(argparse.ArgumentParser):
-    """Report bad arguments in the user's language; the help text is our own."""
+    """Report bad arguments in our own words; the help text is our own too."""
 
     def error(self, detail):
         print(message("bad_arguments", detail=detail), file=sys.stderr)
@@ -26,12 +26,19 @@ def main(argv=None):
     naming.add_argument("--anonymous", dest="naming", action="store_const", const="anonymous", default="plain")
     naming.add_argument("--keep-name", dest="naming", action="store_const", const="original")
     parser.add_argument("photos", nargs="*")
+    # A path the console cannot show is printed with replacements, not refused.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(errors="replace")
     args = parser.parse_args(argv)
     if args.version:
         print("magicdispel " + __version__)
         return 0
-    if args.help or not (args.photos or args.check):
+    if args.help:
         print(message("help", version=__version__))
+        return 0
+    if not (args.photos or args.check):
+        print(banner.welcome(__version__, message("usage")))
         return 0
     try:
         # ExifTool is optional: when present and recent, it double-checks results.
@@ -62,7 +69,7 @@ def main(argv=None):
 def explained(error):
     """Our own errors and system errors say what went wrong. Anything else is a
     bug, or an input no check anticipated; it is reported as unexpected."""
-    if isinstance(error, (LocalizedError, OSError)):
+    if isinstance(error, (UserError, OSError)):
         return str(error)
     return message("unexpected_error", detail="%s: %s" % (type(error).__name__, error))
 

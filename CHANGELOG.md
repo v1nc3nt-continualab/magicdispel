@@ -18,12 +18,13 @@
 - Add synthetic auxiliary-graph and filename tests; prepare, but do not yet execute,
   the Windows/Linux/macOS CI matrix. The tests need only Pillow; with ExifTool installed
   they also check each result with it, and CI runs them both ways.
-- Explicit dependency checks and English/Chinese installation documentation.
+- Explicit dependency checks and installation documentation.
 - Clean macOS screenshots, whose display profiles carry Apple parametric curves
   (`aarg`/`aagg`/`aabg`, kept) and display identity/setup tags (`dscm`, `mmod`,
   `ndin`, `vcgt`, `vcgp`, removed). Previously these files were refused.
-- Command line in English and Simplified Chinese, following the system language
-  or `MAGICDISPEL_LANG`; rewritten help screen.
+- Rewritten help screen, in English. Running `magicdispel` on its own shows the
+  MagicDispel logo in color with the credits, the tagline and how to use it; outside a
+  terminal, or with `NO_COLOR` set, it is plain text.
 - Regression harness (`scripts/regression.py`) for local sample corpora, with macOS
   ImageIO/ColorSync render checks and synthetic leak probes (`scripts/make_probes.py`).
 - PNG, APNG and BMP are rebuilt by MagicDispel itself from an allowlist of the chunks

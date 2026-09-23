@@ -1,9 +1,9 @@
-"""Errors shown to the user, worded in their language (see messages.py)."""
+"""Errors shown to the user, worded in messages.py."""
 from .messages import message
 
 
-class LocalizedError(ValueError):
-    """A message key plus values; str() gives the sentence in the user's language."""
+class UserError(ValueError):
+    """A message key plus values; str() gives the sentence for the user."""
 
     def __init__(self, key, **values):
         super().__init__(key, values)
@@ -13,13 +13,13 @@ class LocalizedError(ValueError):
         return message(self.key, **self.values)
 
 
-class InputError(LocalizedError):
+class InputError(UserError):
     """The argument is not a file, or not a format MagicDispel handles."""
 
 
-class FormatError(LocalizedError):
+class FormatError(UserError):
     """The file cannot be rebuilt safely, so nothing is saved."""
 
 
-class VerificationError(LocalizedError):
+class VerificationError(UserError):
     """The rebuilt file failed a check against the original, so nothing is saved."""

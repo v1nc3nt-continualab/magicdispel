@@ -1,6 +1,5 @@
-"""Command-line behavior in English and Chinese, with and without ExifTool."""
+"""Command-line behavior, with and without ExifTool."""
 import io
-import os
 import subprocess
 import sys
 import tempfile
@@ -10,33 +9,32 @@ from unittest.mock import patch
 
 from PIL import Image
 
-from magicdispel import __version__, cli, core, exiftool, messages, names
+from magicdispel import __version__, cli, core, exiftool, names
 
 
-def run(*arguments, language="en"):
-    environment = dict(os.environ, MAGICDISPEL_LANG=language)
-    return subprocess.run([sys.executable, "-m", "magicdispel", *arguments],
-                          capture_output=True, text=True, env=environment)
+def run(*arguments):
+    return subprocess.run([sys.executable, "-m", "magicdispel", *arguments], capture_output=True, text=True)
 
 
 class CommandLineTests(unittest.TestCase):
-    def test_help_in_both_languages(self):
-        for language, phrase in (("en", "drag photos into the terminal"), ("zh", "把照片拖进终端")):
-            for arguments in ((), ("--help",), ("-h",)):
-                with self.subTest(language=language, arguments=arguments):
-                    result = run(*arguments, language=language)
-                    self.assertEqual(result.returncode, 0)
-                    self.assertIn(phrase, result.stdout)
-                    self.assertIn(__version__, result.stdout)
+    def test_welcome_and_help(self):
+        for arguments in ((), ("--help",), ("-h",)):
+            with self.subTest(arguments=arguments):
+                result = run(*arguments)
+                self.assertEqual(result.returncode, 0)
+                self.assertIn("drag photos into the terminal", result.stdout)
+                self.assertIn(__version__, result.stdout)
+        self.assertIn("Designed by VincentC", run().stdout)
+        self.assertIn("--keep-name", run("--help").stdout)
 
     def test_version(self):
         result = run("--version")
         self.assertEqual((result.returncode, result.stdout.strip()), (0, "magicdispel " + __version__))
 
-    def test_invalid_option_is_reported_in_the_users_language(self):
-        result = run("--no-such-option", language="zh")
+    def test_invalid_option_is_reported(self):
+        result = run("--no-such-option")
         self.assertEqual(result.returncode, 2)
-        self.assertIn("参数有误", result.stderr)
+        self.assertIn("Invalid arguments", result.stderr)
         self.assertIn("--no-such-option", result.stderr)
 
     def test_batch_continues_after_a_failure(self):
@@ -48,16 +46,13 @@ class CommandLineTests(unittest.TestCase):
             self.assertIn("Cleaned: " + str(Path(folder, "photo one_clean.png")), result.stdout)
             self.assertIn("Failed: " + str(Path(folder, "missing.jpg")), result.stderr)
             self.assertIn("Done: 1 succeeded, 1 failed.", result.stdout)
-            result = run(str(Path(folder, "missing.jpg")), language="zh")
-            self.assertIn("失败：", result.stderr)
 
 
 class WithoutExifToolTests(unittest.TestCase):
     """ExifTool is optional: without it, results are still checked and saved."""
 
     def run_main(self, *arguments):
-        with patch.dict(os.environ, {"MAGICDISPEL_LANG": "en"}), \
-                patch.object(exiftool, "find", return_value=None), \
+        with patch.object(exiftool, "find", return_value=None), \
                 patch("sys.stdout", new_callable=io.StringIO) as output:
             return cli.main(list(arguments)), output.getvalue()
 
@@ -126,30 +121,9 @@ class AnonymousNameTests(unittest.TestCase):
             self.assertEqual(run("--keep-name", str(screenshot)).returncode, 0)
             self.assertEqual(sorted(path.name for path in Path(folder).glob("*_clean*")),
                              ["截屏2026-09-23 下午3.14.15_clean.png", "截屏_clean.png"])
-            result = run("--keep-name", "--anonymous", str(screenshot), language="zh")
+            result = run("--keep-name", "--anonymous", str(screenshot))
             self.assertEqual(result.returncode, 2)
-            self.assertIn("参数有误", result.stderr)
-
-
-class LanguageTests(unittest.TestCase):
-    def detect(self, environment, system=""):
-        with patch.dict(os.environ, environment, clear=True), \
-                patch.object(messages, "system_language", return_value=system):
-            return messages.language()
-
-    def test_explicit_setting_wins(self):
-        self.assertEqual(self.detect({"MAGICDISPEL_LANG": "en", "LANG": "zh_CN.UTF-8"}), "en")
-        self.assertEqual(self.detect({"MAGICDISPEL_LANG": "ZH", "LANG": "en_US.UTF-8"}), "zh")
-
-    def test_locale_variables_in_posix_order(self):
-        self.assertEqual(self.detect({"LANG": "zh_CN.UTF-8"}), "zh")
-        self.assertEqual(self.detect({"LC_ALL": "en_US.UTF-8", "LANG": "zh_CN.UTF-8"}), "en")
-        self.assertEqual(self.detect({"LANG": "C.UTF-8"}, system="zh-Hans-CN"), "en")
-
-    def test_system_language_when_no_locale_is_set(self):
-        self.assertEqual(self.detect({}, system="zh-Hans-CN"), "zh")
-        self.assertEqual(self.detect({}, system="en-US"), "en")
-        self.assertEqual(self.detect({}, system=""), "en")
+            self.assertIn("Invalid arguments", result.stderr)
 
 
 if __name__ == "__main__":

@@ -19,7 +19,7 @@ magicdispel --check
 magicdispel photo.jpg
 ```
 
-English and Chinese instructions for macOS, Windows and Linux are in the repository. This is
+Instructions for macOS, Windows and Linux are in the repository. This is
 not an anonymity tool: what a picture shows can still identify people and places. Read the
 privacy details before sharing sensitive photos.
 
