@@ -32,3 +32,10 @@
   so Retina screenshots keep their size. Compressed image data must hold exactly the
   image, with no extra bytes. BMP-to-PNG conversion keeps the DPI. These formats no
   longer need ExifTool, which still double-checks results when installed.
+- JPEG is rebuilt the same way. Decoding segments and HDR data (ISO 21496-1 gain-map
+  metadata, Apple gain curves) are copied unchanged; JFIF, EXIF, XMP, the ICC profile
+  and the MPF index are written afresh with only display fields: orientation, DPI,
+  color space, Apple HDR headroom/gain and recognized gain-map XMP. Comments,
+  IPTC/Photoshop, C2PA, private segments, JFIF and EXIF thumbnails, MPF image IDs and
+  trailing data are removed. JPEG DPI is now kept. iPhone HDR JPEGs render identically
+  in macOS (SDR, HDR and gain maps).

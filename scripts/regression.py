@@ -44,7 +44,9 @@ CACHE_VERSION = 3
 DISPLAY_TAGS = re.compile(
     r"^(Orientation|[XY]Resolution|ResolutionUnit|PixelsPerUnit[XY]|PixelUnits|SRGBRendering|"
     r"Gamma|WhitePoint[XY]|(Red|Green|Blue)[XY]|ColorSpace|InteropIndex|BackgroundColor|"
-    r"ColorPrimaries|TransferCharacteristics|MatrixCoefficients|VideoFullRangeFlag)$")
+    r"ColorPrimaries|TransferCharacteristics|MatrixCoefficients|VideoFullRangeFlag|JFIFVersion)$")
+# Positions and sizes of parts of the file, which change whenever other parts do.
+LAYOUT_TAGS = {"MPImageStart", "MPImageLength", "StripOffsets", "TileOffsets"}
 
 
 # ---------------------------------------------------------------- fingerprints
@@ -501,9 +503,13 @@ def check_against_baseline(record, old, identical, expected_changes):
 
 def tag_items(tags):
     """(tag, value) pairs as a multiset. ExifTool numbers duplicates Copy1,
-    Copy2...; removing one renumbers the rest, so the numbers are dropped."""
-    return collections.Counter((":".join(part for part in key.split(":") if not part.startswith("Copy")), value)
-                               for key, value in tags.items())
+    Copy2...; removing one renumbers the rest, so the numbers are dropped.
+    Layout tags keep their name but not their value."""
+    items = collections.Counter()
+    for key, value in tags.items():
+        name = ":".join(part for part in key.split(":") if not part.startswith("Copy"))
+        items[name, None if name.split(":")[-1] in LAYOUT_TAGS else value] += 1
+    return items
 
 
 def git_label(repository):

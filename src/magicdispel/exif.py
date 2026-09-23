@@ -8,11 +8,15 @@ is treated as absent, as a viewer would.
 import struct
 from dataclasses import dataclass
 
-SHORT, LONG, RATIONAL, IFD = 3, 4, 5, 13
+BYTE, SHORT, LONG, RATIONAL, UNDEFINED, SRATIONAL, IFD = 1, 3, 4, 5, 7, 10, 13
 TYPE_SIZES = {1: 1, 2: 1, 3: 2, 4: 4, 5: 8, 6: 1, 7: 1, 8: 2, 9: 4, 10: 8, 11: 4, 12: 8, 13: 4}
 
 ORIENTATION, X_RESOLUTION, Y_RESOLUTION, RESOLUTION_UNIT = 0x0112, 0x011A, 0x011B, 0x0128
 EXIF_POINTER, INTEROP_POINTER, COLOR_SPACE, INTEROP_INDEX = 0x8769, 0xA005, 0xA001, 0x0001
+MAKER_NOTE = 0x927C
+# Apple's maker note: a header, then an IFD whose offsets count from the note's start.
+APPLE_NOTE = b"Apple iOS\0\0\1"
+APPLE_HDR_TAGS = (0x21, 0x30)  # HDR headroom and HDR gain, used to render HDR photos
 
 
 @dataclass(frozen=True)
@@ -21,6 +25,7 @@ class DisplayFields:
     resolution: tuple | None = None     # ((x_num, x_den), (y_num, y_den), unit) - print/display size
     color_space: int | None = None      # 1 = sRGB, 0xFFFF = uncalibrated (see interop_index)
     interop_index: bytes | None = None  # b"R98" (sRGB) or b"R03" (Adobe RGB) for DCF files
+    apple_hdr: bytes | None = None      # a fresh Apple maker note holding only the HDR values
 
 
 def display_fields(data):
@@ -35,12 +40,41 @@ def display_fields(data):
     x, y = reader.rational(ifd0.get(X_RESOLUTION)), reader.rational(ifd0.get(Y_RESOLUTION))
     unit = reader.number(ifd0.get(RESOLUTION_UNIT), SHORT) or 2
     index = reader.text(interop.get(INTEROP_INDEX))
+    note = exif_ifd.get(MAKER_NOTE)
     return DisplayFields(
         orientation=orientation if orientation in range(1, 9) else None,
         resolution=(x, y, unit) if x and y and unit in (1, 2, 3) else None,
         color_space=reader.number(exif_ifd.get(COLOR_SPACE), SHORT),
         interop_index=index if index in (b"R98", b"R03") else None,
+        # The standard type is UNDEFINED; some writers (Pillow among them) use BYTE.
+        apple_hdr=apple_hdr_note(note[2]) if note and note[0] in (BYTE, UNDEFINED) else None,
     )
+
+
+def apple_hdr_note(note):
+    """A new Apple maker note with only the HDR headroom and gain, or None."""
+    if not note.startswith(APPLE_NOTE):
+        return None
+    reader = _Reader(note, byte_order=note[12:14])
+    count = reader.unpack("H", 14)
+    values = []
+    for index in range(count[0] if count else 0):
+        entry = reader.unpack("HHII", 16 + 12 * index)
+        if entry is None:
+            return None
+        tag, kind, number, offset = entry
+        if tag in APPLE_HDR_TAGS and kind == SRATIONAL and number == 1:
+            value = reader.unpack("ii", offset)
+            if value is None or value[1] == 0:
+                return None
+            values.append((tag, value))
+    if not values:
+        return None
+    # Big-endian, entries in tag order, values right after the empty next-IFD link.
+    header = APPLE_NOTE + b"MM" + struct.pack(">H", len(values))
+    table = b"".join(struct.pack(">HHII", tag, SRATIONAL, 1, 16 + 12 * len(values) + 4 + 8 * n)
+                     for n, (tag, _) in enumerate(values))
+    return header + table + b"\0" * 4 + b"".join(struct.pack(">ii", *value) for _, value in values)
 
 
 def build(fields):
@@ -55,6 +89,8 @@ def build(fields):
                  (RESOLUTION_UNIT, SHORT, struct.pack(">H", unit))]
     if fields.color_space is not None:
         exif_ifd.append((COLOR_SPACE, SHORT, struct.pack(">H", fields.color_space)))
+    if fields.apple_hdr:
+        exif_ifd.append((MAKER_NOTE, UNDEFINED, fields.apple_hdr))
     if fields.interop_index:
         interop.append((INTEROP_INDEX, 2, fields.interop_index + b"\0"))
     if not (ifd0 or exif_ifd or interop):
@@ -99,9 +135,9 @@ def _directory(entries, start):
 class _Reader:
     """Bounds-checked access to one TIFF-structured block; problems read as absent."""
 
-    def __init__(self, data):
+    def __init__(self, data, byte_order=None):
         self.data = data
-        self.order = {b"II": "<", b"MM": ">"}.get(data[:2])
+        self.order = {b"II": "<", b"MM": ">"}.get(data[:2] if byte_order is None else byte_order)
 
     def unpack(self, fmt, offset):
         if self.order is None or offset < 0 or offset + struct.calcsize(self.order + fmt) > len(self.data):

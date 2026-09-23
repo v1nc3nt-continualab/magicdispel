@@ -8,6 +8,8 @@ import subprocess
 import tempfile
 
 from magicdispel import core
+from magicdispel.errors import FormatError
+from magicdispel.formats import jpeg
 API = vars(core)
 ET = API['find_exiftool']()
 
@@ -66,7 +68,7 @@ class MPFTests(unittest.TestCase):
                     old = exif('-b', '-MPImage' + str(index), source)
                     new = exif('-b', '-MPImage' + str(index), output)
                     assert old and new and frame_pixels(old) == frame_pixels(new)
-                    assert API['jpeg_coding_hash'](old) == API['jpeg_coding_hash'](new)
+                    assert jpeg.coding_hash(old) == jpeg.coding_hash(new)
                 # Independent ExifTool decoder must find every index and extract every frame.
                 assert not any(key.endswith((':Warning', ':Error')) for key in after)
                 existing = output.read_bytes()
@@ -89,7 +91,7 @@ class MPFTests(unittest.TestCase):
             corrupt.write_bytes(broken)
             try:
                 API['clean'](ET, str(corrupt))
-            except API['CleanError']:
+            except FormatError:
                 pass
             else:
                 raise AssertionError('Invalid MPF offset accepted')

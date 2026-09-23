@@ -8,15 +8,17 @@ Each format module provides:
 Formats not listed in REBUILT still go through the older ExifTool pipeline
 in core.py while they are migrated.
 """
-from . import bmp, png
+from . import bmp, jpeg, png
 
-REBUILT = {"PNG": png, "APNG": png, "BMP": bmp}
+REBUILT = {"PNG": png, "APNG": png, "BMP": bmp, "JPEG": jpeg}
 
 
 def identify(data):
     """The format name from a file's leading bytes, or None if not rebuilt yet."""
     if data.startswith(png.SIGNATURE):
         return "APNG" if png.is_animated(data) else "PNG"
+    if data[:3] == b"\xff\xd8\xff":
+        return "JPEG"
     if data[:2] == b"BM":
         return "BMP"
     return None

@@ -1,7 +1,6 @@
 """Remove photo metadata locally. BMP is converted losslessly to PNG."""
 
 import base64
-import binascii
 from collections import Counter
 import errno
 import hashlib
@@ -17,7 +16,6 @@ import struct
 import subprocess
 import sys
 import tempfile
-import xml.etree.ElementTree as ET
 
 from . import formats
 from .errors import FormatError, VerificationError
@@ -421,233 +419,6 @@ def publish(data, source, suffix, anonymous=False):
             raise
 
 
-def jpeg_segments(data):
-    """Yield complete JPEG markers/scans, stopping at the first image's EOI."""
-    if not data.startswith(b"\xff\xd8"):
-        raise CleanError("附加图层不是有效的 JPEG")
-    yield 0xd8, 0, 2, b""
-    pos = 2
-    while pos < len(data):
-        start = pos
-        if data[pos] != 0xff:
-            raise CleanError("JPEG 标记损坏，未导出结果")
-        while pos < len(data) and data[pos] == 0xff:
-            pos += 1
-        if pos >= len(data):
-            break
-        marker = data[pos]
-        pos += 1
-        if marker == 0xd9:
-            yield marker, start, pos, b""
-            return
-        if marker in {0, 0xd8}:
-            raise CleanError("JPEG 图层边界无效")
-        if marker == 1 or 0xd0 <= marker <= 0xd7:
-            yield marker, start, pos, b""
-            continue
-        if pos + 2 > len(data):
-            break
-        length = int.from_bytes(data[pos:pos + 2], "big")
-        end = pos + length
-        if length < 2 or end > len(data):
-            raise CleanError("JPEG 数据不完整")
-        payload = data[pos + 2:end]
-        if marker == 0xda:
-            scan = end
-            while True:
-                found = data.find(b"\xff", scan)
-                if found < 0:
-                    raise CleanError("JPEG 图像数据不完整")
-                following = found + 1
-                while following < len(data) and data[following] == 0xff:
-                    following += 1
-                if following >= len(data):
-                    raise CleanError("JPEG 图像数据不完整")
-                if data[following] == 0 or 0xd0 <= data[following] <= 0xd7:
-                    scan = following + 1
-                    continue
-                end = found
-                break
-        yield marker, start, end, payload
-        pos = end
-    raise CleanError("JPEG 缺少结束标记")
-
-
-def jpeg_insert(data, segments):
-    # Keep JFIF at the front where present.
-    position = 2
-    for marker, start, end, payload in jpeg_segments(data):
-        if start == 2 and marker == 0xe0:
-            position = end
-        if start >= 2:
-            break
-    return data[:position] + segments + data[position:], position
-
-
-def jpeg_render_segments(data):
-    result = []
-    for marker, start, end, payload in jpeg_segments(data):
-        arot = marker in {0xe2, 0xea} and payload.startswith(b"AROT\0\0")
-        iso = marker == 0xe2 and payload.startswith(b"urn:iso:std:iso:ts:21496:-1\0")
-        ampf = (marker == 0xe0 and len(payload) == 18 and payload.startswith(b"JFIF\0")
-                and payload[12:14] == b"\0\0" and payload[14:] == b"AMPF")
-        if arot:
-            curve_end = 10 + 4 * int.from_bytes(payload[6:10], "big")
-            if (len(payload) < 10 or not curve_end <= len(payload) <= curve_end + 64
-                    or any(payload[curve_end:])):
-                raise CleanError("HDR 增益曲线结构无效")
-        if arot or iso or ampf:
-            result.append(data[start:end])
-    return result
-
-
-def jpeg_coding_hash(data):
-    return hashlib.sha256(b"".join(data[start:end]
-        for marker, start, end, _ in jpeg_segments(data)
-        if not (0xe0 <= marker <= 0xef or marker == 0xfe))).digest()
-
-
-def split_mpf(data):
-    found = [(start, payload) for marker, start, _, payload in jpeg_segments(data)
-             if marker == 0xe2 and payload.startswith(b"MPF\0")]
-    if len(found) != 1:
-        raise CleanError("多图 JPEG 的索引不完整")
-    start, payload = found[0]
-    tiff = payload[4:]
-    if len(tiff) < 8 or tiff[:2] not in {b"MM", b"II"}:
-        raise CleanError("多图 JPEG 索引格式无效")
-    order = ">" if tiff[:2] == b"MM" else "<"
-    try:
-        if struct.unpack_from(order + "H", tiff, 2)[0] != 42:
-            raise ValueError()
-        directory = struct.unpack_from(order + "I", tiff, 4)[0]
-        count = struct.unpack_from(order + "H", tiff, directory)[0]
-        tags = {}
-        for index in range(count):
-            tag, kind, size, offset = struct.unpack_from(order + "HHII", tiff, directory + 2 + 12 * index)
-            tags[tag] = kind, size, offset
-        kind, size, total = tags[0xb001]
-        entry_kind, entry_size, offset = tags[0xb002]
-        if (kind, size) != (4, 1) or not 1 <= total <= 4090 or (entry_kind, entry_size) != (7, total * 16):
-            raise ValueError()
-        entries, frames, ranges = [], [], []
-        for index in range(total):
-            flags, length, relative, dep1, dep2 = struct.unpack_from(order + "IIIHH", tiff, offset + 16 * index)
-            absolute = 0 if index == 0 else start + 8 + relative
-            if (index == 0 and relative != 0) or flags & 0x07000000 or max(dep1, dep2) > total:
-                raise ValueError()
-            if length < 4 or absolute < 0 or absolute + length > len(data):
-                raise ValueError()
-            if any(absolute < finish and absolute + length > begin for begin, finish in ranges):
-                raise ValueError()
-            frame = data[absolute:absolute + length]
-            segments = list(jpeg_segments(frame))
-            # Exclude secondary indexes and bytes beyond the actual JPEG end.
-            frame = b"".join(frame[a:b] for marker, a, b, body in segments
-                             if not (marker == 0xe2 and body.startswith(b"MPF\0")))
-            entries.append((flags, dep1, dep2))
-            frames.append(frame)
-            ranges.append((absolute, absolute + length))
-        return entries, frames
-    except (KeyError, struct.error, ValueError):
-        raise CleanError("多图 JPEG 的图层位置或长度无效，未导出结果")
-
-
-def join_mpf(entries, frames):
-    total = len(frames)
-    if total != len(entries) or not 1 <= total <= 4090:
-        raise CleanError("JPEG 图层数量无效")
-    # A fresh MP index contains no image identifiers or private attribute IFDs.
-    prefix = (b"MPF\0MM\0*\0\0\0\x08" + struct.pack(">H", 3)
-              + struct.pack(">HHI4s", 0xb000, 7, 4, b"0100")
-              + struct.pack(">HHII", 0xb001, 4, 1, total)
-              + struct.pack(">HHII", 0xb002, 7, 16 * total, 50) + b"\0" * 4)
-    segment_size = 4 + len(prefix) + 16 * total
-    _, position = jpeg_insert(frames[0], b"")
-    lengths = [len(frames[0]) + segment_size] + [len(frame) for frame in frames[1:]]
-    table, absolute = b"", 0
-    for index, ((flags, dep1, dep2), length) in enumerate(zip(entries, lengths)):
-        offset = 0 if index == 0 else absolute - position - 8
-        table += struct.pack(">IIIHH", flags, length, offset, dep1, dep2)
-        absolute += length
-    segment = b"\xff\xe2" + struct.pack(">H", segment_size - 2) + prefix + table
-    primary, _ = jpeg_insert(frames[0], segment)
-    return primary + b"".join(frames[1:])
-
-
-def apple_hdr_note(exiftool, source):
-    raw = run(exiftool, ["-b", "-MakerNotes", str(source)]).stdout
-    if not raw.startswith(b"Apple iOS\0\0\1") or raw[12:14] not in {b"MM", b"II"}:
-        raise CleanError("无法读取 Apple HDR 显示参数")
-    order = ">" if raw[12:14] == b"MM" else "<"
-    kept = []
-    try:
-        count = struct.unpack_from(order + "H", raw, 14)[0]
-        for index in range(count):
-            tag, kind, size, offset = struct.unpack_from(order + "HHII", raw, 16 + 12 * index)
-            if tag not in {0x21, 0x30}:
-                continue
-            if (kind, size) != (10, 1):
-                raise ValueError()
-            numerator, denominator = struct.unpack_from(order + "ii", raw, offset)
-            if denominator == 0:
-                raise ValueError()
-            kept.append((tag, struct.pack(">ii", numerator, denominator)))
-    except (struct.error, ValueError):
-        raise CleanError("Apple HDR 显示参数损坏")
-    header = b"Apple iOS\0\0\1MM" + struct.pack(">H", len(kept))
-    values = b""
-    for tag, value in kept:
-        header += struct.pack(">HHII", tag, 10, 1, 16 + len(kept) * 12 + 4 + len(values))
-        values += value
-    return header + b"\0" * 4 + values
-
-
-def jpeg_render_xmp(exiftool, source):
-    raw = run(exiftool, ["-b", "-XMP", str(source)]).stdout.rstrip(b"\0 \t\r\n")
-    if not raw:
-        return b""
-    if b"<!DOCTYPE" in raw or b"<!ENTITY" in raw:
-        raise CleanError("XMP 结构不安全，未导出结果")
-    namespaces = {
-        "http://ns.adobe.com/hdr-gain-map/1.0/": "XMP-hdrgm",
-        "http://ns.apple.com/pixeldatainfo/1.0/": "XMP-apdi",
-        "http://ns.apple.com/HDRGainMap/1.0/": "XMP-HDRGainMap",
-    }
-    rdf = "{http://www.w3.org/1999/02/22-rdf-syntax-ns#}"
-    root = ET.Element("{adobe:ns:meta/}xmpmeta")
-    description = ET.SubElement(ET.SubElement(root, rdf + "RDF"), rdf + "Description")
-    try:
-        parsed = ET.fromstring(raw)
-    except ET.ParseError as error:
-        raise CleanError("无法读取 HDR XMP：" + str(error))
-    def permitted(name, value):
-        if not name.startswith("{"):
-            return False
-        uri, tag = name[1:].split("}", 1)
-        group = namespaces.get(uri)
-        return bool(group and rendering_xmp("XMP:" + group + ":" + tag, value, "JPEG"))
-    for item in parsed.iter(rdf + "Description"):
-        for name, value in item.attrib.items():
-            if permitted(name, value):
-                description.set(name, value)
-        for child in item:
-            if len(child) == 0 and permitted(child.tag, child.text or ""):
-                ET.SubElement(description, child.tag).text = child.text
-            elif len(child) == 1 and child[0].tag in {rdf + "Seq", rdf + "Bag"}:
-                values = [entry.text or "" for entry in child[0]]
-                if all(entry.tag == rdf + "li" and len(entry) == 0 for entry in child[0]) and permitted(child.tag, values):
-                    sequence = ET.SubElement(ET.SubElement(description, child.tag), child[0].tag)
-                    for value in values:
-                        ET.SubElement(sequence, rdf + "li").text = value
-    if not description.attrib and not len(description):
-        return b""
-    payload = b"http://ns.adobe.com/xap/1.0/\0" + ET.tostring(root, encoding="utf-8")
-    if len(payload) > 65533:
-        raise CleanError("HDR XMP 数据过大")
-    return b"\xff\xe1" + struct.pack(">H", len(payload) + 2) + payload
-
-
 def profile_blocks(exiftool, path):
     data = json.loads(run(exiftool, ["-j", "-b", "-a", "-ee3", "-G0:1:3:4",
                                    "-ICC_Profile", str(path)]).stdout)[0]
@@ -672,50 +443,6 @@ def sanitize_private_metadata(exiftool, target, file_type):
     verify_profiles(exiftool, profiles, target)
 
 
-def clean_jpeg_frame(exiftool, source, target, before):
-    original = source.read_bytes()
-    preserved = jpeg_render_segments(original)
-    render_xmp = jpeg_render_xmp(exiftool, source)
-    args = ["-all=", "--ICC_Profile:All", "-Trailer:All=", "-TagsFromFile", "@",
-            "-ColorSpaceTags", "-IFD0:Orientation"]
-    if any(key.startswith("MakerNotes:") and rendering_xmp(key, value, "JPEG") for key, value in before.items()):
-        note = target.with_suffix(".maker.bin")
-        note.write_bytes(apple_hdr_note(exiftool, source))
-        args += ["-MakerNotes<=" + note.name]
-    result = run(exiftool, args + ["-api", "NoWarning=No writable tags", "-o", target.name, str(source)], cwd=target.parent)
-    if result.stderr.strip():
-        raise CleanError(result.stderr.decode("utf-8", "replace").strip())
-    cleaned = target.read_bytes()
-    retained = set(jpeg_render_segments(cleaned))
-    cleaned, _ = jpeg_insert(cleaned, render_xmp + b"".join(segment for segment in preserved if segment not in retained))
-    target.write_bytes(cleaned)
-    sanitize_private_metadata(exiftool, target, "JPEG")
-    cleaned = target.read_bytes()
-    after = inspect(exiftool, target)
-    verify(before, after)
-    if (jpeg_coding_hash(original) != jpeg_coding_hash(cleaned)
-            or Counter(preserved) != Counter(jpeg_render_segments(cleaned))):
-        raise CleanError("JPEG 像素编码或 HDR 显示参数发生变化")
-    verify_profiles(exiftool, profile_blocks(exiftool, source), target)
-
-
-def clean_mpf(exiftool, source, staged):
-    entries, frames = split_mpf(source.read_bytes())
-    cleaned = []
-    for index, frame in enumerate(frames):
-        original = staged.parent / ("frame-" + str(index) + ".jpg")
-        target = staged.parent / ("clean-frame-" + str(index) + ".jpg")
-        original.write_bytes(frame)
-        before = inspect(exiftool, original)
-        clean_jpeg_frame(exiftool, original, target, before)
-        cleaned.append(target.read_bytes())
-    assembled = join_mpf(entries, cleaned)
-    final_entries, final_frames = split_mpf(assembled)
-    if final_entries != entries or final_frames != cleaned:
-        raise CleanError("多图 JPEG 索引校验失败")
-    staged.write_bytes(assembled)
-
-
 def clean(exiftool, argument, anonymous=False):
     source = Path(os.path.abspath(os.path.expanduser(argument)))
     if not source.is_file():
@@ -730,7 +457,9 @@ def clean(exiftool, argument, anonymous=False):
     file_type = image_type(before)
     if file_type not in FORMATS:
         raise CleanError("暂不支持此格式（" + str(file_type) + "）；支持 JPG、PNG、HEIC、AVIF、WebP、GIF、TIFF、BMP")
-    multi_jpeg = file_type == "JPEG" and any(key.startswith("MPF:") for key in before)
+    if file_type in formats.REBUILT:
+        # ExifTool recognized a format whose usual file signature is missing.
+        raise FormatError("damaged", format=file_type)
     suffixes = FORMATS[file_type]
     suffix = source.suffix if source.suffix.lower() in suffixes else suffixes[0]
     check_frames = file_type in {"GIF", "APNG", "BMP", "TIFF", "AVIF"}
@@ -751,33 +480,24 @@ def clean(exiftool, argument, anonymous=False):
                 input_path.write_bytes(trimmed)
                 before = inspect(exiftool, input_path)
                 original_profiles = profile_blocks(exiftool, input_path)
-        if multi_jpeg:
-            clean_mpf(exiftool, source, staged)
-        elif file_type == "JPEG":
-            if input_path == source and source.suffix.lower() not in suffixes:
-                input_path = Path(temp) / "source.jpg"
-                shutil.copyfile(source, input_path)
-            clean_jpeg_frame(exiftool, input_path, staged, before)
+        if input_path == source and source.suffix.lower() not in suffixes:
+            input_path = Path(temp) / ("source" + suffixes[0])
+            shutil.copyfile(source, input_path)
+        args = ["-all=", "--ICC_Profile:All", "-Trailer:All=", "-PNG:ModifyDate="]
+        if file_type == "TIFF":
+            args = tiff_delete_args(before)
         else:
-            if input_path == source and source.suffix.lower() not in suffixes:
-                input_path = Path(temp) / ("source" + suffixes[0])
-                shutil.copyfile(source, input_path)
-            args = ["-all=", "--ICC_Profile:All", "-Trailer:All=", "-PNG:ModifyDate="]
-            if file_type == "TIFF":
-                args = tiff_delete_args(before)
-            else:
-                args += ["-TagsFromFile", "@", "-ColorSpaceTags", "-IFD0:Orientation"]
-            if file_type == "AVIF" and value_for(before, "MajorBrand") == "avis":
-                for tag in ("CreateDate", "ModifyDate", "TrackCreateDate", "TrackModifyDate", "MediaCreateDate", "MediaModifyDate"):
-                    args.append("-QuickTime:" + tag + "=")
-            result = run(exiftool, args + [
-                "-api", "NoWarning=No writable tags", "-o", staged.name, str(input_path),
-            ], cwd=temp)
-            if result.stderr.strip():
-                raise CleanError("清理时出现警告，未导出结果：" +
-                                 result.stderr.decode("utf-8", "replace").strip())
-        if file_type != "JPEG":
-            sanitize_private_metadata(exiftool, staged, file_type)
+            args += ["-TagsFromFile", "@", "-ColorSpaceTags", "-IFD0:Orientation"]
+        if file_type == "AVIF" and value_for(before, "MajorBrand") == "avis":
+            for tag in ("CreateDate", "ModifyDate", "TrackCreateDate", "TrackModifyDate", "MediaCreateDate", "MediaModifyDate"):
+                args.append("-QuickTime:" + tag + "=")
+        result = run(exiftool, args + [
+            "-api", "NoWarning=No writable tags", "-o", staged.name, str(input_path),
+        ], cwd=temp)
+        if result.stderr.strip():
+            raise CleanError("清理时出现警告，未导出结果：" +
+                             result.stderr.decode("utf-8", "replace").strip())
+        sanitize_private_metadata(exiftool, staged, file_type)
         verify_profiles(exiftool, original_profiles, staged)
         after = inspect(exiftool, staged)
         if check_frames and original_pixels != decoded_snapshot(staged):
