@@ -12,6 +12,11 @@ from . import bmp, gif, heif, jpeg, png, tiff, webp
 
 REBUILT = {"PNG": png, "APNG": png, "BMP": bmp, "JPEG": jpeg, "WEBP": webp, "GIF": gif,
            "HEIC": heif, "AVIF": heif, "TIFF": tiff}
+# File name extensions of each format, the first being the default. A source
+# whose extension does not match its content gets the default; BMP becomes PNG.
+SUFFIXES = {"JPEG": (".jpg", ".jpeg", ".jpe"), "PNG": (".png",), "APNG": (".png", ".apng"),
+            "HEIC": (".heic", ".heif", ".hif"), "AVIF": (".avif",), "WEBP": (".webp",),
+            "GIF": (".gif",), "TIFF": (".tiff", ".tif"), "BMP": (".png",)}
 # Formats Pillow decodes, for comparing pixels. For HEIC, heif.verify compares
 # every retained image item byte for byte instead.
 PILLOW_DECODES = {"PNG", "APNG", "BMP", "JPEG", "WEBP", "GIF", "AVIF", "TIFF"}

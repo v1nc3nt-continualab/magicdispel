@@ -9,7 +9,7 @@ overlays, XMP and other application extensions, and anything after the
 trailer are dropped.
 """
 from ..errors import FormatError, VerificationError
-from ..privacy import PrivacyError, sanitize_icc
+from .. import icc
 
 TRAILER = b"\x3b"
 LOOP_APPLICATIONS = {b"NETSCAPE2.0", b"ANIMEXTS1.0"}
@@ -56,8 +56,8 @@ def application_extension(block):
         return [extension(0xFF, [application, loops[0]])] if loops else []
     if application == ICC_APPLICATION:
         try:
-            profile = sanitize_icc(b"".join(data))
-        except PrivacyError as error:
+            profile = icc.sanitize(b"".join(data))
+        except icc.ProfileError as error:
             raise FormatError("unsupported_profile", format="GIF", detail=str(error))
         return [extension(0xFF, [application] + [profile[n:n + 255] for n in range(0, len(profile), 255)])]
     return []

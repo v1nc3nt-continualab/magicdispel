@@ -3,8 +3,8 @@
 import argparse
 import sys
 
-from . import __version__
-from .core import CleanError, clean, exiftool_version, find_exiftool, supported_exiftool
+from . import __version__, exiftool
+from .core import clean
 from .messages import message
 
 
@@ -32,33 +32,37 @@ def main(argv=None):
         return 0
     try:
         # ExifTool is optional: when present and recent, it double-checks results.
-        exiftool, version = find_exiftool(), None
-        if exiftool:
-            version = exiftool_version(exiftool)
-            if not supported_exiftool(version):
-                exiftool = None
+        path = exiftool.find()
+        found = exiftool.version(path) if path else None
+        second_check = path if exiftool.usable(found) else None
         if args.check:
             print(message("ready", version=__version__))
-            if exiftool:
-                print(message("second_check_on", exiftool_version=version, exiftool=exiftool))
-            else:
-                print(message("second_check_old" if version else "second_check_off", exiftool_version=version))
+            print(message(second_check_state(path, found, second_check), exiftool_version=found, exiftool=path))
         failures = 0
         for photo in args.photos:
             try:
-                print(message("cleaned", path=clean(exiftool, photo, anonymous=args.anonymous)))
-            except (CleanError, OSError, ValueError) as error:
+                print(message("cleaned", path=clean(photo, second_check, anonymous=args.anonymous)))
+            except (OSError, ValueError) as error:
                 failures += 1
                 print(message("failed", photo=photo, reason=error), file=sys.stderr)
         if len(args.photos) > 1:
             print(message("summary", succeeded=len(args.photos) - failures, failed=failures))
         return 1 if failures else 0
-    except (CleanError, OSError) as error:
+    except (OSError, ValueError) as error:
         print(message("error", reason=error), file=sys.stderr)
         return 1
     except KeyboardInterrupt:
         print(message("cancelled"), file=sys.stderr)
         return 130
+
+
+def second_check_state(path, found_version, second_check):
+    """Which --check line describes the optional ExifTool second check."""
+    if second_check:
+        return "second_check_on"
+    if found_version:
+        return "second_check_old"
+    return "second_check_unusable" if path else "second_check_off"
 
 
 if __name__ == "__main__":

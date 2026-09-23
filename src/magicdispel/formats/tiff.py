@@ -13,7 +13,7 @@ metadata inside JPEG-compressed strips.
 import struct
 
 from ..errors import FormatError, VerificationError
-from ..privacy import PrivacyError, sanitize_icc
+from .. import icc
 from . import jpeg
 
 TYPE_SIZES = {1: 1, 2: 1, 3: 2, 4: 4, 5: 8, 6: 1, 7: 1, 8: 2, 9: 4, 10: 8, 11: 4, 12: 8, 13: 4}
@@ -45,8 +45,8 @@ def rebuild(data):
         entries = {tag: value for tag, value in page["tags"].items() if tag in KEPT}
         if ICC in entries:
             try:
-                entries[ICC] = (7, sanitize_icc(entries[ICC][1]))
-            except PrivacyError as error:
+                entries[ICC] = (7, icc.sanitize(entries[ICC][1]))
+            except icc.ProfileError as error:
                 raise FormatError("unsupported_profile", format="TIFF", detail=str(error))
         offsets = []
         for block in page["blocks"]:
@@ -73,7 +73,7 @@ def verify(original, rebuilt):
             fail("TIFF image data differs")
         expected = {tag: value for tag, value in source["tags"].items() if tag in KEPT and tag not in (STRIPS, TILES)}
         if ICC in expected:
-            expected[ICC] = (7, sanitize_icc(expected[ICC][1]))
+            expected[ICC] = (7, icc.sanitize(expected[ICC][1]))
         found = {tag: value for tag, value in page["tags"].items() if tag not in (STRIPS, TILES)}
         if found != expected:
             fail("TIFF tags differ from the original")

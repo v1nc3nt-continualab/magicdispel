@@ -1,156 +1,12 @@
-"""Sanitize profile identity data and opaque HEIF metadata without recompression."""
+"""HEIF item graph: parse item tables, remove metadata and editing-only items."""
 
 import struct
 
-from . import xmp
+from . import icc, xmp
 
 
 class PrivacyError(ValueError):
     pass
-
-
-ICC_DATE = struct.pack('>6H', 2000, 1, 1, 0, 0, 0)
-ICC_MAX_SIZE = 64 * 1024 * 1024
-# Tags that describe where a profile came from rather than how to convert
-# colors. They are dropped; desc and cprt are rewritten with neutral text.
-ICC_DROPPED_TAGS = {
-    # Descriptions, device names, calibration dates and dictionaries.
-    b'desc', b'cprt', b'dmnd', b'dmdd', b'dscm', b'vued', b'calt', b'targ',
-    b'meta', b'pseq', b'psid', b'mmod', b'devs', b'scrd', b'crdi',
-    # Display setup: native panel data, video-card gamma (per-display
-    # calibration) and its parameters. An embedded image profile is only used
-    # for the PCS transform, which relies on the XYZ/TRC/para tags kept below.
-    b'ndin', b'vcgt', b'vcgp',
-}
-ICC_COLOR_TYPES = {
-    b'rXYZ': {b'XYZ '}, b'gXYZ': {b'XYZ '}, b'bXYZ': {b'XYZ '},
-    b'wtpt': {b'XYZ '}, b'bkpt': {b'XYZ '}, b'lumi': {b'XYZ '},
-    b'rTRC': {b'curv', b'para'}, b'gTRC': {b'curv', b'para'},
-    b'bTRC': {b'curv', b'para'}, b'kTRC': {b'curv', b'para'},
-    b'chad': {b'sf32'}, b'chrm': {b'chrm'}, b'cicp': {b'cicp'},
-    b'view': {b'view'}, b'meas': {b'meas'}, b'tech': {b'sig '},
-    b'gamt': {b'mft1', b'mft2', b'mAB ', b'mBA '},
-    b'rig0': {b'sig '}, b'rig2': {b'sig '}, b'ciis': {b'sig '},
-    b'hdgm': {b'gmap'},
-    # Apple's per-channel parametric curves in macOS display profiles.
-    b'aarg': {b'para'}, b'aagg': {b'para'}, b'aabg': {b'para'},
-}
-for _n in range(3):
-    ICC_COLOR_TYPES[('A2B%d' % _n).encode()] = {b'mft1', b'mft2', b'mAB '}
-    ICC_COLOR_TYPES[('B2A%d' % _n).encode()] = {b'mft1', b'mft2', b'mBA '}
-    ICC_COLOR_TYPES[('pre%d' % _n).encode()] = {b'mft1', b'mft2', b'mAB ', b'mBA '}
-for _n in range(4):
-    ICC_COLOR_TYPES[('D2B%d' % _n).encode()] = {b'mpet'}
-    ICC_COLOR_TYPES[('B2D%d' % _n).encode()] = {b'mpet'}
-
-
-def icc_entries(profile):
-    if (not 132 <= len(profile) <= ICC_MAX_SIZE or profile[36:40] != b'acsp'
-            or profile[8] not in {2, 4}):
-        raise PrivacyError('Unsupported or invalid ICC profile')
-    length, = struct.unpack_from('>I', profile)
-    count, = struct.unpack_from('>I', profile, 128)
-    if count > 4096 or not 132 + 12 * count <= length <= len(profile):
-        raise PrivacyError('Invalid ICC profile table')
-    entries = {}
-    ranges = []
-    for n in range(count):
-        tag, offset, size = struct.unpack_from('>4sII', profile, 132 + 12 * n)
-        if (tag in entries or offset < 132 + 12 * count or size < 8
-                or offset % 4 or offset + size > length):
-            raise PrivacyError('Invalid ICC tag range')
-        for a, b in ranges:
-            if offset < b and offset + size > a and (offset, offset + size) != (a, b):
-                raise PrivacyError('Overlapping ICC tag data')
-        ranges.append((offset, offset + size))
-        entries[tag] = profile[offset:offset + size]
-    return entries
-
-
-def sanitize_adaptive_curve(value):
-    # Apple's legacy gmap includes an image-specific 16-byte identifier. Limit
-    # this rewrite to the verified layout; never guess offsets in another type.
-    if (len(value) < 158 or value[:12] != b'gmap' + b'\0' * 8
-            or struct.unpack_from('>I', value, 12)[0] != len(value)
-            or struct.unpack_from('>5I', value, 16) != (98, 106, 106, 106, 0)
-            or value[60:64] != b'A2B0' or any(value[64:96])
-            or value[98:106] != b'\x01\x00\x08\x0c\0\0\0\0'):
-        raise PrivacyError('Unsupported HDR adaptive curve metadata layout')
-    for offset in (36, 44, 52):
-        start, length = struct.unpack_from('>II', value, offset)
-        if start < 150 or length < 8 or start + length > len(value):
-            raise PrivacyError('Invalid HDR adaptive curve data range')
-    return value[:106] + b'\0' * 16 + value[122:]
-
-
-def validate_apple_parametric_curve(value):
-    """Apple screenshot curves use the standard ICC parametricCurveType layout."""
-    if (len(value) < 12 or value[:8] != b'para' + b'\0' * 4
-            or value[10:12] != b'\0\0'):
-        raise PrivacyError('Invalid Apple ICC parametric curve')
-    function, = struct.unpack_from('>H', value, 8)
-    parameters = {0: 1, 1: 3, 2: 4, 3: 5, 4: 7}
-    if function not in parameters or len(value) != 12 + 4 * parameters[function]:
-        raise PrivacyError('Unsupported Apple ICC parametric curve layout')
-    return value
-
-
-def icc_color_signature(profile):
-    entries = icc_entries(profile)
-    kept = {}
-    for tag, value in entries.items():
-        if tag in ICC_DROPPED_TAGS:
-            continue
-        if tag not in ICC_COLOR_TYPES or value[:4] not in ICC_COLOR_TYPES[tag]:
-            raise PrivacyError('Unsupported ICC color tag: ' + repr(tag))
-        if tag in {b'aarg', b'aagg', b'aabg'}:
-            validate_apple_parametric_curve(value)
-        kept[tag] = sanitize_adaptive_curve(value) if tag == b'hdgm' else value
-    return (profile[8:24], profile[44:48], profile[56:80], kept)
-
-
-def icc_text(value, version, description=False):
-    if version == 4:
-        encoded = value.encode('utf-16be')
-        return (b'mluc' + b'\0' * 4 + struct.pack('>II', 1, 12)
-                + b'enUS' + struct.pack('>II', len(encoded), 28) + encoded)
-    encoded = value.encode('ascii') + b'\0'
-    if description:
-        # ASCII description, empty Unicode and Macintosh descriptions.
-        return b'desc' + b'\0' * 4 + struct.pack('>I', len(encoded)) + encoded + b'\0' * 78
-    return b'text' + b'\0' * 4 + encoded
-
-
-def sanitize_icc(profile):
-    """Rebuild at the same byte length; discarded text and dead padding are zeroed."""
-    _, _, _, color = icc_color_signature(profile)
-    tags = {b'desc': icc_text('Clean', profile[8], True),
-            b'cprt': icc_text('', profile[8])}
-    tags.update(color)
-    clean = bytearray(len(profile))
-    clean[8:24] = profile[8:24]
-    clean[24:36] = ICC_DATE
-    clean[36:40] = b'acsp'
-    clean[44:48] = profile[44:48]
-    clean[56:80] = profile[56:80]
-    # CMM, platform, maker/model, creator, old profile ID, and reserved bytes
-    # are unspecified (zero). No new current-time or machine identity is added.
-    struct.pack_into('>I', clean, 0, len(clean))
-    struct.pack_into('>I', clean, 128, len(tags))
-    offset = 132 + 12 * len(tags)
-    dedup = {}
-    for n, (tag, payload) in enumerate(tags.items()):
-        if payload not in dedup:
-            if offset + len(payload) > len(clean):
-                raise PrivacyError('ICC profile has insufficient space for sanitized metadata')
-            dedup[payload] = offset
-            clean[offset:offset + len(payload)] = payload
-            offset += (len(payload) + 3) & ~3
-        struct.pack_into('>4sII', clean, 132 + 12 * n, tag, dedup[payload], len(payload))
-    result = bytes(clean)
-    if icc_color_signature(profile) != icc_color_signature(result):
-        raise PrivacyError('ICC color conversion data changed')
-    return result
 
 
 def bmff_boxes(data, start=0, end=None):
@@ -699,7 +555,7 @@ def sanitize_bmff_profiles(data):
         nonlocal count
         for kind, a, b, c in bmff_boxes(data, start, end):
             if kind == b'colr' and data[b:b + 4] in {b'prof', b'rICC'}:
-                result[b + 4:c] = sanitize_icc(bytes(data[b + 4:c]))
+                result[b + 4:c] = icc.sanitize(bytes(data[b + 4:c]))
                 count += 1
             elif kind in {b'meta', b'iprp', b'ipco', b'moov', b'trak', b'mdia', b'minf', b'stbl'}:
                 walk(b + (4 if kind == b'meta' else 0), c)

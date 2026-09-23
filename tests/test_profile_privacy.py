@@ -9,11 +9,10 @@ import subprocess
 import tempfile
 import unittest
 
-from magicdispel import core
-from magicdispel.privacy import PrivacyError, icc_entries, sanitize_icc, sanitize_adaptive_curve
+from magicdispel import core, exiftool, icc
 
 MARKER = 'MD_ICC_USER'
-ET = core.find_exiftool()
+ET = exiftool.find()
 
 
 def fixture_profile(version=4, padded=False):
@@ -120,13 +119,13 @@ class ProfilePrivacyTests(unittest.TestCase):
         value[60:64] = b'A2B0'
         value[98:106] = b'\x01\x00\x08\x0c\0\0\0\0'
         value[106:122] = b'TESTGUID01234567'
-        clean = sanitize_adaptive_curve(bytes(value))
+        clean = icc.sanitize_adaptive_curve(bytes(value))
         self.assertEqual(clean[106:122], b'\0' * 16)
         self.assertEqual(clean[:106], value[:106])
         self.assertEqual(clean[122:], value[122:])
         value[20:24] = b'\0\0\0\1'
-        with self.assertRaises(PrivacyError):
-            sanitize_adaptive_curve(bytes(value))
+        with self.assertRaises(icc.ProfileError):
+            icc.sanitize_adaptive_curve(bytes(value))
 
     def test_identity_removed_from_all_profile_containers(self):
         with tempfile.TemporaryDirectory(prefix='icc-privacy-') as tmp:
@@ -147,7 +146,7 @@ class ProfilePrivacyTests(unittest.TestCase):
                         image.save(source, fmt, icc_profile=profile)
                     before = detected_profiles(source)
                     self.assertEqual(len(before), 1)
-                    output = core.clean(ET, str(source))
+                    output = core.clean(str(source), ET)
                     after = detected_profiles(output)
                     self.assertEqual(len(after), 1)
                     self.assertEqual(colors(before[0]), colors(after[0]))
@@ -165,7 +164,7 @@ class ProfilePrivacyTests(unittest.TestCase):
             profile = fixture_profile(version=2, padded=True)
             Image.new('RGB', (32, 24), (56, 91, 112)).save(source, icc_profile=profile)
             self.assertGreater(source.read_bytes().count(b'ICC_PROFILE\0'), 1)
-            output = core.clean(ET, str(source))
+            output = core.clean(str(source), ET)
             cleaned = detected_profiles(output)[0]
             self.assertEqual(colors(profile), colors(cleaned))
             self.assertNotIn(MARKER.encode(), output.read_bytes())
@@ -182,7 +181,7 @@ class ProfilePrivacyTests(unittest.TestCase):
             first.save(source, save_all=True, append_images=[second])
             before = detected_profiles(source)
             self.assertEqual(len(before), 2)
-            output = core.clean(ET, str(source))
+            output = core.clean(str(source), ET)
             after = detected_profiles(output)
             self.assertEqual(len(after), 2)
             for a, b in zip(before, after):
@@ -191,11 +190,11 @@ class ProfilePrivacyTests(unittest.TestCase):
 
     def test_display_profile_keeps_curves_and_drops_display_identity(self):
         profile = display_profile()
-        clean = sanitize_icc(profile)
+        clean = icc.sanitize(profile)
         self.assertEqual(colors(profile), colors(clean))
         self.assertNotIn(MARKER.encode(), clean)
         self.assertNotIn(MARKER.encode('utf-16be'), clean)
-        before, after = icc_entries(profile), icc_entries(clean)
+        before, after = icc.entries(profile), icc.entries(clean)
         for tag in (b'wtpt', b'rXYZ', b'gXYZ', b'bXYZ', b'rTRC', b'gTRC', b'bTRC', b'aarg', b'aagg', b'aabg'):
             self.assertEqual(after[tag], before[tag])
         for tag in (b'dscm', b'mmod', b'ndin', b'vcgt', b'vcgp'):
@@ -206,23 +205,23 @@ class ProfilePrivacyTests(unittest.TestCase):
     def test_malformed_apple_curves_are_rejected(self):
         for curve in (para_curve(7), para_curve()[:-4], para_curve(0, 2.2, 1.0),
                       b'curv' + b'\0' * 4 + struct.pack('>IH', 1, 563)):
-            with self.subTest(curve=curve[:12]), self.assertRaises(PrivacyError):
-                sanitize_icc(display_profile(aarg=curve))
+            with self.subTest(curve=curve[:12]), self.assertRaises(icc.ProfileError):
+                icc.sanitize(display_profile(aarg=curve))
 
     def test_screenshot_png_with_display_profile(self):
         with tempfile.TemporaryDirectory(prefix='icc-display-') as tmp:
             source = Path(tmp) / 'Screenshot 2026-09-23.png'
             Image.new('RGBA', (32, 24), (40, 120, 200, 255)).save(source, icc_profile=display_profile())
-            output = core.clean(ET, str(source))
-            self.assertEqual(detected_profiles(output), [sanitize_icc(display_profile())])
+            output = core.clean(str(source), ET)
+            self.assertEqual(detected_profiles(output), [icc.sanitize(display_profile())])
 
     def test_corrupt_icc_ranges_are_rejected(self):
         broken = bytearray(fixture_profile())
         struct.pack_into('>I', broken, 140, len(broken) + 100)
-        with self.assertRaises(PrivacyError):
-            sanitize_icc(bytes(broken))
-        with self.assertRaises(PrivacyError):
-            sanitize_icc(b'not a profile')
+        with self.assertRaises(icc.ProfileError):
+            icc.sanitize(bytes(broken))
+        with self.assertRaises(icc.ProfileError):
+            icc.sanitize(b'not a profile')
 
 
 if __name__ == '__main__':

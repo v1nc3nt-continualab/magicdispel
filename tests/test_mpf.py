@@ -7,11 +7,14 @@ import struct
 import subprocess
 import tempfile
 
-from magicdispel import core
+from magicdispel import core, exiftool
 from magicdispel.errors import FormatError
 from magicdispel.formats import jpeg
-API = vars(core)
-ET = API['find_exiftool']()
+ET = exiftool.find()
+
+
+def value(data, name):
+    return next((v for k, v in data.items() if k.split(':')[-1] == name), None)
 
 
 def metadata(path, *options):
@@ -57,10 +60,10 @@ class MPFTests(unittest.TestCase):
                     source.write_bytes(fixture)
                 original = source.read_bytes()
                 before = metadata(source)
-                output = API['clean'](ET, str(source))
+                output = core.clean(str(source), ET)
                 assert source.read_bytes() == original
                 after = metadata(output)
-                assert API['value_for'](after, 'NumberOfImages') == count
+                assert value(after, 'NumberOfImages') == count
                 assert b'PRIVATE_MPF_SENTINEL' not in output.read_bytes()
                 assert not any(key.endswith((':Artist', ':Software')) for key in after)
                 assert frame_pixels(original) == frame_pixels(output.read_bytes())
@@ -72,7 +75,7 @@ class MPFTests(unittest.TestCase):
                 # Independent ExifTool decoder must find every index and extract every frame.
                 assert not any(key.endswith((':Warning', ':Error')) for key in after)
                 existing = output.read_bytes()
-                again = API['clean'](ET, str(source))
+                again = core.clean(str(source), ET)
                 assert again != output and output.read_bytes() == existing
                 print('PASS: Pillow-generated', count, 'image MPF; all frames, ICC, privacy and collision handling', flush=True)
         
@@ -90,7 +93,7 @@ class MPFTests(unittest.TestCase):
             corrupt = root / 'corrupt.jpg'
             corrupt.write_bytes(broken)
             try:
-                API['clean'](ET, str(corrupt))
+                core.clean(str(corrupt), ET)
             except FormatError:
                 pass
             else:

@@ -10,7 +10,7 @@ import unittest
 from unittest.mock import patch
 
 from PIL import Image
-from magicdispel import core
+from magicdispel import core, exiftool
 from magicdispel.errors import VerificationError
 from magicdispel.privacy import (PrivacyError, bmff_box, heif_layout,
     heif_auxiliary_types, strip_heif_auxiliary, strip_heif_private)
@@ -133,7 +133,7 @@ class AuxiliaryPrivacyTests(unittest.TestCase):
                                 ('XMP-depthBlurEffect','RenderingParameters','UkVORA=='),
                                 ('XMP-x','XMPToolkit','XMP Core 6.0.0')]:
             with self.subTest(tag=tag), self.assertRaises(VerificationError):
-                core.verify_metadata({'File:FileType':'HEIC','XMP:'+group+':'+tag:value})
+                exiftool.check_tags({'XMP:'+group+':'+tag:value}, 'HEIC')
 
 
 class AnonymousNameTests(unittest.TestCase):
@@ -157,7 +157,7 @@ class AnonymousNameTests(unittest.TestCase):
             self.assertEqual(collision.read_bytes(),b'KEEP_EXISTING')
             self.assertEqual(out.read_bytes(),targets[0].read_bytes())
             bmp=root/'姓名.bmp';Image.new('RGB',(8,8),'red').save(bmp)
-            out=core.clean(core.find_exiftool(),str(bmp),anonymous=True)
+            out=core.clean(str(bmp),exiftool.find(),anonymous=True)
             self.assertRegex(out.name,r'^photo_[0-9a-f]{32}\.png$')
 
 

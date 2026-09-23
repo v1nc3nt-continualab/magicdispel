@@ -6,10 +6,9 @@ import io
 import subprocess
 import tempfile
 
-from magicdispel import core
+from magicdispel import core, exiftool
 from magicdispel.errors import VerificationError
-API = vars(core)
-ET = API['find_exiftool']()
+ET = exiftool.find()
 
 
 def edit(path, *tags):
@@ -28,6 +27,11 @@ def pixels(path):
             picture.load()
             frames.append((picture.size, picture.info.get('duration', 0), picture.convert('RGBA').tobytes()))
         return header, frames
+
+
+def image_data_hash(path):
+    return subprocess.check_output([ET, '-config', '', '-api', 'ImageHashType=SHA256', '-s3',
+                                    '-ImageDataHash', str(path)])
 
 
 def icc(path):
@@ -108,16 +112,15 @@ class CommonFormatTests(unittest.TestCase):
                         edit(source, '-IFD1:Artist=PRIVATE_MARKER', '-IFD1:Orientation#=3')
                     original = source.read_bytes()
                     before_pixels = pixels(source)
-                    before = API['inspect'](ET, source)
-                    out = API['clean'](ET, str(source))
-                    after = API['inspect'](ET, out)
+                    out = core.clean(str(source), ET)
+                    after = exiftool.read(ET, out)
                     assert source.read_bytes() == original, 'source modified'
                     assert pixels(out) == before_pixels, 'displayed frame/timing/loop changed'
                     assert icc_colors(icc(source)) == icc_colors(icc(out)), 'ICC color conversion changed'
                     assert b'PRIVATE_MARKER' not in out.read_bytes(), 'private text retained'
                     assert not any(':GPS' in key or key.endswith((':Artist', ':Creator', ':DateTimeOriginal', ':Comment')) for key in after), after
                     if fmt not in {'GIF', 'BMP'}:
-                        assert API['value_for'](before, 'ImageDataHash') == API['value_for'](after, 'ImageDataHash')
+                        assert image_data_hash(source) == image_data_hash(out)
                     if fmt == 'BMP':
                         assert out.suffix == '.png'
                     if name == 'wrong-extension.jpg':
@@ -130,17 +133,12 @@ class CommonFormatTests(unittest.TestCase):
             assert not list(root.glob('.magicdispel-*'))
             # Explicitly catch comment fields reported in the File family.
             try:
-                API['verify_metadata']({'File:FileType':'GIF', 'File:Comment':'PRIVATE_MARKER'})
+                exiftool.check_tags({'File:Comment':'PRIVATE_MARKER'}, 'GIF')
             except VerificationError:
                 pass
             else:
                 raise AssertionError('File:Comment escaped validation')
             print('ALL 32 COMMON FORMAT CASES PASSED', flush=True)
-
-    def test_file_type_aliases(self):
-        self.assertEqual(core.image_type({'File:FileType':'HEIF'}), 'HEIC')
-        self.assertEqual(core.image_type({'File:FileType':'MP4', 'QuickTime:MajorBrand':'avis'}), 'AVIF')
-        self.assertEqual(core.image_type({'File:FileType':'MP4', 'QuickTime:MajorBrand':'mp42'}), 'MP4')
 
 
 if __name__ == '__main__':

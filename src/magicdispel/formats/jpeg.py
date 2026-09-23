@@ -12,9 +12,8 @@ IPTC/Photoshop blocks, C2PA, thumbnails, maker notes and trailing data.
 import hashlib
 import struct
 
-from .. import exif, xmp
+from .. import exif, icc, xmp
 from ..errors import FormatError, VerificationError
-from ..privacy import PrivacyError, sanitize_icc
 
 SOI, EOI, SOS, APP0, APP1, APP2, APP10, APP14, COM = 0xD8, 0xD9, 0xDA, 0xE0, 0xE1, 0xE2, 0xEA, 0xEE, 0xFE
 # Frame headers (SOF0-SOF15 except the table markers), tables, restart interval,
@@ -118,8 +117,8 @@ def sanitized_profile_slices(parsed):
     if set(pieces) != set(range(1, total + 1)):
         raise damaged()
     try:
-        clean = sanitize_icc(b"".join(pieces[index] for index in sorted(pieces)))
-    except PrivacyError as error:
+        clean = icc.sanitize(b"".join(pieces[index] for index in sorted(pieces)))
+    except icc.ProfileError as error:
         raise FormatError("unsupported_profile", format="JPEG", detail=str(error))
     slices, position = {}, 0
     for index in sorted(pieces):

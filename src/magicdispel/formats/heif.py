@@ -16,9 +16,9 @@ Every box keeps its size, so all item and sample offsets stay valid.
 """
 import struct
 
-from .. import xmp
+from .. import icc, xmp
 from ..errors import FormatError, VerificationError
-from ..privacy import (PrivacyError, bmff_boxes, heif_layout, sanitize_bmff_profiles, sanitize_icc,
+from ..privacy import (PrivacyError, bmff_boxes, heif_layout, sanitize_bmff_profiles,
                        strip_heif_auxiliary, strip_heif_private)
 
 KEPT = {b"ftyp", b"meta", b"moov", b"mdat"}
@@ -61,6 +61,8 @@ def rebuild(data):
         if unknown:
             raise PrivacyError("item type " + ", ".join(sorted(t.decode("latin-1") for t in unknown)))
         trimmed, _ = sanitize_bmff_profiles(strip_heif_auxiliary(strip_heif_private(data)))
+    except icc.ProfileError as error:
+        raise FormatError("unsupported_profile", format=name, detail=str(error))
     except PrivacyError as error:
         raise FormatError("unsupported_part", format=name, part=str(error))
     result = bytearray(trimmed)
@@ -83,7 +85,7 @@ def verify(original, rebuilt):
     """Check the result on its own terms, as listed in the module docstring."""
     try:
         check(original, rebuilt)
-    except PrivacyError as error:
+    except (PrivacyError, icc.ProfileError) as error:
         fail(str(error))
 
 
@@ -111,11 +113,11 @@ def check(original, rebuilt):
     # Item tables may be compacted, so item profiles are matched by item; the
     # movie box never moves, so track profiles are matched by position.
     for ident in after["items"]:
-        if item_profiles(rebuilt, after, ident) != [sanitize_icc(profile)
+        if item_profiles(rebuilt, after, ident) != [icc.sanitize(profile)
                                                     for profile in item_profiles(original, before, ident)]:
             fail("color profile of item %d not sanitized" % ident)
     for start, end in track_profiles(rebuilt):
-        if rebuilt[start:end] != sanitize_icc(original[start:end]):
+        if rebuilt[start:end] != icc.sanitize(original[start:end]):
             fail("track color profile not sanitized")
     used = used_ranges(rebuilt, name)
     for start, end in data_boxes(rebuilt, name):

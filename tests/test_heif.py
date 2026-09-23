@@ -6,7 +6,8 @@ from PIL import ImageCms
 
 from magicdispel.errors import FormatError, VerificationError
 from magicdispel.formats import heif
-from magicdispel.privacy import bmff_boxes, heif_layout, sanitize_icc
+from magicdispel import icc
+from magicdispel.privacy import bmff_boxes, heif_layout
 
 MARKER = b"MD_HEIF_PRIVATE"
 PROFILE = ImageCms.ImageCmsProfile(ImageCms.createProfile("sRGB")).tobytes()
@@ -99,7 +100,7 @@ class HeifTests(unittest.TestCase):
     def test_profiles_are_sanitized(self):
         data = heif_file([PRIMARY], profile=PROFILE)
         rebuilt = self.assertRebuilt(data)
-        self.assertEqual(heif.item_profiles(rebuilt, heif_layout(rebuilt), 1), [sanitize_icc(PROFILE)])
+        self.assertEqual(heif.item_profiles(rebuilt, heif_layout(rebuilt), 1), [icc.sanitize(PROFILE)])
 
     def test_verify_notices_a_tampered_result(self):
         data = heif_file([PRIMARY], before_mdat=[box(b"uuid", bytes(16) + MARKER)], gap=bytes(8))

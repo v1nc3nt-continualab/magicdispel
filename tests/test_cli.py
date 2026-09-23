@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 from PIL import Image
 
-from magicdispel import __version__, cli, messages
+from magicdispel import __version__, cli, exiftool, messages
 
 
 def run(*arguments, language="en"):
@@ -57,7 +57,7 @@ class WithoutExifToolTests(unittest.TestCase):
 
     def run_main(self, *arguments):
         with patch.dict(os.environ, {"MAGICDISPEL_LANG": "en"}), \
-                patch.object(cli, "find_exiftool", return_value=None), \
+                patch.object(exiftool, "find", return_value=None), \
                 patch("sys.stdout", new_callable=io.StringIO) as output:
             return cli.main(list(arguments)), output.getvalue()
 

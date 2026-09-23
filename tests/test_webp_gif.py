@@ -5,10 +5,9 @@ import unittest
 
 from PIL import Image, ImageCms
 
-from magicdispel import exif
+from magicdispel import exif, icc
 from magicdispel.errors import FormatError, VerificationError
 from magicdispel.formats import gif, webp
-from magicdispel.privacy import sanitize_icc
 
 MARKER = b"MD_WEBP_GIF_PRIVATE"
 PROFILE = ImageCms.ImageCmsProfile(ImageCms.createProfile("sRGB")).tobytes()
@@ -66,7 +65,7 @@ class WebPTests(unittest.TestCase):
         rebuilt = self.assertRebuilt(riff(parts, trailing=MARKER))
         found = dict(webp.chunks(rebuilt))
         self.assertEqual([kind for kind, _ in webp.chunks(rebuilt)], [b"VP8X", b"ICCP", b"VP8 ", b"EXIF"])
-        self.assertEqual(found[b"ICCP"], sanitize_icc(PROFILE))
+        self.assertEqual(found[b"ICCP"], icc.sanitize(PROFILE))
         self.assertEqual(found[b"EXIF"], exif.build(exif.DisplayFields(orientation=6)))
         self.assertEqual(found[b"VP8X"][:4], bytes([webp.ICC | webp.EXIF, 0, 0, 0]))
 
@@ -157,7 +156,7 @@ class GifTests(unittest.TestCase):
         rebuilt = self.assertRebuilt(with_blocks(encode(gradient("P"), "GIF"),
                                                  extension(0xFF, gif.ICC_APPLICATION, *pieces)))
         block = next(block for kind, block in gif.blocks(rebuilt) if kind == 0xFF)
-        self.assertEqual(b"".join(gif.sub_blocks(block, 2)[1:]), sanitize_icc(PROFILE))
+        self.assertEqual(b"".join(gif.sub_blocks(block, 2)[1:]), icc.sanitize(PROFILE))
 
     def test_missing_trailer_is_supplied(self):
         data = encode(gradient("P"), "GIF")

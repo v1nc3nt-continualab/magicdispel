@@ -11,9 +11,8 @@ because the PNG rules forbid decoders from skipping it.
 import struct
 import zlib
 
-from .. import exif
+from .. import exif, icc
 from ..errors import FormatError, VerificationError
-from ..privacy import ICC_MAX_SIZE, PrivacyError, sanitize_icc
 
 SIGNATURE = b"\x89PNG\r\n\x1a\n"
 PROFILE_NAME = b"Clean"
@@ -120,14 +119,14 @@ def sanitized_profile(payload):
         raise damaged()
     stream = zlib.decompressobj()
     try:
-        profile = stream.decompress(payload[name_end + 2:], ICC_MAX_SIZE + 1)
+        profile = stream.decompress(payload[name_end + 2:], icc.MAX_SIZE + 1)
     except zlib.error:
         raise damaged()
-    if len(profile) > ICC_MAX_SIZE or not stream.eof or stream.unused_data or stream.unconsumed_tail:
+    if len(profile) > icc.MAX_SIZE or not stream.eof or stream.unused_data or stream.unconsumed_tail:
         raise damaged()
     try:
-        return sanitize_icc(profile)
-    except PrivacyError as error:
+        return icc.sanitize(profile)
+    except icc.ProfileError as error:
         raise FormatError("unsupported_profile", format="PNG", detail=str(error))
 
 

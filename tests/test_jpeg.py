@@ -215,7 +215,7 @@ class MultiPictureTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="jpeg-") as folder:
             path = Path(folder, "IMG 0001.JPG")
             path.write_bytes(mpf(self.frames(), extra_tags=[(0xB003, MARKER)]))
-            output = core.clean(None, str(path))
+            output = core.clean(str(path))
             self.assertEqual(output.name, "IMG 0001_clean.JPG")
             self.assertNotIn(MARKER, output.read_bytes())
             self.assertEqual(decoded(output.read_bytes()), decoded(path.read_bytes()))

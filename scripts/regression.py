@@ -36,6 +36,7 @@ from pathlib import Path
 from PIL import Image
 
 from magicdispel import core
+from magicdispel.exiftool import find as find_exiftool, usable, version
 
 MARKER = b"SECRET-40.7128N"
 HELPER = Path(__file__).with_name("native_render.swift")
@@ -325,8 +326,8 @@ def clean_sample(exiftool, corpus, sample, workdir):
     started = time.perf_counter()
     record = {"id": sample["id"], "label": sample["label"], "input_suffix": source.suffix}
     try:
-        output = core.clean(exiftool, str(source))
-    except (core.CleanError, OSError, ValueError) as error:
+        output = core.clean(str(source), exiftool)
+    except (OSError, ValueError) as error:
         record.update(status="refused", message=str(error))
     else:
         record.update(status="cleaned", output=str(output))
@@ -385,10 +386,11 @@ def load_manifest(corpus):
 
 def run(corpus, workers, keep, without_exiftool=False):
     samples = load_manifest(corpus)
-    exiftool = core.find_exiftool()
+    exiftool = find_exiftool()
     if not exiftool:
         sys.exit("The harness itself reads metadata with ExifTool; please install it.")
-    core.check_dependency(exiftool)
+    if not usable(version(exiftool)):
+        sys.exit("The harness needs ExifTool 12.73 or newer.")
     cleaner_exiftool = None if without_exiftool else exiftool
     renderer = NativeRenderer(corpus / ".cache")
     inputs = input_fingerprints(corpus, samples, renderer, exiftool, workers)

@@ -8,9 +8,8 @@ XMP, unknown chunks and anything after the RIFF end are dropped.
 """
 import struct
 
-from .. import exif
+from .. import exif, icc
 from ..errors import FormatError, VerificationError
-from ..privacy import PrivacyError, sanitize_icc
 
 # VP8X flags. Bits 0, 6 and 7 are reserved and always written as zero.
 ICC, ALPHA, EXIF, XMP, ANIMATION = 0x20, 0x10, 0x08, 0x04, 0x02
@@ -51,8 +50,8 @@ def selected_chunks(data):
             kept.append((kind, animation_frame(payload)))
         elif kind == b"ICCP":
             try:
-                kept.append((kind, sanitize_icc(payload)))
-            except PrivacyError as error:
+                kept.append((kind, icc.sanitize(payload)))
+            except icc.ProfileError as error:
                 raise FormatError("unsupported_profile", format="WebP", detail=str(error))
     if not any(kind in (b"VP8 ", b"VP8L", b"ANMF") for kind, _ in kept):
         raise damaged()

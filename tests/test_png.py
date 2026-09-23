@@ -8,10 +8,9 @@ from pathlib import Path
 
 from PIL import Image, ImageCms, PngImagePlugin
 
-from magicdispel import core, exif
+from magicdispel import core, exif, icc
 from magicdispel.errors import FormatError, VerificationError
 from magicdispel.formats import bmp, png
-from magicdispel.privacy import sanitize_icc
 
 MARKER = b"MD_PNG_PRIVATE"
 
@@ -97,7 +96,7 @@ class RebuildTests(unittest.TestCase):
         rebuilt = self.assertRebuilt(encode(gradient(), icc_profile=profile))
         payload = dict((k, p) for k, p, _ in png.chunks(rebuilt))[b"iCCP"]
         self.assertTrue(payload.startswith(b"Clean\0\0"))
-        self.assertEqual(zlib.decompress(payload[7:]), sanitize_icc(profile))
+        self.assertEqual(zlib.decompress(payload[7:]), icc.sanitize(profile))
 
     def test_exif_is_reduced_to_the_orientation(self):
         for orientation in (6, 1):
@@ -169,7 +168,7 @@ class RebuildTests(unittest.TestCase):
             path = Path(folder, "broken.png")
             path.write_bytes(broken)
             with self.assertRaises(FormatError) as caught:
-                core.clean(None, str(path))
+                core.clean(str(path))
             self.assertEqual(caught.exception.key, "damaged")
             self.assertEqual(sorted(p.name for p in Path(folder).iterdir()), ["broken.png"])
 
@@ -179,7 +178,7 @@ class RebuildTests(unittest.TestCase):
             info = PngImagePlugin.PngInfo()
             info.add_text("Author", MARKER.decode())
             path.write_bytes(encode(gradient(), pnginfo=info, dpi=(144, 144)))
-            output = core.clean(None, str(path))
+            output = core.clean(str(path))
             self.assertEqual(output.name, "截屏 1_clean.png")
             self.assertNotIn(MARKER, output.read_bytes())
             self.assertEqual(decoded(output.read_bytes()), decoded(path.read_bytes()))
