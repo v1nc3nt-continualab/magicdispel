@@ -2,7 +2,8 @@
 
 import struct
 import zlib
-import xml.etree.ElementTree as ET
+
+from . import xmp
 
 
 class PrivacyError(ValueError):
@@ -236,7 +237,9 @@ def _iloc(data, content, end, idat, empty_metadata=()):
 
 
 def strip_heif_private(data):
-    """Remove URI metadata items and their bytes, keeping all image item offsets."""
+    """Remove metadata items (EXIF, URI, JUMBF, and MIME items other than XMP)
+    and their bytes, keeping all image item offsets. HEIF orientation lives in
+    irot/imir properties, not EXIF; XMP is reduced by strip_heif_auxiliary."""
     result = bytearray(data)
     top = list(bmff_boxes(data))
     for kind, meta_start, meta_content, meta_end in top:
@@ -261,12 +264,13 @@ def strip_heif_private(data):
             width = 2 if data[b] == 2 else 4
             ident = int.from_bytes(data[b + 4:b + 4 + width], 'big')
             item_type = data[b + 6 + width:b + 10 + width]
-            if item_type == b'uri ':
+            xmp_item = item_type == b'mime' and b'application/rdf+xml\0' in data[b:c]
+            if item_type in (b'uri ', b'Exif', b'jumb') or (item_type == b'mime' and not xmp_item):
                 deleted.add(ident)
             else:
                 kept.append(bytes(data[a:c]))
-                if item_type == b'mime' and b'application/rdf+xml\0' in data[b:c]:
-                    # ExifTool may leave an empty XMP item after deleting it.
+                if xmp_item:
+                    # Other tools may leave an empty XMP item after deleting it.
                     empty_metadata.add(ident)
         if not deleted:
             continue
@@ -500,27 +504,20 @@ def heif_auxiliary_types(data, layout):
     return result
 
 
-def _strip_xmp_toolkit(raw):
-    if not raw.strip(b'\0 \t\r\n'):
-        return raw
-    if len(raw) > 16 * 1024 * 1024 or b'<!DOCTYPE' in raw or b'<!ENTITY' in raw:
+def _hdr_only_xmp(raw):
+    """An XMP item reduced to its recognized HDR fields and padded with spaces
+    to its old length, so no offsets move; None if no field remains."""
+    if len(raw) > 16 * 1024 * 1024:
         raise PrivacyError('Unsupported XMP packet')
     try:
-        root = ET.fromstring(raw.rstrip(b'\0 \t\r\n'))
-    except ET.ParseError as error:
+        packet = xmp.hdr_packet(xmp.hdr_fields(raw))
+    except xmp.XMPError as error:
         raise PrivacyError('Invalid HEIF XMP packet') from error
-    changed = False
-    for node in root.iter():
-        for key in list(node.attrib):
-            if key == '{adobe:ns:meta/}xmptk':
-                del node.attrib[key]
-                changed = True
-    if not changed:
-        return raw
-    clean = ET.tostring(root, encoding='utf-8')
-    if len(clean) > len(raw):
+    if not packet:
+        return None
+    if len(packet) > len(raw):
         raise PrivacyError('XMP cleanup exceeds its allocated data range')
-    return clean + b' ' * (len(raw) - len(clean))
+    return packet + b' ' * (len(raw) - len(packet))
 
 
 def strip_heif_auxiliary(data):
@@ -539,7 +536,16 @@ def strip_heif_auxiliary(data):
         raise PrivacyError('Unsupported HEIF auxiliary image: ' + repr(sorted(unknown)))
     seeds = {ident for ident, kind in auxiliary.items() if kind in HEIF_PRIVATE_AUX}
     seeds.update(origin for kind, origin, _ in refs if kind == b'thmb')
-    seeds.update(i for i, v in items.items() if v['xmp'] and not any(b - a for a, b in layout['extents'][i][1]))
+    # XMP items keep only HDR fields; one left with none is removed entirely. A
+    # packet that cannot be read only matters if its item would be kept.
+    reduced_xmp = {}
+    for ident, item in items.items():
+        if item['xmp']:
+            try:
+                reduced_xmp[ident] = _hdr_only_xmp(b''.join(data[a:b] for a, b in layout['extents'][ident][1]))
+            except PrivacyError as error:
+                reduced_xmp[ident] = error
+    seeds.update(i for i, packet in reduced_xmp.items() if packet is None)
 
     def dependencies(roots):
         found = set(roots)
@@ -579,7 +585,9 @@ def strip_heif_auxiliary(data):
             continue
         spans = layout['extents'][ident][1]
         original = b''.join(data[a:b] for a, b in spans)
-        cleaned = _strip_xmp_toolkit(original)
+        cleaned = reduced_xmp[ident]
+        if isinstance(cleaned, PrivacyError):
+            raise cleaned
         if cleaned != original:
             for a, b in spans:
                 if any(other != ident and a < d and b > c for other in live

@@ -46,3 +46,10 @@
   tables, frame timing, transparency, the loop count and a sanitized ICC profile;
   comments, plain-text overlays, XMP and other application extensions are removed.
   Reserved bits in WebP and GIF headers are cleared.
+- HEIC/HEIF and AVIF are cleaned without ExifTool. EXIF, URI, JUMBF and non-XMP MIME
+  items are removed with their bytes (orientation lives in HEIF's irot/imir); XMP items
+  keep only recognized HDR fields; unknown item types are refused. Top-level boxes
+  other than ftyp, meta, moov and mdat (such as uuid XMP) are emptied in place or
+  dropped from the end; bytes in mdat and idat that no item or sample uses are zeroed.
+  In image sequences, creation/modification times, handler and compressor names, user
+  data and metadata boxes are cleared, and external media references are refused.

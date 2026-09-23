@@ -19,8 +19,7 @@ import tempfile
 
 from . import formats
 from .errors import FormatError, VerificationError
-from .privacy import (sanitize_icc, sanitize_image_profiles, strip_heif_private,
-                      strip_heif_auxiliary)
+from .privacy import sanitize_icc, sanitize_image_profiles
 
 
 FORMATS = {
@@ -356,6 +355,11 @@ def verify_metadata(after):
 
 
 UNKNOWN_TAG = re.compile(r"^Unknown|_0x[0-9a-f]{4}$", re.IGNORECASE)
+# HEIF/AVIF structure that ExifTool lists as unknown boxes: sequence edit lists,
+# codec settings, color, coding constraints, alternative-image groups, item
+# data, and emptied space. formats/heif.py verifies these boxes itself.
+BMFF_STRUCTURE = {"Unknown_" + name for name in ("edts", "av1C", "hvcC", "colr", "ccst", "pasp",
+                                                  "btrt", "free", "altr", "idat")}
 
 
 def cross_check(exiftool, folder, data, kind):
@@ -365,10 +369,18 @@ def cross_check(exiftool, folder, data, kind):
         path = Path(temp) / ("check" + FORMATS[kind][0])
         path.write_bytes(data)
         after = inspect(exiftool, path)
-    unknown = [key for key in after if UNKNOWN_TAG.search(key.split(":")[-1])]
+    unknown = [key for key in after if UNKNOWN_TAG.search(key.split(":")[-1])
+               and not (key.startswith("QuickTime:") and key.split(":")[-1] in BMFF_STRUCTURE)]
     if unknown:
         raise VerificationError("metadata_remains", tags=", ".join(unknown))
     verify_metadata(after)
+
+
+def pillow_decodes(kind):
+    if kind not in formats.PILLOW_DECODES:
+        return False
+    from PIL import features
+    return kind != "AVIF" or features.check("avif")
 
 
 def clean_rebuilt(exiftool, source, data, kind, anonymous):
@@ -376,17 +388,18 @@ def clean_rebuilt(exiftool, source, data, kind, anonymous):
     module = formats.REBUILT[kind]
     rebuilt = module.rebuild(data)
     module.verify(data, rebuilt)
-    try:
-        original_pixels = decoded_snapshot(io.BytesIO(data))
-    except (OSError, SyntaxError, ValueError):
-        # Without a decodable original there is nothing to compare against.
-        raise FormatError("damaged", format=kind)
-    try:
-        rebuilt_pixels = decoded_snapshot(io.BytesIO(rebuilt))
-    except (OSError, SyntaxError, ValueError):
-        raise VerificationError("verification_failed", detail="the result cannot be decoded")
-    if original_pixels != rebuilt_pixels:
-        raise VerificationError("pixels_changed")
+    if pillow_decodes(kind):
+        try:
+            original_pixels = decoded_snapshot(io.BytesIO(data))
+        except (OSError, SyntaxError, ValueError):
+            # Without a decodable original there is nothing to compare against.
+            raise FormatError("damaged", format=kind)
+        try:
+            rebuilt_pixels = decoded_snapshot(io.BytesIO(rebuilt))
+        except (OSError, SyntaxError, ValueError):
+            raise VerificationError("verification_failed", detail="the result cannot be decoded")
+        if original_pixels != rebuilt_pixels:
+            raise VerificationError("pixels_changed")
     if exiftool:
         cross_check(exiftool, source.parent, rebuilt, kind)
     if hashlib.sha256(data).digest() != file_digest(source):
@@ -436,9 +449,7 @@ def verify_profiles(exiftool, before_profiles, target):
 
 def sanitize_private_metadata(exiftool, target, file_type):
     profiles = profile_blocks(exiftool, target)
-    cleaned, count = sanitize_image_profiles(target.read_bytes(), file_type)
-    if file_type in {"HEIC", "AVIF"}:
-        cleaned = strip_heif_auxiliary(strip_heif_private(cleaned))
+    cleaned, _ = sanitize_image_profiles(target.read_bytes(), file_type)
     target.write_bytes(cleaned)
     verify_profiles(exiftool, profiles, target)
 
@@ -451,7 +462,7 @@ def clean(exiftool, argument, anonymous=False):
     kind = formats.identify(data)
     if kind in formats.REBUILT:
         return clean_rebuilt(exiftool, source, data, kind, anonymous)
-    # Formats still cleaned with ExifTool while they are migrated.
+    # TIFF is still cleaned with ExifTool until it gets its own rebuilder.
     before_digest = file_digest(source)
     before = inspect(exiftool, source)
     file_type = image_type(before)
@@ -462,36 +473,16 @@ def clean(exiftool, argument, anonymous=False):
         raise FormatError("damaged", format=file_type)
     suffixes = FORMATS[file_type]
     suffix = source.suffix if source.suffix.lower() in suffixes else suffixes[0]
-    check_frames = file_type in {"GIF", "APNG", "BMP", "TIFF", "AVIF"}
-    original_pixels = decoded_snapshot(source) if check_frames else None
-    original_tiff = tiff_payload_hash(source) if file_type == "TIFF" else None
+    original_pixels = decoded_snapshot(source)
+    original_tiff = tiff_payload_hash(source)
     original_profiles = profile_blocks(exiftool, source)
     with tempfile.TemporaryDirectory(prefix=".magicdispel-", dir=source.parent) as temp:
         staged = Path(temp) / ("clean" + suffixes[0])
         input_path = source
-        if file_type in {"HEIC", "AVIF"}:
-            # The trimmer verifies that retained image byte ranges are unchanged.
-            # Subsequent encoding/profile checks use this trimmed input, since
-            # removed auxiliary image payloads intentionally no longer match.
-            original = source.read_bytes()
-            trimmed = strip_heif_auxiliary(strip_heif_private(original))
-            if trimmed != original:
-                input_path = Path(temp) / ("source" + suffixes[0])
-                input_path.write_bytes(trimmed)
-                before = inspect(exiftool, input_path)
-                original_profiles = profile_blocks(exiftool, input_path)
-        if input_path == source and source.suffix.lower() not in suffixes:
+        if source.suffix.lower() not in suffixes:
             input_path = Path(temp) / ("source" + suffixes[0])
             shutil.copyfile(source, input_path)
-        args = ["-all=", "--ICC_Profile:All", "-Trailer:All=", "-PNG:ModifyDate="]
-        if file_type == "TIFF":
-            args = tiff_delete_args(before)
-        else:
-            args += ["-TagsFromFile", "@", "-ColorSpaceTags", "-IFD0:Orientation"]
-        if file_type == "AVIF" and value_for(before, "MajorBrand") == "avis":
-            for tag in ("CreateDate", "ModifyDate", "TrackCreateDate", "TrackModifyDate", "MediaCreateDate", "MediaModifyDate"):
-                args.append("-QuickTime:" + tag + "=")
-        result = run(exiftool, args + [
+        result = run(exiftool, tiff_delete_args(before) + [
             "-api", "NoWarning=No writable tags", "-o", staged.name, str(input_path),
         ], cwd=temp)
         if result.stderr.strip():
@@ -500,11 +491,11 @@ def clean(exiftool, argument, anonymous=False):
         sanitize_private_metadata(exiftool, staged, file_type)
         verify_profiles(exiftool, original_profiles, staged)
         after = inspect(exiftool, staged)
-        if check_frames and original_pixels != decoded_snapshot(staged):
+        if original_pixels != decoded_snapshot(staged):
             raise CleanError("图片像素、透明度或动画发生变化，未导出结果")
-        if file_type == "TIFF" and original_tiff != tiff_payload_hash(staged):
+        if original_tiff != tiff_payload_hash(staged):
             raise CleanError("TIFF 压缩像素数据发生变化，未导出结果")
-        verify(before, after, pixels_verified=check_frames, encoding_verified=file_type == "TIFF")
+        verify(before, after, pixels_verified=True, encoding_verified=True)
         if before_digest != file_digest(source):
             raise CleanError("处理期间原图被其他程序改动，未导出结果，请重试")
         return publish(staged.read_bytes(), source, suffix, anonymous=anonymous)

@@ -62,13 +62,19 @@ def fixture(items, refs=(), aux=None, associations=None, primary=1, idat=False,
 
 class AuxiliaryPrivacyTests(unittest.TestCase):
     def test_remove_auxiliary_payloads_and_keep_display(self):
+        # XMP keeps only recognized HDR fields: item 7 has none and goes; item 8
+        # keeps its gain-map headroom but loses the private field.
         xmp = b'<x:xmpmeta xmlns:x="adobe:ns:meta/" x:xmptk="SECRET_TOOL"><d xmlns="urn:test">1</d></x:xmpmeta>'
+        hdr_xmp = (b'<x:xmpmeta xmlns:x="adobe:ns:meta/" x:xmptk="SECRET_TOOL"><rdf:RDF '
+                   b'xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description '
+                   b'xmlns:HDRGainMap="http://ns.apple.com/HDRGainMap/1.0/" HDRGainMap:HDRGainMapHeadroom="2.5">'
+                   b'<d xmlns="urn:test">PRIVATE_FIELD</d></rdf:Description></rdf:RDF></x:xmpmeta>')
         items = [(1,b'hvc1',b'PRIMARY_PIXELS',b'PRIVATE_NAME'),
                  (2,b'hvc1',b'DEPTH_PIXELS',b''), (3,b'mime',b'PRIVATE_CALIBRATION',b''),
                  (4,b'hvc1',b'THUMBNAIL_PIXELS',b''), (5,b'hvc1',b'HDR_PIXELS',b''),
-                 (6,b'hvc1',b'ALPHA_PIXELS',b''), (7,b'mime',xmp,b'')]
+                 (6,b'hvc1',b'ALPHA_PIXELS',b''), (7,b'mime',xmp,b''), (8,b'mime',hdr_xmp,b'')]
         refs = [(b'auxl',2,[1]),(b'cdsc',3,[2]),(b'thmb',4,[1]),(b'auxl',5,[1]),
-                (b'auxl',6,[1]),(b'cdsc',7,[5])]
+                (b'auxl',6,[1]),(b'cdsc',7,[5]),(b'cdsc',8,[5])]
         aux = {2:b'urn:mpeg:hevc:2015:auxid:2',5:b'urn:com:apple:photo:2020:aux:hdrgainmap',
                6:b'urn:mpeg:hevc:2015:auxid:1'}
         for use_idat in (False, True):
@@ -78,11 +84,13 @@ class AuxiliaryPrivacyTests(unittest.TestCase):
                 cleaned = strip_heif_auxiliary(original)
                 self.assertEqual(len(cleaned),len(original))
                 self.assertEqual(strip_heif_auxiliary(cleaned),cleaned)
-                self.assertEqual(set(heif_layout(cleaned)['items']),{1,5,6,7})
+                self.assertEqual(set(heif_layout(cleaned)['items']),{1,5,6,8})
                 for marker in [b'DEPTH_PIXELS',b'PRIVATE_CALIBRATION',b'THUMBNAIL_PIXELS',
-                               b'PRIVATE_NAME',b'SECRET_TOOL',b'UNUSED_PRIVATE_PROPERTY']:
+                               b'PRIVATE_NAME',b'SECRET_TOOL',b'UNUSED_PRIVATE_PROPERTY',
+                               b'urn:test',b'PRIVATE_FIELD']:
                     self.assertNotIn(marker,cleaned)
-                for marker in [b'PRIMARY_PIXELS',b'HDR_PIXELS',b'ALPHA_PIXELS']:
+                for marker in [b'PRIMARY_PIXELS',b'HDR_PIXELS',b'ALPHA_PIXELS',
+                               b'HDRGainMap:HDRGainMapHeadroom="2.5"']:
                     self.assertIn(marker,cleaned)
                 self.assertEqual(heif_layout(original)['idat'],heif_layout(cleaned)['idat'])
 

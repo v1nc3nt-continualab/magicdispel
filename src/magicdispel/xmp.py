@@ -16,7 +16,9 @@ PREFIXES = {"x": "adobe:ns:meta/", "rdf": RDF, "hdrgm": ADOBE_GAIN_MAP,
 NUMERIC = {
     ADOBE_GAIN_MAP: {"Version", "GainMapMin", "GainMapMax", "Gamma", "OffsetSDR", "OffsetHDR",
                      "HDRCapacityMin", "HDRCapacityMax", "BaseHeadroom", "AlternateHeadroom"},
-    APPLE_PIXEL_DATA: {"NativeFormat", "StoredFormat"},
+    # Stored and native pixel formats of Apple's gain map, and its value range.
+    APPLE_PIXEL_DATA: {"NativeFormat", "StoredFormat", "IntMinValue", "IntMaxValue",
+                       "FloatMinValue", "FloatMaxValue"},
     APPLE_GAIN_MAP: {"HDRGainMapVersion", "HDRGainMapHeadroom"},
 }
 CHOICES = {
@@ -73,7 +75,7 @@ def hdr_packet(fields):
                 ET.SubElement(sequence, "{%s}li" % RDF).text = item
         else:
             description.set(tag, value)
-    return ET.tostring(root, encoding="utf-8")
+    return ET.tostring(root, encoding="utf-8", xml_declaration=False)
 
 
 def split(name):

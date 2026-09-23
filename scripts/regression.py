@@ -46,9 +46,11 @@ DISPLAY_TAGS = re.compile(
     r"Gamma|WhitePoint[XY]|(Red|Green|Blue)[XY]|ColorSpace|InteropIndex|BackgroundColor|"
     r"ColorPrimaries|TransferCharacteristics|MatrixCoefficients|VideoFullRangeFlag|JFIFVersion)$")
 # Values describing the file's own layout (positions, sizes, which optional parts
-# are present, and so whether ExifTool calls it e.g. "Extended WEBP"), which
-# change whenever other parts are dropped.
-LAYOUT_TAGS = {"MPImageStart", "MPImageLength", "StripOffsets", "TileOffsets", "WebP_Flags", "FileType"}
+# are present, and so whether ExifTool calls it e.g. "Extended WEBP"; emptied
+# free space), which change whenever other parts are dropped or emptied. They
+# may appear, disappear or change without counting as metadata.
+LAYOUT_TAGS = {"MPImageStart", "MPImageLength", "StripOffsets", "TileOffsets", "WebP_Flags", "FileType",
+               "MediaDataOffset", "MediaDataSize", "MediaData", "Free", "Unknown_free"}
 
 
 # ---------------------------------------------------------------- fingerprints
@@ -504,13 +506,14 @@ def check_against_baseline(record, old, identical, expected_changes):
 
 
 def tag_items(tags):
-    """(tag, value) pairs as a multiset. ExifTool numbers duplicates Copy1,
-    Copy2...; removing one renumbers the rest, so the numbers are dropped.
-    Layout tags keep their name but not their value."""
+    """(tag, value) pairs as a multiset, leaving out layout tags. ExifTool
+    numbers duplicates Copy1, Copy2...; removing one renumbers the rest, so the
+    numbers are dropped."""
     items = collections.Counter()
     for key, value in tags.items():
         name = ":".join(part for part in key.split(":") if not part.startswith("Copy"))
-        items[name, None if name.split(":")[-1] in LAYOUT_TAGS else value] += 1
+        if name.split(":")[-1] not in LAYOUT_TAGS:
+            items[name, value] += 1
     return items
 
 

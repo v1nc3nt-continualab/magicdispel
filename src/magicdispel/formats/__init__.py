@@ -8,13 +8,19 @@ Each format module provides:
 Formats not listed in REBUILT still go through the older ExifTool pipeline
 in core.py while they are migrated.
 """
-from . import bmp, gif, jpeg, png, webp
+from . import bmp, gif, heif, jpeg, png, webp
 
-REBUILT = {"PNG": png, "APNG": png, "BMP": bmp, "JPEG": jpeg, "WEBP": webp, "GIF": gif}
+REBUILT = {"PNG": png, "APNG": png, "BMP": bmp, "JPEG": jpeg, "WEBP": webp, "GIF": gif,
+           "HEIC": heif, "AVIF": heif}
+# Formats Pillow decodes, for comparing pixels. For HEIC, heif.verify compares
+# every retained image item byte for byte instead.
+PILLOW_DECODES = {"PNG", "APNG", "BMP", "JPEG", "WEBP", "GIF", "AVIF"}
 
 
 def identify(data):
     """The format name from a file's leading bytes, or None if not rebuilt yet."""
+    if data[4:8] == b"ftyp":
+        return heif.brand_format(data)
     if data.startswith(png.SIGNATURE):
         return "APNG" if png.is_animated(data) else "PNG"
     if data[:3] == b"\xff\xd8\xff":
