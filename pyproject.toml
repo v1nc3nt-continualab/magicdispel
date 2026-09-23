@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=77.0.3"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "magicdispel"
+version = "0.1.0"
+description = "Clean common photo metadata locally while preserving image quality"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{name = "MagicDispel contributors"}]
+keywords = ["exif", "metadata", "photos", "privacy", "cli"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Operating System :: MacOS",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: Multimedia :: Graphics",
+    "Topic :: Utilities",
+]
+dependencies = ["Pillow>=11.3"]
+
+[project.optional-dependencies]
+test = ["Pillow>=11.3"]
+
+[project.scripts]
+magicdispel = "magicdispel.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/v1nc3nt-continualab/magicdispel"
+Issues = "https://github.com/v1nc3nt-continualab/magicdispel/issues"
+Source = "https://github.com/v1nc3nt-continualab/magicdispel"
+
+[tool.setuptools.packages.find]
+where = ["src"]

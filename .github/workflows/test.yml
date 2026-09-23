@@ -1,0 +1,43 @@
+name: Format and privacy checks
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-latest, windows-latest]
+        python: ['3.10', '3.13']
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    env:
+      PYTHONUTF8: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install ExifTool on Linux
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libimage-exiftool-perl
+      - name: Install ExifTool on macOS
+        if: runner.os == 'macOS'
+        run: brew install exiftool
+      - name: Install ExifTool on Windows
+        if: runner.os == 'Windows'
+        run: choco install exiftool --yes --no-progress
+      - name: Install and check command
+        run: |
+          python -m pip install .
+          magicdispel --check
+      - name: Run synthetic format, privacy and filename tests
+        run: python -m unittest discover -s tests -v
