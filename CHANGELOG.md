@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- The package description on PyPI matches the README's summary: "Remove private metadata
+  from photos on your own computer, without changing a single pixel".
+
 ## 0.1.1 (2026-09-24)
 
 - The PyPI page shows the new README: the logo, a demo session, a comparison with
