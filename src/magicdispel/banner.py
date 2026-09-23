@@ -4,7 +4,7 @@ import shutil
 import sys
 
 CREDITS = "Designed by VincentC, Powered by VincentC"
-TAGLINE = "MagicDispel, clear everything!"
+TAGLINE = "MagicDispel, wipe the metadata, keep every pixel!"
 # Letters in the ANSI Shadow style: six rows each, every row the same width.
 LETTERS = {
     "M": ["███╗   ███╗", "████╗ ████║", "██╔████╔██║", "██║╚██╔╝██║", "██║ ╚═╝ ██║", "╚═╝     ╚═╝"],
