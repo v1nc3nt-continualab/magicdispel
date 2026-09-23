@@ -79,9 +79,24 @@ def exif_block(maker_note=None, thumbnail=None):
     return data if data.startswith(b"Exif\0\0") else b"Exif\0\0" + data
 
 
-def mpf(frames, extra_tags=()):
+def iso_metadata(channels=1, common=False, tail=b""):
+    """ISO 21496-1 gain-map metadata, laid out independently of the code under
+    test: versions, flags, then the headrooms and per-channel fractions."""
+    flags = (0x80 if channels == 3 else 0) | 0x40 | (0x08 if common else 0)
+    fractions = 2 + 5 * channels
+    if common:
+        body = struct.pack(">I", 1_000_000) + struct.pack(">%dI" % fractions, *range(fractions))
+    else:
+        body = b"".join(struct.pack(">II", value, 1_000_000) for value in range(fractions))
+    return struct.pack(">HHB", 0, 0, flags) + body + tail
+
+
+def mpf(frames, extra_tags=(), entries=None):
     """An MPF file built independently of the code under test, with the index
-    right after SOI; extra_tags are (tag, bytes) pairs stored after the list."""
+    right after SOI; extra_tags are (tag, bytes) pairs stored after the list.
+    entries are (flags, dependent1, dependent2) for each image; by default a
+    primary image and images of undefined type."""
+    entries = entries or [(0x030000, 0, 0)] + [(0, 0, 0)] * (len(frames) - 1)
     count = 3 + len(extra_tags)
     table_offset = 8 + 2 + 12 * count + 4
     extra_offset = table_offset + 16 * len(frames)
@@ -95,9 +110,9 @@ def mpf(frames, extra_tags=()):
     segment_size = 4 + len(header) + 16 * len(frames) + len(blobs)
     lengths = [len(frames[0]) + segment_size] + [len(frame) for frame in frames[1:]]
     table, position = b"", 0
-    for index, length in enumerate(lengths):
+    for index, ((flags, dependent1, dependent2), length) in enumerate(zip(entries, lengths)):
         offset = 0 if index == 0 else position - 10  # relative to the index's TIFF header
-        table += struct.pack(">IIIHH", 0x030000 if index == 0 else 0, length, offset, 0, 0)
+        table += struct.pack(">IIIHH", flags, length, offset, dependent1, dependent2)
         position += length
     index = b"\xff\xe2" + struct.pack(">H", segment_size - 2) + header + table + blobs
     return frames[0][:2] + index + frames[0][2:] + b"".join(frames[1:])
@@ -185,7 +200,7 @@ class RebuildTests(unittest.TestCase):
 
     def test_color_and_hdr_segments_are_kept(self):
         curve = b"AROT\0\0" + struct.pack(">I", 2) + struct.pack(">2f", 0.5, 1.0) + bytes(8)
-        iso = b"urn:iso:std:iso:ts:21496:-1\0" + bytes(20)
+        iso = b"urn:iso:std:iso:ts:21496:-1\0" + iso_metadata()
         data = with_segments(encode(gradient("CMYK")), app(0xEA, curve), app(0xE2, iso))
         rebuilt = self.assertRebuilt(data)
         kept = [marker for marker, _ in markers(rebuilt) if marker >= 0xE0]
@@ -193,6 +208,19 @@ class RebuildTests(unittest.TestCase):
         with self.assertRaises(FormatError) as caught:
             jpeg.rebuild(with_segments(encode(gradient()), app(0xEA, curve + MARKER)))
         self.assertEqual(caught.exception.key, "unsupported_part")
+
+    def test_iso_gain_map_metadata_is_kept_only_in_its_exact_layout(self):
+        namespace = b"urn:iso:std:iso:ts:21496:-1\0"
+        # The primary image's version fields alone, then metadata of one and of three channels.
+        for metadata in (bytes(4), iso_metadata(), iso_metadata(channels=3, common=True)):
+            with self.subTest(size=len(metadata)):
+                self.assertRebuilt(with_segments(encode(gradient()), app(0xE2, namespace + metadata)))
+        newer = struct.pack(">HH", 0, 1) + iso_metadata()[4:]
+        unknown_flag = iso_metadata()[:4] + bytes([iso_metadata()[4] | 0x01]) + iso_metadata()[5:]
+        for metadata in (iso_metadata(tail=MARKER), iso_metadata()[:-1], newer, unknown_flag, bytes(20)):
+            with self.subTest(size=len(metadata)), self.assertRaises(FormatError) as caught:
+                jpeg.rebuild(with_segments(encode(gradient()), app(0xE2, namespace + metadata)))
+            self.assertEqual(caught.exception.key, "unsupported_part")
 
     def test_unknown_and_damaged_structures_are_refused(self):
         data = encode(gradient())
@@ -241,15 +269,61 @@ class MultiPictureTests(unittest.TestCase):
         with self.assertRaises(VerificationError):
             jpeg.verify(original, rebuilt + MARKER)
 
-    def test_files_written_by_pillow(self):
-        for count in (2, 3):
-            with self.subTest(count=count):
-                original = pillow_mpo(count)
+    def test_previews_are_dropped(self):
+        # A preview of the picture before it was cropped, listed as the primary
+        # image's dependent: the copy is a plain JPEG of the primary image.
+        primary, gain_map = self.frames()
+        preview = encode(gradient(size=(40, 16)))
+        original = mpf([primary, preview], entries=[(0xA0030000, 2, 0), (0x40010001, 0, 0)])
+        rebuilt = jpeg.rebuild(original)
+        jpeg.verify(original, rebuilt)
+        self.assertEqual(jpeg.images(rebuilt, strict=True)[0], [])
+        self.assertNotIn(b"MPF\0", rebuilt)
+        self.assertNotIn(jpeg.coding_hash(preview), [jpeg.coding_hash(frame) for frame in jpeg.images(rebuilt)[1]])
+        self.assertEqual(decoded(rebuilt), decoded(primary))
+        # With a gain map as well, the gain map stays and the links are renumbered.
+        for primary_entry, expected in (((0x80030000, 2, 0), (0x030000, 0, 0)),
+                                        ((0x80030000, 3, 0), (0x80030000, 2, 0))):
+            with self.subTest(primary_entry=primary_entry):
+                original = mpf([primary, preview, gain_map],
+                               entries=[primary_entry, (0x40010002, 0, 0), (0, 0, 0)])
                 rebuilt = jpeg.rebuild(original)
                 jpeg.verify(original, rebuilt)
-                self.assertNotIn(MARKER, rebuilt)
-                self.assertEqual(len(decoded(rebuilt)), count)
-                self.assertEqual(decoded(rebuilt), decoded(original))
+                entries, frames = jpeg.images(rebuilt, strict=True)
+                self.assertEqual(entries, [expected, (0, 0, 0)])
+                self.assertEqual([jpeg.coding_hash(frame) for frame in frames],
+                                 [jpeg.coding_hash(primary), jpeg.coding_hash(gain_map)])
+        # A result that kept the preview fails verification.
+        entries, frames = jpeg.images(original)
+        kept_preview = jpeg.join_mpf(entries, [b"".join(jpeg.expected_segments(frame)) for frame in frames])
+        with self.assertRaises(VerificationError):
+            jpeg.verify(original, kept_preview)
+
+    def test_a_photo_with_a_preview_is_cleaned_end_to_end(self):
+        # Through the whole pipeline, whose pixel check decodes every frame it keeps.
+        primary, gain_map = self.frames()
+        preview = encode(gradient(size=(40, 16)))
+        cases = [([primary, preview], [(0xA0030000, 2, 0), (0x40010001, 0, 0)]),
+                 ([primary, preview, gain_map], [(0x80030000, 2, 0), (0x40010002, 0, 0), (0, 0, 0)])]
+        with tempfile.TemporaryDirectory(prefix="jpeg-") as folder:
+            for index, (frames, entries) in enumerate(cases):
+                with self.subTest(images=len(frames)):
+                    path = Path(folder, "DSC_000%d.JPG" % index)
+                    path.write_bytes(mpf(frames, entries=entries))
+                    output = decoded(core.clean(str(path)).read_bytes())
+                    self.assertEqual(output, decoded(primary) + (decoded(gain_map) if len(frames) == 3 else []))
+
+    def test_other_extra_images_are_refused(self):
+        primary, gain_map = self.frames()
+        second_view = encode(gradient())
+        wide_gain_map = with_segments(encode(gradient("L", (24, 8))),
+                                      app(0xE1, b"http://ns.adobe.com/xap/1.0/\0" + HDR_XMP))
+        for original in (pillow_mpo(2), pillow_mpo(3),  # images of undefined type
+                         mpf([primary, second_view], entries=[(0x020002, 0, 0), (0x020002, 0, 0)]),  # a stereo pair
+                         mpf([primary, wide_gain_map])):  # a "gain map" showing more than the photo
+            with self.subTest(size=len(original)), self.assertRaises(FormatError) as caught:
+                jpeg.rebuild(original)
+            self.assertEqual(caught.exception.key, "unsupported_part")
 
     def test_a_stale_size_for_the_first_image_is_not_relied_on(self):
         # Adding metadata to the first image, ExifTool updates the other images'

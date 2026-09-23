@@ -34,7 +34,9 @@ def clean(argument, exiftool_path=None, naming="plain"):
         # The format's reader could not parse the result back.
         raise VerificationError("verification_failed", detail="the result cannot be read back")
     if pixels.decodes(kind):
-        pixels.compare(data, rebuilt, kind)
+        # A format may drop some frames by design, as JPEG drops previews.
+        kept = getattr(module, "kept_frames", None)
+        pixels.compare(data, rebuilt, kind, kept(data) if kept else None)
     if exiftool_path:
         exiftool.second_opinion(exiftool_path, rebuilt, kind)
     if hashlib.sha256(data).digest() != file_digest(source):

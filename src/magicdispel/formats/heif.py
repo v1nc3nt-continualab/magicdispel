@@ -5,7 +5,8 @@ MIME items other than XMP), editing-only auxiliary images (depth, mattes,
 style maps, linear thumbnails) and thumbnails are removed with their bytes,
 along with any tiles only they use. XMP items keep only HDR fields. Alpha,
 HDR gain maps and everything the primary image needs stay; a file whose
-displayed images need a removed item is refused. Item and handler names are
+displayed images need a removed item is refused, and so is gain-map metadata
+(tmap) in any but its exact standard layout. Item and handler names are
 blanked and ICC profiles sanitized. HEIF orientation lives in irot/imir
 properties, not in EXIF.
 
@@ -18,15 +19,16 @@ unsupported.
 Boxes: top-level boxes other than ftyp, meta, moov and mdat become zero-filled
 `free` boxes, and are dropped entirely at the end of the file; so do boxes in
 meta other than the item tables; bytes in mdat and idat that no remaining item
-or track sample uses are zeroed; in image sequences, creation and modification
-times are cleared, handler and compressor names blanked, and user data,
-metadata and uuid boxes emptied.
+or track sample uses are zeroed. Image sequences keep only the boxes that play
+them (SEQUENCE_BOXES), and only picture tracks and their alpha; the rest is
+emptied, since readers skip boxes they do not know. Their creation and
+modification times are cleared and handler and compressor names blanked.
 
 Media data never moves, so every item and sample offset stays valid.
 """
 import struct
 
-from .. import icc, xmp
+from .. import gainmap, icc, xmp
 from ..errors import FormatError, VerificationError
 from . import bmff
 from .bmff import METADATA_ITEMS, StructureError, unsupported
@@ -37,8 +39,27 @@ REFUSED = {b"moof", b"mfra"}
 # The item tables, and what they refer to: item data, data locations, image groups.
 META_KEPT = {b"hdlr", b"pitm", b"iinf", b"iloc", b"iref", b"iprp", b"idat", b"dinf", b"grpl"}
 EMPTIED = {b"udta", b"meta", b"uuid", b"free", b"skip"}
-CONTAINERS = {b"moov", b"trak", b"edts", b"mdia", b"minf", b"dinf", b"stbl", b"mvex"}
+CONTAINERS = {b"dinf"}  # boxes in meta whose own boxes are cleaned too
 TIMED = {b"mvhd", b"tkhd", b"mdhd"}
+# What an image sequence keeps, by container: headers, tracks and their
+# references and edits, and the sample tables (ISO/IEC 14496-12). Readers skip
+# boxes they do not know, so any other box cannot be needed and is emptied.
+SEQUENCE_BOXES = {
+    b"moov": {b"mvhd", b"trak", b"mvex"},
+    b"mvex": {b"mehd", b"trex"},
+    b"trak": {b"tkhd", b"tref", b"edts", b"mdia"},
+    b"edts": {b"elst"},
+    b"mdia": {b"mdhd", b"hdlr", b"minf"},
+    b"minf": {b"vmhd", b"nmhd", b"dinf", b"stbl"},
+    b"dinf": {b"dref"},
+    b"stbl": {b"stsd", b"stts", b"ctts", b"cslg", b"stsc", b"stsz", b"stz2", b"stco", b"co64", b"stss",
+              b"stsh", b"sdtp", b"sbgp", b"sgpd", b"subs"},
+}
+# Tracks a sequence is shown from: its pictures, and auxiliary tracks such as alpha.
+DISPLAY_HANDLERS = {b"pict", b"vide", b"auxv"}
+# Boxes in a visual sample entry that say how to decode and show its samples.
+ENTRY_BOXES = {b"av1C", b"hvcC", b"avcC", b"lhvC", b"colr", b"pasp", b"clap", b"btrt", b"ccst", b"auxi",
+               b"mdcv", b"clli", b"cclv", b"amve", b"fiel"}
 HANDLER_NAME = 24             # bytes of a handler box before its name
 VISUAL_ENTRIES = {b"av01", b"hvc1", b"hev1", b"avc1", b"avc3"}
 ENTRY_FIELDS = 78             # bytes of a visual sample entry before its child boxes
@@ -129,7 +150,10 @@ def cleaned(data):
             start = children(found)
             for a, b in list(profiles(result, start, found.end)):
                 result[a:b] = icc.sanitize(bytes(result[a:b]))
-            clean_boxes(result, start, found.end)
+            if found.kind == b"meta":
+                clean_boxes(result, start, found.end)
+            else:
+                clean_sequence(result, found)
         elif found.kind not in KEPT:
             empty(result, found)
     for start, end in unused_media(result):
@@ -191,7 +215,22 @@ def check_items(data, layout):
     if any(start < end and not any(a <= start and end <= b for a, b in media)
            for spans in layout.extents.values() for start, end in spans):
         raise unsupported("item data outside mdat and idat")
+    check_tone_maps(data, layout)
     return auxiliary
+
+
+def check_tone_maps(data, layout):
+    """A tone-mapped image (tmap) holds a version byte and ISO 21496-1 gain-map
+    metadata; its data is kept as it is, so it must be exactly that."""
+    for ident, item in layout.items.items():
+        if item.kind == b"tmap":
+            payload = b"".join(data[start:end] for start, end in layout.extents[ident])
+            try:
+                if payload[:1] != b"\0":
+                    raise gainmap.GainMapError("tone map version")
+                gainmap.check(payload[1:], full=True)
+            except gainmap.GainMapError as error:
+                raise unsupported("gain map metadata, %s" % error)
 
 
 def removed_items(layout, seeds):
@@ -434,6 +473,68 @@ def empty(buffer, found):
     buffer[found.content:found.end] = bytes(found.end - found.content)
 
 
+def clean_sequence(buffer, container):
+    """Keep in an image sequence only what SEQUENCE_BOXES lists, and in its
+    sample entries what ENTRY_BOXES lists; empty everything else, and clear
+    times, names and data reference locations."""
+    for found in bmff.boxes(buffer, container.content, container.end):
+        if found.kind not in SEQUENCE_BOXES[container.kind]:
+            empty(buffer, found)
+            continue
+        if found.kind == b"trak" and handler(buffer, found) not in DISPLAY_HANDLERS:
+            raise unsupported("%s track" % handler(buffer, found).decode("latin-1"))
+        if found.kind in SEQUENCE_BOXES:
+            clean_sequence(buffer, found)
+            continue
+        if found.kind == b"stsd":
+            for entry in sample_entries(buffer, found):
+                for child in bmff.boxes(buffer, entry.content + ENTRY_FIELDS, entry.end):
+                    if child.kind not in ENTRY_BOXES:
+                        empty(buffer, child)
+        for a, b in cleared_fields(buffer, found):
+            buffer[a:b] = bytes(b - a)
+
+
+def check_sequence(data, container):
+    """The same, checked on the result on its own."""
+    for found in bmff.boxes(data, container.content, container.end):
+        if found.kind == b"free" and zeroed(data, [(found.content, found.end)]):
+            continue
+        if found.kind not in SEQUENCE_BOXES[container.kind]:
+            fail("sequence box %r kept" % found.kind)
+        if found.kind == b"trak" and handler(data, found) not in DISPLAY_HANDLERS:
+            fail("track other than pictures kept")
+        if not zeroed(data, cleared_fields(data, found)):
+            fail("names or times kept")
+        if found.kind in SEQUENCE_BOXES:
+            check_sequence(data, found)
+        elif found.kind == b"stsd":
+            for entry in sample_entries(data, found):
+                for child in bmff.boxes(data, entry.content + ENTRY_FIELDS, entry.end):
+                    if child.kind not in ENTRY_BOXES and not (child.kind == b"free"
+                                                              and zeroed(data, [(child.content, child.end)])):
+                        fail("sample entry box %r kept" % child.kind)
+
+
+def handler(data, track):
+    """The handler type of a track: pict, vide, auxv, meta..."""
+    for media in bmff.boxes(data, track.content, track.end):
+        if media.kind == b"mdia":
+            for found in bmff.boxes(data, media.content, media.end):
+                if found.kind == b"hdlr" and found.end - found.content >= 12:
+                    return bytes(data[found.content + 8:found.content + 12])
+    raise StructureError("track without a handler")
+
+
+def sample_entries(data, stsd):
+    """A sample description's entries, which must all be visual ones."""
+    entries = list(bmff.boxes(data, stsd.content + 8, stsd.end))
+    for entry in entries:
+        if entry.kind not in VISUAL_ENTRIES or entry.end - entry.content < ENTRY_FIELDS:
+            raise unsupported("sample entry " + listed({entry.kind}))
+    return entries
+
+
 def clean_boxes(buffer, start, end):
     """Empty user data, metadata and uuid boxes, and clear times, names and
     data reference locations, in the boxes from start to end and below."""
@@ -578,9 +679,10 @@ def check(original, rebuilt):
     if not zeroed(rebuilt, unused_media(rebuilt)):
         fail("unused media data kept")
     for found in top:
-        if found.kind in (b"meta", b"moov"):
+        if found.kind == b"meta":
             check_boxes(rebuilt, children(found), found.end)
         if found.kind == b"moov":
+            check_sequence(rebuilt, found)
             # The movie box never moves, so its profiles are matched by position.
             for start, end in profiles(rebuilt, found.content, found.end):
                 if rebuilt[start:end] != icc.sanitize(original[start:end]):
@@ -593,6 +695,7 @@ def check_cleaned_items(original, before, rebuilt, after):
             fail("unexpected item box %r" % child.kind)
     if not set(after.items) <= set(before.items):
         fail("unexpected item")
+    check_tone_maps(rebuilt, after)
     auxiliary = bmff.auxiliary_types(rebuilt, after)
     if set(auxiliary.values()) - DISPLAY_AUXILIARIES or any(kind == b"thmb" for kind, _, _ in after.references):
         fail("editing image or thumbnail kept")

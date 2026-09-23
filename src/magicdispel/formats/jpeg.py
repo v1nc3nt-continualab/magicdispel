@@ -2,25 +2,28 @@
 
 Copied unchanged: quantization and Huffman tables, frame and scan headers with
 their compressed data, restart intervals, Adobe color-transform information,
-and HDR data (ISO 21496-1 gain-map metadata, Apple gain curves and Apple's MPF
-marker). Written afresh: JFIF (density only, no thumbnail), EXIF (orientation,
-resolution, color space, Apple HDR headroom), XMP (recognized HDR fields), the
-ICC profile (sanitized) and the multi-picture (MPF) index, which is how HDR
-gain maps are attached. Everything else is dropped, including comments,
-IPTC/Photoshop blocks, C2PA, thumbnails, maker notes and trailing data.
+and HDR data (ISO 21496-1 gain-map metadata in exactly its standard layout,
+Apple gain curves and Apple's MPF marker). Written afresh: JFIF (density
+only, no thumbnail), EXIF (orientation, resolution, color space, Apple HDR
+headroom), XMP (recognized HDR fields), the ICC profile (sanitized) and the
+multi-picture (MPF) index, which is how HDR gain maps are attached. Of the
+images an MPF index lists, the primary image and its HDR gain maps are kept
+and previews are dropped; any other kind of image is refused. Everything else
+is dropped, including comments, IPTC/Photoshop blocks, C2PA, thumbnails, maker
+notes and trailing data.
 """
 import hashlib
 import struct
 
-from .. import exif, icc, xmp
+from .. import exif, gainmap, icc, xmp
 from ..errors import FormatError, VerificationError
 
 SOI, EOI, SOS, APP0, APP1, APP2, APP10, APP14, COM = 0xD8, 0xD9, 0xDA, 0xE0, 0xE1, 0xE2, 0xEA, 0xEE, 0xFE
 TEM, RESTART, APPLICATION = 0x01, range(0xD0, 0xD8), range(0xE0, 0xF0)
-# Frame headers (SOF0-SOF15 except the table markers), tables, restart interval,
-# number of lines, temporary marker. RST markers are part of the scan data.
-CODING = ({0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7, 0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF}
-          | {0xC4, 0xCC, 0xDB, 0xDD, 0xDC, TEM, SOS})
+# Frame headers (SOF0-SOF15 except the table markers), then tables, restart
+# interval, number of lines, temporary marker. RST markers are part of the scan data.
+FRAME_HEADERS = {0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7, 0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF}
+CODING = FRAME_HEADERS | {0xC4, 0xCC, 0xDB, 0xDD, 0xDC, TEM, SOS}
 MAX_PAYLOAD = 65533  # a segment's 16-bit length also counts its own two bytes
 EXIF_ID, XMP_ID = b"Exif\0\0", b"http://ns.adobe.com/xap/1.0/\0"
 ICC_ID, MPF_ID = b"ICC_PROFILE\0", b"MPF\0"
@@ -33,22 +36,31 @@ MPF_VERSION, IMAGE_COUNT, IMAGE_LIST = 0xB000, 0xB001, 0xB002
 MPF_HEADER = 8
 IMAGE_LIST_AT = MPF_HEADER + 2 + 3 * 12 + 4  # after a directory of those three tags
 MAX_IMAGES = 4090  # the image list, 16 bytes per image, must fit in one segment
-IMAGE_FORMAT = 0x07000000  # bits of an image's flags that must be 0: JPEG
+# An image's flags: dependent parent, dependent child, representative image
+# (the top three bits), data format, and in the low 24 bits its MP type.
+DEPENDENT_PARENT = 0x80000000
+IMAGE_FORMAT = 0x07000000  # bits that must be 0: JPEG
+MP_TYPE = 0x00FFFFFF
+LARGE_THUMBNAILS = {0x010001, 0x010002}  # previews: VGA and full-HD equivalents (CIPA DC-007)
 
 
 def rebuild(data):
-    entries, frames = images(data)
+    entries, frames = displayed(*images(data))
     cleaned = [b"".join(expected_segments(frame)) for frame in frames]
     return join_mpf(entries, cleaned) if entries else cleaned[0]
 
 
 def verify(original, rebuilt):
     """Parse the result on its own: a fresh MPF index linking exactly the
-    original's images, each holding exactly the segments it should."""
-    source_entries, source_frames = images(original)
+    original's primary image and gain maps, and nothing else, each holding
+    exactly the segments it should."""
+    source_entries, source_frames = displayed(*images(original))
     entries, frames = images(rebuilt, strict=True)
     if entries != source_entries or len(frames) != len(source_frames):
         raise VerificationError("verification_failed", detail="JPEG image list differs")
+    if any((flags & MP_TYPE) in LARGE_THUMBNAILS or not is_gain_map(frame)
+           for (flags, _, _), frame in zip(entries[1:], frames[1:])):
+        raise VerificationError("verification_failed", detail="JPEG keeps an image that is not a gain map")
     for source, frame in zip(source_frames, frames):
         found = [frame[start:end] for marker, start, end, payload in segments(frame)
                  if not (marker == APP2 and payload.startswith(MPF_ID))]
@@ -142,8 +154,13 @@ def sanitized_profile_slices(parsed):
 
 
 def is_rendering_segment(marker, payload):
-    """HDR data kept verbatim: ISO 21496-1 gain-map metadata and Apple's gain curve."""
+    """HDR data kept verbatim once its layout checks out: ISO 21496-1 gain-map
+    metadata and Apple's gain curve."""
     if marker == APP2 and payload.startswith(ISO_GAIN_MAP_ID):
+        try:
+            gainmap.check(payload[len(ISO_GAIN_MAP_ID):])
+        except gainmap.GainMapError as error:
+            raise FormatError("unsupported_part", format="JPEG", part="ISO gain map metadata, %s" % error)
         return True
     if marker in (APP2, APP10) and payload.startswith(APPLE_CURVE_ID):
         # The identifier, a point count, 4 bytes per point, then at most 64 zero bytes.
@@ -313,6 +330,77 @@ def split_mpf(data, start, tiff):
 def image_end(data):
     """Where the image at the start of `data` ends: right after its EOI."""
     return next(end for marker, _, end, _ in segments(data) if marker == EOI)
+
+
+def kept_frames(data):
+    """The images of `data` a clean copy keeps, numbered as decoders count them."""
+    return kept_images(*images(data))
+
+
+def kept_images(entries, frames):
+    """The primary image and its HDR gain maps, by index. Previews are dropped,
+    as they may show more than the primary image; any other image, such as a
+    second view, is refused rather than guessed at."""
+    kept = [0]
+    for index in range(1, len(frames)):
+        if (entries[index][0] & MP_TYPE) in LARGE_THUMBNAILS:
+            continue
+        if not is_gain_map(frames[index]):
+            raise FormatError("unsupported_part", format="JPEG", part="an extra image that is not an HDR gain map")
+        if not same_shape(frames[index], frames[0]):
+            raise FormatError("unsupported_part", format="JPEG", part="an HDR gain map of another shape")
+        kept.append(index)
+    return kept
+
+
+def displayed(entries, frames):
+    """The MPF entries and images a clean copy keeps (see kept_images), their
+    dependent-image links renumbered. With no gain map the copy is a plain
+    JPEG: ([], [primary])."""
+    kept = kept_images(entries, frames)
+    if len(kept) == 1:
+        return [], frames[:1]
+    number = {old + 1: new + 1 for new, old in enumerate(kept)}  # entry numbers count from 1
+    result = []
+    for old in kept:
+        flags, *dependents = entries[old]
+        dependents = [number.get(entry, 0) for entry in dependents]
+        result.append((flags if any(dependents) else flags & ~DEPENDENT_PARENT, *dependents))
+    return result, [frames[index] for index in kept]
+
+
+def is_gain_map(frame):
+    """Whether an MPF image is an HDR gain map: Apple's say so in their XMP;
+    Adobe's and Android's (Ultra HDR) carry gain-map XMP or ISO 21496-1 metadata."""
+    for marker, _, _, payload in segments(frame):
+        if (marker == APP2 and payload.startswith(ISO_GAIN_MAP_ID)
+                and len(payload) > len(ISO_GAIN_MAP_ID) + gainmap.VERSIONS):
+            return True
+        if marker == APP1 and payload.startswith(XMP_ID):
+            try:
+                fields = xmp.hdr_fields(payload[len(XMP_ID):])
+            except xmp.XMPError:
+                return False
+            if any(namespace == xmp.ADOBE_GAIN_MAP or name == "AuxiliaryImageType" for namespace, name, _ in fields):
+                return True
+    return False
+
+
+def same_shape(gain_map, primary):
+    """Whether a gain map has the primary image's proportions, to within a
+    pixel: it covers the same picture, at the same or a lower resolution."""
+    (width, height), (primary_width, primary_height) = dimensions(gain_map), dimensions(primary)
+    return (0 < width <= primary_width and 0 < height <= primary_height
+            and abs(width * primary_height - height * primary_width) <= max(primary_width, primary_height))
+
+
+def dimensions(frame):
+    """(width, height) from an image's frame header."""
+    for marker, _, _, payload in segments(frame):
+        if marker in FRAME_HEADERS and len(payload) >= 5:
+            height, width = struct.unpack_from(">HH", payload, 1)
+            return width, height
+    raise damaged()
 
 
 def join_mpf(entries, frames):

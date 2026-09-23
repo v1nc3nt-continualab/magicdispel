@@ -69,6 +69,33 @@ def para_curve(function=3, *parameters):
     return b"para" + bytes(4) + struct.pack(">HH", function, 0) + s15(*parameters)
 
 
+def filler(size):
+    return bytes(n % 251 + 1 for n in range(size))
+
+
+def lut16(inputs=3, outputs=3, grid=2, entries=2):
+    """A lut16Type (mft2) transform, laid out independently of the code under test."""
+    tables = 2 * (entries * inputs + grid ** inputs * outputs + entries * outputs)
+    return (b"mft2" + bytes(4) + bytes([inputs, outputs, grid, 0]) + s15(1, 0, 0, 0, 1, 0, 0, 0, 1)
+            + struct.pack(">HH", entries, entries) + filler(tables))
+
+
+def transform(inputs=3, outputs=3, kind=b"mAB ", gap=b""):
+    """A lutAToBType or lutBToAType transform with all five elements: B curves,
+    a matrix, M curves, a CLUT and A curves. `gap` goes after the B curves."""
+    curve = para_curve(0, 2.2)
+    b_curves, a_curves = (outputs, inputs) if kind == b"mAB " else (inputs, outputs)
+    clut = bytes([2] * inputs + [0] * (16 - inputs)) + bytes([2, 0, 0, 0]) + filler(2 ** inputs * outputs * 2)
+    elements = [curve * b_curves + gap, s15(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0), curve * b_curves, clut,
+                curve * a_curves]
+    offsets, position = [], 32
+    for element in elements:
+        offsets.append(position)
+        position += len(element) + -len(element) % 4
+    body = b"".join(element + bytes(-len(element) % 4) for element in elements)
+    return kind + bytes(4) + bytes([inputs, outputs, 0, 0]) + struct.pack(">5I", *offsets) + body
+
+
 def display_profile(**replaced):
     """Shaped like the profile a macOS screenshot embeds: v2 matrix/TRC colors,
     Apple para curves, and display identity and setup tags that carry MARKER."""
@@ -171,6 +198,8 @@ class SanitizeTests(unittest.TestCase):
             self.assertNotIn(tag, after)
 
     def test_hdr_curve_loses_its_image_identifier_only(self):
+        # Laid out like the gmap tags of iPhone HEIC gain maps: one curve of six
+        # points shared by the three channels, filling the tag from byte 150.
         value = bytearray(230)
         value[:4] = b"gmap"
         struct.pack_into(">6I", value, 12, 230, 98, 106, 106, 106, 0)
@@ -179,12 +208,44 @@ class SanitizeTests(unittest.TestCase):
         value[60:64] = b"A2B0"
         value[98:106] = b"\x01\x00\x08\x0c\0\0\0\0"
         value[106:122] = b"TESTGUID01234567"
+        value[122:150] = s15(*range(7))
+        struct.pack_into(">I", value, 154, 6)
+        value[158:230] = s15(*range(18))
         cleaned = icc.sanitize_adaptive_curve(bytes(value))
         self.assertEqual(cleaned[:106] + cleaned[122:], value[:106] + value[122:])
         self.assertEqual(cleaned[106:122], bytes(16))
-        value[20:24] = b"\0\0\0\1"
-        with self.assertRaises(icc.ProfileError):
-            icc.sanitize_adaptive_curve(bytes(value))
+        # A header field, the count, and a curve that leaves room for more.
+        for offset, replacement in ((20, b"\0\0\0\1"), (154, struct.pack(">I", 5)), (40, struct.pack(">I", 72))):
+            broken = bytearray(value)
+            broken[offset:offset + 4] = replacement
+            with self.subTest(offset=offset), self.assertRaises(icc.ProfileError):
+                icc.sanitize_adaptive_curve(bytes(broken))
+
+    def test_color_tags_hold_nothing_but_their_layout(self):
+        tags = tag_table(SRGB)
+        exact = [tags[b"rTRC"], tags[b"wtpt"], tags[b"chad"], para_curve(), lut16(), lut16(1, 3, 5), transform(),
+                 transform(1, 3), transform(3, 1, b"mBA ")]
+        for value in exact:
+            with self.subTest(kind=value[:4]):
+                icc.check_layout(value)
+                icc.check_layout(value + bytes(3))  # zero padding carries nothing
+        xyz, marker = tags[b"wtpt"], MARKER.encode()
+        grid = bytearray(transform())
+        grid[struct.unpack_from(">I", grid, 24)[0] + 5] = 7  # a grid size for a fourth input
+        for value in (tags[b"rTRC"] + marker, xyz + s15(0.1, 0.2, 0.3), xyz[:4] + b"USER" + xyz[8:],
+                      para_curve()[:10] + b"US" + para_curve()[12:], lut16() + marker,
+                      transform() + b"\0" + marker, transform(gap=marker[:4]), bytes(grid),
+                      b"mpet" + bytes(4) + struct.pack(">HHI", 3, 3, 0)):
+            with self.subTest(value=value[:4]), self.assertRaises(icc.ProfileError):
+                icc.check_layout(value)
+
+    def test_a_profile_with_data_hidden_in_a_curve_is_refused(self):
+        tags = tag_table(SRGB)
+        tags[b"rTRC"] += MARKER.encode()
+        floating = {**tag_table(SRGB), b"D2B0": b"mpet" + bytes(4) + struct.pack(">HHI", 3, 3, 0)}
+        for profile in (bytes(assemble(SRGB, tags)), bytes(assemble(SRGB, floating))):
+            with self.subTest(size=len(profile)), self.assertRaises(icc.ProfileError):
+                icc.sanitize(profile)
 
     def test_malformed_apple_curves_are_refused(self):
         for curve in (para_curve(7), para_curve()[:-4], para_curve(0, 2.2, 1.0),

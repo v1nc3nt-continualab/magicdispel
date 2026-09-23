@@ -12,6 +12,7 @@ from pathlib import Path
 from PIL import Image, ImageCms, PngImagePlugin
 
 from magicdispel import core, exiftool
+from test_jpeg import HDR_XMP, mpf
 
 MARKER = "PRIVATE_MARKER"
 DATE = "2020:01:02 03:04:05"
@@ -63,10 +64,10 @@ def samples():
         ("progressive.JPG", rgb, "JPEG", dict(jpeg, progressive=True)),
         ("gray.jpeg", rgb.convert("L"), "JPEG", jpeg),
         ("cmyk.jpg", rgb.convert("CMYK"), "JPEG", jpeg),
-        # No metadata from Pillow, which puts XMP after the MPF index: ExifTool then
-        # leaves the other images' offsets wrong. ExifTool's own metadata goes before
-        # the index; it updates the offsets and leaves the first image's size stale.
-        ("multi-picture.jpg", rgb, "MPO", {"save_all": True, "append_images": [flipped(rgb)]}),
+        # An HDR photo: a gain map attached through a multi-picture (MPF) index.
+        # ExifTool's metadata goes before the index; it updates the offsets and
+        # leaves the first image's size stale.
+        ("hdr-gain-map.jpg", rgb, "MPF", {}),
         ("rgb.png", rgb, "PNG", png),
         ("alpha.png", rgba, "PNG", png),
         ("palette.png", palette, "PNG", png),
@@ -98,6 +99,17 @@ def samples():
         ("palette.bmp", rgb.quantize(colors=32), "BMP", {}),
         ("wrong-extension.jpg", rgb, "TIFF", {}),
     ]
+
+
+def with_gain_map(image):
+    """A JPEG of `image` and a gain map with its HDR XMP, joined by an MPF index.
+    (Pillow's own MPO writer adds images of undefined kind, which are refused.)"""
+    frames = []
+    for frame, options in ((image, {}), (image.convert("L"), {"xmp": HDR_XMP})):
+        buffer = io.BytesIO()
+        frame.save(buffer, "JPEG", **options)
+        frames.append(buffer.getvalue())
+    return mpf(frames)
 
 
 def add_with_exiftool(path):
@@ -171,7 +183,10 @@ class FormatTests(unittest.TestCase):
             for name, image, kind, options in samples():
                 with self.subTest(name):
                     source = folder / name
-                    image.save(source, kind, **options)
+                    if kind == "MPF":
+                        source.write_bytes(with_gain_map(image))
+                    else:
+                        image.save(source, kind, **options)
                     if SECOND_CHECK and kind not in ("GIF", "BMP") and name != "wrong-extension.jpg":
                         add_with_exiftool(source)
                     original = source.read_bytes()

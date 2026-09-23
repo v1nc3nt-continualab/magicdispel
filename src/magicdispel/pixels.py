@@ -36,12 +36,13 @@ def opened(data, kind):
         raise FormatError("too_large", format=kind, limit=MEGAPIXELS)
 
 
-def compare(original, rebuilt, kind):
-    """Pillow must decode the same frames, timing and transparency from both.
+def compare(original, rebuilt, kind, frames=None):
+    """Pillow must decode the same frames, timing and transparency from both;
+    `frames` lists the original's frames the result keeps, when not all.
     Pillow's decoders fail in many ways (OSError, SyntaxError, RuntimeError and
     more); any failure means the file cannot be checked."""
     try:
-        before = digest(original, kind)
+        before = digest(original, kind, frames)
     except FormatError:
         raise
     except Exception:
@@ -55,15 +56,15 @@ def compare(original, rebuilt, kind):
         raise VerificationError("pixels_changed")
 
 
-def digest(data, kind):
-    """A digest of every displayed frame: its pixels as decoded, their mode and
-    palette, timing, transparency and the repeat count."""
+def digest(data, kind, frames=None):
+    """A digest of every displayed frame, or of the given ones: its pixels as
+    decoded, their mode and palette, timing, transparency and the repeat count."""
     result = hashlib.sha256()
     with opened(data, kind) as picture:
-        frames = getattr(picture, "n_frames", 1)
-        result.update(repr((picture.size, frames, picture.info.get("loop"),
+        frames = range(getattr(picture, "n_frames", 1)) if frames is None else frames
+        result.update(repr((picture.size, len(frames), picture.info.get("loop"),
                             picture.info.get("default_image", False))).encode())
-        for index in range(frames):
+        for index in frames:
             picture.seek(index)
             picture.load()
             result.update(repr((picture.size, picture.mode, picture.info.get("duration", 0),

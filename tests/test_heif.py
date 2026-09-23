@@ -220,25 +220,27 @@ class ItemTests(HeifTests):
         self.assertEqual(heif.item_profiles(rebuilt, bmff.layout(rebuilt), 1), [icc.sanitize(PROFILE)])
 
 
-def sequence(dref_flags=1):
+def sequence(dref_flags=1, handler=b"pict", movie_box=b"", track_box=b"", entry_box=b""):
     """An AVIF sequence of one sample, with times, names, user data and
-    metadata to clear. dref flag 1 means the media is in this file."""
+    metadata to clear. dref flag 1 means the media is in this file. The extra
+    boxes go into the movie, the track and the sample entry."""
     times = struct.pack(">QQ", 3_800_000_000, 3_800_000_001)
     entry = bytes(6) + struct.pack(">H", 1) + bytes(16) + struct.pack(">HH", 8, 8) + bytes(14) \
         + bytes([10]) + b"MD_ENCODER" + bytes(21) + bytes(4)
     ftyp = box(b"ftyp", b"avis\0\0\0\0avisavifmsf1")
 
     def movie(offset):
-        stbl = box(b"stbl", full(b"stsd", 0, struct.pack(">I", 1) + box(b"av01", entry))
+        stbl = box(b"stbl", full(b"stsd", 0, struct.pack(">I", 1) + box(b"av01", entry + entry_box))
                    + full(b"stsc", 0, struct.pack(">IIII", 1, 1, 1, 1)) + full(b"stsz", 0, struct.pack(">II", 16, 1))
                    + full(b"stco", 0, struct.pack(">II", 1, offset)))
         location = box(b"url ", b"\0\0\0" + bytes([dref_flags]) + MARKER)
         dinf = box(b"dinf", full(b"dref", 0, struct.pack(">I", 1) + location))
         mdia = box(b"mdia", full(b"mdhd", 1, times + bytes(12))
-                   + full(b"hdlr", 0, bytes(4) + b"pict" + bytes(12) + MARKER + b"\0") + box(b"minf", dinf + stbl))
-        trak = box(b"trak", full(b"tkhd", 1, times + bytes(72)) + mdia + box(b"udta", box(b"date", MARKER)))
+                   + full(b"hdlr", 0, bytes(4) + handler + bytes(12) + MARKER + b"\0") + box(b"minf", dinf + stbl))
+        trak = box(b"trak", full(b"tkhd", 1, times + bytes(72)) + mdia + box(b"udta", box(b"date", MARKER))
+                   + track_box)
         return box(b"moov", full(b"mvhd", 0, struct.pack(">II", 3_800_000_000, 3_800_000_001) + bytes(88))
-                   + trak + full(b"meta", 0, box(b"ilst", MARKER)))
+                   + movie_box + trak + full(b"meta", 0, box(b"ilst", MARKER)))
 
     offset = len(ftyp) + len(movie(0)) + 8
     return ftyp + movie(offset) + box(b"mdat", b"SAMPLE_PIXELS..." + MARKER)
@@ -255,10 +257,50 @@ class SequenceTests(unittest.TestCase):
         with self.assertRaises(VerificationError):
             heif.verify(data, rebuilt.replace(b"free", b"udta", 1))
 
+    def test_only_boxes_that_play_the_sequence_stay(self):
+        # Private boxes in the movie, the track and the sample entry, of types
+        # no list of metadata boxes could name in advance.
+        data = sequence(movie_box=box(b"prvt", MARKER), track_box=box(b"xtra", MARKER),
+                        entry_box=box(b"av1C", b"\x81\0\0\0") + box(b"prvt", MARKER))
+        rebuilt = heif.rebuild(data)
+        heif.verify(data, rebuilt)
+        self.assertNotIn(MARKER, rebuilt)
+        self.assertIn(b"SAMPLE_PIXELS...", rebuilt)
+        self.assertIn(box(b"av1C", b"\x81\0\0\0"), rebuilt)
+        for kind in (b"prvt", b"xtra"):
+            with self.subTest(kind=kind), self.assertRaises(VerificationError):
+                heif.verify(data, rebuilt.replace(b"free", kind, 1))
+
+    def test_tracks_other_than_pictures_are_refused(self):
+        for handler in (b"meta", b"soun"):
+            with self.subTest(handler=handler), self.assertRaises(FormatError) as caught:
+                heif.rebuild(sequence(handler=handler))
+            self.assertEqual(caught.exception.key, "unsupported_part")
+
     def test_media_stored_elsewhere_is_refused(self):
         with self.assertRaises(FormatError) as caught:
             heif.rebuild(sequence(dref_flags=0))
         self.assertEqual(caught.exception.key, "unsupported_part")
+
+
+class ToneMapTests(HeifTests):
+    """ISO 21496-1 gain-map metadata in a tone-mapped image (tmap) item."""
+    METADATA = struct.pack(">HHB", 0, 0, 0x40) + b"".join(struct.pack(">II", n, 1_000_000) for n in range(7))
+
+    def tone_mapped(self, payload):
+        return heif_file([PRIMARY, (2, b"tmap", payload), (3, b"hvc1", b"GAIN_MAP_PIXELS")],
+                         refs=[(b"dimg", 2, [1, 3])], group=(2, 1))
+
+    def test_metadata_in_its_exact_layout_is_kept(self):
+        rebuilt = self.assertRebuilt(self.tone_mapped(b"\0" + self.METADATA))
+        self.assertIn(b"\0" + self.METADATA, rebuilt)
+
+    def test_anything_else_is_refused(self):
+        newer = struct.pack(">HH", 0, 1) + self.METADATA[4:]
+        for payload in (b"\0" + self.METADATA + MARKER, b"\0" + self.METADATA[:-4], b"\1" + self.METADATA,
+                        b"\0" + newer):
+            with self.subTest(size=len(payload)):
+                self.assertRefused(self.tone_mapped(payload), "unsupported_part")
 
 
 if __name__ == "__main__":
