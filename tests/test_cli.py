@@ -74,6 +74,25 @@ class WithoutExifToolTests(unittest.TestCase):
             self.assertEqual(code, 0)
             self.assertTrue(Path(folder, "photo_clean.jpg").exists())
 
+    def test_an_unexpected_error_fails_only_that_photo(self):
+        with tempfile.TemporaryDirectory(prefix="cli-") as folder:
+            first, second = Path(folder, "first.jpg"), Path(folder, "second.jpg")
+            for photo in (first, second):
+                Image.new("RGB", (8, 8), "blue").save(photo)
+
+            def clean(photo, *arguments, **options):
+                if photo == str(first):
+                    raise RuntimeError("simulated bug")
+                return core.clean(photo, *arguments, **options)
+
+            with patch.object(cli, "clean", side_effect=clean), \
+                    patch("sys.stderr", new_callable=io.StringIO) as errors:
+                code, output = self.run_main(str(first), str(second))
+            self.assertEqual(code, 1)
+            self.assertIn("Unexpected error (RuntimeError: simulated bug)", errors.getvalue())
+            self.assertIn("Done: 1 succeeded, 1 failed.", output)
+            self.assertTrue(Path(folder, "second_clean.jpg").exists())
+
 
 class AnonymousNameTests(unittest.TestCase):
     def test_outputs_get_random_names_that_never_replace_a_file(self):

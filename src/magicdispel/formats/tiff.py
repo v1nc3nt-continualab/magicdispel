@@ -12,15 +12,16 @@ metadata inside JPEG-compressed strips.
 """
 import struct
 
-from ..errors import FormatError, VerificationError
 from .. import icc
+from ..errors import FormatError, VerificationError
+from ..exif import LONG, SHORT, TYPE_SIZES, UNDEFINED
 from . import jpeg
 
-TYPE_SIZES = {1: 1, 2: 1, 3: 2, 4: 4, 5: 8, 6: 1, 7: 1, 8: 2, 9: 4, 10: 8, 11: 4, 12: 8, 13: 4}
-SHORT, LONG = 3, 4
+CLASSIC, BIG = 42, 43  # the version after the byte order; 43 is BigTIFF
 STRIPS, STRIP_COUNTS, TILES, TILE_COUNTS = 273, 279, 324, 325
 COMPRESSION, JPEG_COMPRESSION, OLD_JPEG = 259, 7, 6
-ICC = 34675
+JPEG_TABLES, ICC = 347, 34675
+MAX_PAGES = 10000
 # Tags needed to decode and show a page, copied unchanged (offsets are recomputed).
 KEPT = {
     254, 255,                      # new and old subfile type
@@ -31,7 +32,7 @@ KEPT = {
     301, 317, 318, 319, 320, 321,  # transfer function, predictor, white point, primaries, palette, halftone
     322, 323, 324, 325,            # tile size, offsets and counts
     332, 334, 336, 338, 339, 340, 341, 342,  # inks, dot range, extra samples, sample format and range
-    347,                           # JPEG tables
+    JPEG_TABLES,
     529, 530, 531, 532,            # YCbCr coefficients, subsampling, positioning, reference black/white
     ICC,
 }
@@ -45,7 +46,7 @@ def rebuild(data):
         entries = {tag: value for tag, value in page["tags"].items() if tag in KEPT}
         if ICC in entries:
             try:
-                entries[ICC] = (7, icc.sanitize(entries[ICC][1]))
+                entries[ICC] = (UNDEFINED, icc.sanitize(entries[ICC][1]))
             except icc.ProfileError as error:
                 raise FormatError("unsupported_profile", format="TIFF", detail=str(error))
         offsets = []
@@ -73,7 +74,7 @@ def verify(original, rebuilt):
             fail("TIFF image data differs")
         expected = {tag: value for tag, value in source["tags"].items() if tag in KEPT and tag not in (STRIPS, TILES)}
         if ICC in expected:
-            expected[ICC] = (7, icc.sanitize(expected[ICC][1]))
+            expected[ICC] = (UNDEFINED, icc.sanitize(expected[ICC][1]))
         found = {tag: value for tag, value in page["tags"].items() if tag not in (STRIPS, TILES)}
         if found != expected:
             fail("TIFF tags differ from the original")
@@ -95,13 +96,13 @@ def parse(data):
     if order is None or len(data) < 8:
         raise damaged()
     magic, first = struct.unpack_from(order + "HI", data, 2)
-    if magic == 43:
+    if magic == BIG:
         raise FormatError("unsupported_variant", format="BigTIFF")
-    if magic != 42:
+    if magic != CLASSIC:
         raise damaged()
     pages, seen, offset = [], set(), first
     while offset:
-        if offset in seen or len(pages) > 10000:
+        if offset in seen or len(pages) > MAX_PAGES:
             raise damaged()
         seen.add(offset)
         page, offset = read_directory(data, offset, order)
@@ -145,7 +146,7 @@ def read_directory(data, offset, order):
         if size:
             spans.append((start, start + size))
     if tags.get(COMPRESSION) and integers(tags[COMPRESSION], order) == [JPEG_COMPRESSION]:
-        for block in blocks + ([tags[347][1]] if 347 in tags else []):
+        for block in blocks + ([tags[JPEG_TABLES][1]] if JPEG_TABLES in tags else []):
             check_jpeg_block(block)
     next_offset = unpack(data, order + "I", table_end - 4)[0]
     return {"tags": tags, "blocks": blocks, "spans": spans}, next_offset
@@ -157,7 +158,7 @@ def check_jpeg_block(block):
         return
     for marker, _, _, payload in jpeg.segments(block + (b"" if block.endswith(b"\xff\xd9") else b"\xff\xd9")):
         adobe = marker == jpeg.APP14 and payload.startswith(b"Adobe") and len(payload) == 12
-        if (0xE0 <= marker <= 0xEF or marker == jpeg.COM) and not adobe:
+        if (marker in jpeg.APPLICATION or marker == jpeg.COM) and not adobe:
             raise FormatError("unsupported_part", format="TIFF", part="metadata inside JPEG strips")
 
 

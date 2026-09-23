@@ -65,3 +65,11 @@
   XML boxes) are emptied; image sequences without an item container are accepted; and
   the check before saving also confirms that no editing image, thumbnail or item name
   remains.
+- Photos up to 268 megapixels are checked, including 200-megapixel phone photos; larger
+  ones are refused with a message. Previously anything over 179 megapixels stopped the
+  whole batch with a Python error. The pixel comparison now uses the decoded samples at
+  full precision (16-bit included) and hashes them in strips, never copying a whole frame:
+  a 200-megapixel photo is checked in under a second with about 0.9 GB of memory.
+- A photo that fails unexpectedly is reported as an unexpected error and no longer stops
+  the rest of a batch. A result its own format cannot read back counts as failing
+  verification.

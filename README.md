@@ -128,7 +128,8 @@ Exit codes: `0` success or help, `1` one or more files not cleaned, `2` invalid 
 | RAW, video, PDF | not supported | |
 
 Variants that cannot be rebuilt safely, such as BigTIFF, fragmented image sequences or
-unknown HEIF item types, are refused rather than passed through.
+unknown HEIF item types, are refused rather than passed through. Images up to 268 megapixels
+are checked (enough for 200-megapixel phone photos); larger ones are refused.
 
 ## Development
 

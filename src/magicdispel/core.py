@@ -1,16 +1,13 @@
 """Clean one photo: rebuild it, check the result, and save a copy next to it."""
 import errno
 import hashlib
-import io
 import os
 import secrets
 import subprocess
 import sys
 from pathlib import Path
 
-from PIL import Image, features
-
-from . import exiftool, formats
+from . import exiftool, formats, pixels
 from .errors import FormatError, InputError, VerificationError
 
 
@@ -29,11 +26,15 @@ def clean(argument, exiftool_path=None, anonymous=False):
     kind = formats.identify(data)
     if kind is None:
         raise InputError("unsupported_format")
-    module = formats.REBUILT[kind]
+    module = formats.MODULES[kind]
     rebuilt = module.rebuild(data)
-    module.verify(data, rebuilt)
-    if pillow_decodes(kind):
-        compare_pixels(data, rebuilt, kind)
+    try:
+        module.verify(data, rebuilt)
+    except FormatError:
+        # The format's reader could not parse the result back.
+        raise VerificationError("verification_failed", detail="the result cannot be read back")
+    if pixels.decodes(kind):
+        pixels.compare(data, rebuilt, kind)
     suffixes = formats.SUFFIXES[kind]
     if exiftool_path:
         exiftool.second_opinion(exiftool_path, source.parent, rebuilt, suffixes[0], kind)
@@ -41,44 +42,6 @@ def clean(argument, exiftool_path=None, anonymous=False):
         raise VerificationError("source_changed")
     suffix = source.suffix if source.suffix.lower() in suffixes else suffixes[0]
     return publish(rebuilt, source, suffix, anonymous=anonymous)
-
-
-def pillow_decodes(kind):
-    return kind in formats.PILLOW_DECODES and (kind != "AVIF" or features.check("avif"))
-
-
-def compare_pixels(original, rebuilt, kind):
-    """Pillow must decode the same frames, timing and transparency from both."""
-    try:
-        before = pixels_digest(original)
-    except (OSError, SyntaxError, ValueError):
-        # Without a decodable original there is nothing to compare against.
-        raise FormatError("damaged", format=kind)
-    try:
-        after = pixels_digest(rebuilt)
-    except (OSError, SyntaxError, ValueError):
-        raise VerificationError("verification_failed", detail="the result cannot be decoded")
-    if before != after:
-        raise VerificationError("pixels_changed")
-
-
-def pixels_digest(data):
-    """A digest of every displayed frame with its timing, transparency and repeat count."""
-    digest = hashlib.sha256()
-    with Image.open(io.BytesIO(data)) as picture:
-        frames = getattr(picture, "n_frames", 1)
-        digest.update(repr((picture.size, frames, picture.info.get("loop"),
-                            picture.info.get("default_image", False))).encode())
-        for index in range(frames):
-            picture.seek(index)
-            picture.load()
-            digest.update(repr((picture.size, picture.info.get("duration", 0))).encode())
-            digest.update(picture.convert("RGBA").tobytes())
-            if picture.format == "TIFF":
-                # Converting to RGBA would hide differences in 16-bit and CMYK samples.
-                digest.update(picture.mode.encode())
-                digest.update(picture.tobytes())
-    return digest.digest()
 
 
 def file_digest(path):

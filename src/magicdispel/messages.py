@@ -91,6 +91,8 @@ magicdispel {version}：清除照片里的隐私信息，画质不变
                          "zh": "这个 {format} 文件包含无法安全处理的数据（{part}）。"},
     "unsupported_profile": {"en": "The color profile in this {format} file cannot be cleaned safely ({detail}).",
                             "zh": "这个 {format} 文件的色彩配置无法安全清理（{detail}）。"},
+    "too_large": {"en": "This {format} image is too large to check safely (the limit is {limit} megapixels).",
+                  "zh": "这张 {format} 图片太大，无法安全校验（上限为 {limit} 百万像素）。"},
     "extra_image_data": {"en": "The image data in this {format} file carries extra hidden bytes.",
                          "zh": "这个 {format} 文件的图像数据中夹带了多余的字节。"},
     "verification_failed": {"en": "The cleaned copy did not pass verification ({detail}); nothing was saved.",
@@ -99,6 +101,8 @@ magicdispel {version}：清除照片里的隐私信息，画质不变
                        "zh": "清理后的画面与原图不一致，没有保存。"},
     "metadata_remains": {"en": "Metadata remained after cleaning ({tags}); nothing was saved.",
                          "zh": "清理后仍检测到元数据（{tags}），没有保存。"},
+    "unexpected_error": {"en": "Unexpected error ({detail}); nothing was saved.",
+                         "zh": "发生意外错误（{detail}），没有保存。"},
     "source_changed": {"en": "Another program changed the original while it was being cleaned; "
                              "nothing was saved. Please try again.",
                        "zh": "处理期间原图被其他程序改动，没有保存，请重试。"},

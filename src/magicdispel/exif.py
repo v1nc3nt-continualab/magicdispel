@@ -8,7 +8,8 @@ is treated as absent, as a viewer would.
 import struct
 from dataclasses import dataclass
 
-BYTE, SHORT, LONG, RATIONAL, UNDEFINED, SRATIONAL, IFD = 1, 3, 4, 5, 7, 10, 13
+# TIFF field types, and the size of one value of each.
+BYTE, ASCII, SHORT, LONG, RATIONAL, UNDEFINED, SRATIONAL, IFD = 1, 2, 3, 4, 5, 7, 10, 13
 TYPE_SIZES = {1: 1, 2: 1, 3: 2, 4: 4, 5: 8, 6: 1, 7: 1, 8: 2, 9: 4, 10: 8, 11: 4, 12: 8, 13: 4}
 
 ORIENTATION, X_RESOLUTION, Y_RESOLUTION, RESOLUTION_UNIT = 0x0112, 0x011A, 0x011B, 0x0128
@@ -55,11 +56,12 @@ def apple_hdr_note(note):
     """A new Apple maker note with only the HDR headroom and gain, or None."""
     if not note.startswith(APPLE_NOTE):
         return None
-    reader = _Reader(note, byte_order=note[12:14])
-    count = reader.unpack("H", 14)
+    table = len(APPLE_NOTE) + 2  # after the header and a byte order mark
+    reader = _Reader(note, byte_order=note[len(APPLE_NOTE):table])
+    count = reader.unpack("H", table)
     values = []
     for index in range(count[0] if count else 0):
-        entry = reader.unpack("HHII", 16 + 12 * index)
+        entry = reader.unpack("HHII", table + 2 + 12 * index)
         if entry is None:
             return None
         tag, kind, number, offset = entry
@@ -72,9 +74,9 @@ def apple_hdr_note(note):
         return None
     # Big-endian, entries in tag order, values right after the empty next-IFD link.
     header = APPLE_NOTE + b"MM" + struct.pack(">H", len(values))
-    table = b"".join(struct.pack(">HHII", tag, SRATIONAL, 1, 16 + 12 * len(values) + 4 + 8 * n)
-                     for n, (tag, _) in enumerate(values))
-    return header + table + b"\0" * 4 + b"".join(struct.pack(">ii", *value) for _, value in values)
+    entries = b"".join(struct.pack(">HHII", tag, SRATIONAL, 1, len(header) + 12 * len(values) + 4 + 8 * n)
+                       for n, (tag, _) in enumerate(values))
+    return header + entries + b"\0" * 4 + b"".join(struct.pack(">ii", *value) for _, value in values)
 
 
 def build(fields):
@@ -92,7 +94,7 @@ def build(fields):
     if fields.apple_hdr:
         exif_ifd.append((MAKER_NOTE, UNDEFINED, fields.apple_hdr))
     if fields.interop_index:
-        interop.append((INTEROP_INDEX, 2, fields.interop_index + b"\0"))
+        interop.append((INTEROP_INDEX, ASCII, fields.interop_index + b"\0"))
     if not (ifd0 or exif_ifd or interop):
         return b""
     # Directories are laid out in order: IFD0, Exif IFD, Interop IFD. Pointer
@@ -183,4 +185,4 @@ class _Reader:
         return (numerator, denominator) if numerator and denominator else None
 
     def text(self, entry):
-        return entry[2].rstrip(b"\0") if entry and entry[0] == 2 else None
+        return entry[2].rstrip(b"\0") if entry and entry[0] == ASCII else None

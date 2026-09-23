@@ -3,14 +3,31 @@ import io
 
 from PIL import Image
 
-from ..errors import FormatError, VerificationError
+from .. import pixels
+from ..errors import FormatError
 from . import png
 
 MODES = {"1", "L", "P", "RGB", "RGBA"}
 
 
 def rebuild(data):
-    with Image.open(io.BytesIO(data)) as picture:
+    try:
+        encoded = as_png(data)
+    except FormatError:
+        raise
+    except (OSError, SyntaxError, ValueError):
+        raise FormatError("damaged", format="BMP")
+    return png.rebuild(encoded)
+
+
+def verify(original, rebuilt):
+    """The result must be a clean PNG. Its pixels are compared with the BMP's
+    as for every format Pillow decodes (see pixels.py)."""
+    png.check_structure(rebuilt)
+
+
+def as_png(data):
+    with pixels.opened(data, "BMP") as picture:
         if picture.format != "BMP" or picture.mode not in MODES:
             raise FormatError("unsupported_variant", format="BMP")
         picture.load()
@@ -22,16 +39,4 @@ def rebuild(data):
                    if key in picture.info}
         encoded = io.BytesIO()
         fresh.save(encoded, "PNG", **options)
-    return png.rebuild(encoded.getvalue())
-
-
-def verify(original, rebuilt):
-    png.check_structure(rebuilt)
-    if pixels(original) != pixels(rebuilt):
-        raise VerificationError("verification_failed", detail="PNG pixels differ from the BMP")
-
-
-def pixels(data):
-    with Image.open(io.BytesIO(data)) as picture:
-        palette = picture.getpalette() if picture.mode == "P" else None
-        return picture.mode, picture.size, palette, picture.info.get("transparency"), picture.tobytes()
+    return encoded.getvalue()

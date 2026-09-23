@@ -1,29 +1,24 @@
 """Image formats rebuilt from an allowlist of the parts needed to show them.
 
 Each format module provides:
-    rebuild(data) -> bytes      a new file holding only the allowlisted parts
+    rebuild(data) -> bytes      a new file holding only the allowlisted parts;
+                                raises FormatError if that cannot be done safely
     verify(original, rebuilt)   an independent check of the result; raises
                                 VerificationError if anything is off
-
-Formats not listed in REBUILT still go through the older ExifTool pipeline
-in core.py while they are migrated.
 """
 from . import bmp, gif, heif, jpeg, png, tiff, webp
 
-REBUILT = {"PNG": png, "APNG": png, "BMP": bmp, "JPEG": jpeg, "WEBP": webp, "GIF": gif,
+MODULES = {"PNG": png, "APNG": png, "BMP": bmp, "JPEG": jpeg, "WEBP": webp, "GIF": gif,
            "HEIC": heif, "AVIF": heif, "TIFF": tiff}
 # File name extensions of each format, the first being the default. A source
 # whose extension does not match its content gets the default; BMP becomes PNG.
 SUFFIXES = {"JPEG": (".jpg", ".jpeg", ".jpe"), "PNG": (".png",), "APNG": (".png", ".apng"),
             "HEIC": (".heic", ".heif", ".hif"), "AVIF": (".avif",), "WEBP": (".webp",),
             "GIF": (".gif",), "TIFF": (".tiff", ".tif"), "BMP": (".png",)}
-# Formats Pillow decodes, for comparing pixels. For HEIC, heif.verify compares
-# every retained image item byte for byte instead.
-PILLOW_DECODES = {"PNG", "APNG", "BMP", "JPEG", "WEBP", "GIF", "AVIF", "TIFF"}
 
 
 def identify(data):
-    """The format name from a file's leading bytes, or None if not rebuilt yet."""
+    """The format name from a file's leading bytes, or None for other files."""
     if data[4:8] == b"ftyp":
         return heif.brand_format(data)
     if data.startswith(png.SIGNATURE):

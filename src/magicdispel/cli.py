@@ -5,6 +5,7 @@ import sys
 
 from . import __version__, exiftool
 from .core import clean
+from .errors import LocalizedError
 from .messages import message
 
 
@@ -42,18 +43,26 @@ def main(argv=None):
         for photo in args.photos:
             try:
                 print(message("cleaned", path=clean(photo, second_check, anonymous=args.anonymous)))
-            except (OSError, ValueError) as error:
+            except Exception as error:  # one photo failing never stops the others
                 failures += 1
-                print(message("failed", photo=photo, reason=error), file=sys.stderr)
+                print(message("failed", photo=photo, reason=explained(error)), file=sys.stderr)
         if len(args.photos) > 1:
             print(message("summary", succeeded=len(args.photos) - failures, failed=failures))
         return 1 if failures else 0
-    except (OSError, ValueError) as error:
-        print(message("error", reason=error), file=sys.stderr)
+    except Exception as error:
+        print(message("error", reason=explained(error)), file=sys.stderr)
         return 1
     except KeyboardInterrupt:
         print(message("cancelled"), file=sys.stderr)
         return 130
+
+
+def explained(error):
+    """Our own errors and system errors say what went wrong. Anything else is a
+    bug, or an input no check anticipated; it is reported as unexpected."""
+    if isinstance(error, (LocalizedError, OSError)):
+        return str(error)
+    return message("unexpected_error", detail="%s: %s" % (type(error).__name__, error))
 
 
 def second_check_state(path, found_version, second_check):

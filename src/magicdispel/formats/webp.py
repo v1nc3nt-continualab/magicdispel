@@ -15,6 +15,10 @@ from ..errors import FormatError, VerificationError
 ICC, ALPHA, EXIF, XMP, ANIMATION = 0x20, 0x10, 0x08, 0x04, 0x02
 IMAGE_DATA = {b"VP8 ", b"VP8L", b"ALPH"}
 KEPT = IMAGE_DATA | {b"VP8X", b"ICCP", b"ANIM", b"ANMF", b"EXIF"}
+RIFF_HEADER = 12  # "RIFF", the size of what follows, "WEBP"
+# Payload sizes: VP8X flags and canvas size; ANIM background color and loop
+# count; the header of each ANMF frame, before its image chunks.
+VP8X_SIZE, ANIM_SIZE, FRAME_HEADER = 10, 6, 16
 
 
 def rebuild(data):
@@ -36,14 +40,14 @@ def selected_chunks(data):
     parts = chunks(data)
     if parts[0][0] in (b"VP8 ", b"VP8L"):
         return parts[:1]  # the simple format: one image chunk and nothing else
-    if parts[0][0] != b"VP8X" or len(parts[0][1]) != 10:
+    if parts[0][0] != b"VP8X" or len(parts[0][1]) != VP8X_SIZE:
         raise damaged()
     kept = []
     for kind, payload in parts[1:]:
         if kind in IMAGE_DATA:
             kept.append((kind, payload))
         elif kind == b"ANIM":
-            if len(payload) != 6:  # background color and loop count
+            if len(payload) != ANIM_SIZE:
                 raise damaged()
             kept.append((kind, payload))
         elif kind == b"ANMF":
@@ -73,11 +77,12 @@ def selected_chunks(data):
 
 
 def animation_frame(payload):
-    """An ANMF chunk: a 16-byte frame header, then only the frame's image chunks."""
-    if len(payload) < 16:
+    """An ANMF chunk: the frame header, then only the frame's image chunks."""
+    if len(payload) < FRAME_HEADER:
         raise damaged()
-    header = payload[:15] + bytes([payload[15] & 0x03])  # blending and disposal bits only
-    inner = [(kind, body) for kind, body in walk(payload, 16, len(payload)) if kind in IMAGE_DATA]
+    last = FRAME_HEADER - 1
+    header = payload[:last] + bytes([payload[last] & 0x03])  # blending and disposal bits only
+    inner = [(kind, body) for kind, body in walk(payload, FRAME_HEADER, len(payload)) if kind in IMAGE_DATA]
     if not any(kind in (b"VP8 ", b"VP8L") for kind, _ in inner):
         raise damaged()
     return header + b"".join(chunk(kind, body) for kind, body in inner)
@@ -85,12 +90,12 @@ def animation_frame(payload):
 
 def chunks(data):
     """Top-level (fourcc, payload) pairs inside the RIFF size."""
-    if len(data) < 20 or data[:4] != b"RIFF" or data[8:12] != b"WEBP":
+    if len(data) < RIFF_HEADER + 8 or data[:4] != b"RIFF" or data[8:12] != b"WEBP":
         raise damaged()
-    end = 8 + struct.unpack_from("<I", data, 4)[0]
+    end = 8 + struct.unpack_from("<I", data, 4)[0]  # the size counts from after itself
     if end > len(data):
         raise damaged()
-    parts = list(walk(data, 12, end))
+    parts = list(walk(data, RIFF_HEADER, end))
     if not parts:
         raise damaged()
     return parts

@@ -8,10 +8,13 @@ ANIMEXTS1.0) extension, and the ICC profile is sanitized. Comments, plain-text
 overlays, XMP and other application extensions, and anything after the
 trailer are dropped.
 """
-from ..errors import FormatError, VerificationError
 from .. import icc
+from ..errors import FormatError, VerificationError
 
-TRAILER = b"\x3b"
+IMAGE, EXTENSION, TRAILER = 0x2C, 0x21, b"\x3b"          # block introducers
+GRAPHIC_CONTROL, APPLICATION = 0xF9, 0xFF                  # extension labels
+SCREEN = 13            # signature, version and logical screen descriptor
+IMAGE_DESCRIPTOR = 10  # its last byte holds the local color table flags
 LOOP_APPLICATIONS = {b"NETSCAPE2.0", b"ANIMEXTS1.0"}
 ICC_APPLICATION = b"ICCRGBG1012"
 
@@ -36,11 +39,11 @@ def selected_blocks(data):
     for kind, block in blocks(data):
         if kind in ("header", "image", "trailer"):
             result.append(block)
-        elif kind == 0xF9:  # graphic control: size 4, flags, delay, transparent index
+        elif kind == GRAPHIC_CONTROL:  # size 4, flags, delay, transparent index
             if len(block) != 8 or block[2] != 4:
                 raise damaged()
             result.append(block[:3] + bytes([block[3] & 0x1F]) + block[4:])
-        elif kind == 0xFF:
+        elif kind == APPLICATION:
             result.extend(application_extension(block))
     return result
 
@@ -53,37 +56,38 @@ def application_extension(block):
     application, data = pieces[0], pieces[1:]
     if application in LOOP_APPLICATIONS:
         loops = [piece for piece in data if len(piece) == 3 and piece[0] == 1]
-        return [extension(0xFF, [application, loops[0]])] if loops else []
+        return [extension(APPLICATION, [application, loops[0]])] if loops else []
     if application == ICC_APPLICATION:
         try:
             profile = icc.sanitize(b"".join(data))
         except icc.ProfileError as error:
             raise FormatError("unsupported_profile", format="GIF", detail=str(error))
-        return [extension(0xFF, [application] + [profile[n:n + 255] for n in range(0, len(profile), 255)])]
+        return [extension(APPLICATION, [application] + [profile[n:n + 255] for n in range(0, len(profile), 255)])]
     return []
 
 
 def blocks(data):
     """("header" | "image" | extension label | "trailer", bytes) up to the
     trailer. A file that ends after a complete block gets a trailer."""
-    if data[:6] not in (b"GIF87a", b"GIF89a") or len(data) < 13:
+    if data[:6] not in (b"GIF87a", b"GIF89a") or len(data) < SCREEN:
         raise damaged()
-    position = 13 + color_table_size(data[10])
+    position = SCREEN + color_table_size(data[SCREEN - 3])  # the screen's color table flags
     if position > len(data):
         raise damaged()
     yield "header", data[:position]
     while position < len(data):
         start, introducer = position, data[position]
-        if introducer == 0x3B:
+        if introducer == TRAILER[0]:
             yield "trailer", TRAILER
             return
-        if introducer == 0x2C:
-            if position + 10 > len(data):
+        if introducer == IMAGE:
+            if position + IMAGE_DESCRIPTOR > len(data):
                 raise damaged()
             # Descriptor, local color table, then the LZW code size and data.
-            position = skip_sub_blocks(data, position + 10 + color_table_size(data[position + 9]) + 1)
+            tables = color_table_size(data[position + IMAGE_DESCRIPTOR - 1])
+            position = skip_sub_blocks(data, position + IMAGE_DESCRIPTOR + tables + 1)
             yield "image", data[start:position]
-        elif introducer == 0x21 and position + 2 <= len(data):
+        elif introducer == EXTENSION and position + 2 <= len(data):
             position = skip_sub_blocks(data, position + 2)
             yield data[start + 1], data[start:position]
         else:
@@ -114,7 +118,7 @@ def sub_blocks(block, start):
 
 
 def extension(label, pieces):
-    return b"\x21" + bytes([label]) + b"".join(bytes([len(piece)]) + piece for piece in pieces) + b"\0"
+    return bytes([EXTENSION, label]) + b"".join(bytes([len(piece)]) + piece for piece in pieces) + b"\0"
 
 
 def damaged():
