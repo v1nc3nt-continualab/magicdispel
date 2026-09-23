@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.1 (2026-09-24)
+
+- The PyPI page shows the new README: the logo, a demo session, a comparison with
+  `exiftool -all=` measured on real photos, how cleaning works, and common questions.
+- Python version classifiers for 3.10 to 3.13. The cleaning itself is unchanged.
+
 ## 0.1.0 (2026-09-24)
 
 - Command-line package for macOS, Windows and Linux.

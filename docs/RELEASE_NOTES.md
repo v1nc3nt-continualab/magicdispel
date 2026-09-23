@@ -1,5 +1,5 @@
-MagicDispel 0.1.0 removes private metadata from photos on your computer, without touching
-image quality.
+MagicDispel removes private metadata from photos on your computer, without touching image
+quality.
 
 Install it with one command. On macOS and Linux:
 
