@@ -63,7 +63,7 @@ class TiffTests(unittest.TestCase):
 
     def test_private_and_descriptive_tags_are_dropped(self):
         # Pillow writes these tags into the page itself (it leaves out EXIF and GPS
-        # directories, which test_common_formats adds with ExifTool).
+        # directories, which test_formats adds with ExifTool when it is installed).
         tags = private_exif()
         tags[65000] = MARKER
         data = encode(gradient(), exif=tags, dpi=(300, 300))
