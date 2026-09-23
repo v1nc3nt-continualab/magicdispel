@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "magicdispel"
 version = "0.1.1"
-description = "Clean common photo metadata locally while preserving image quality"
+description = "Remove private metadata from photos on your own computer, without changing a single pixel"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
