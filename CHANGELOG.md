@@ -39,3 +39,10 @@
   IPTC/Photoshop, C2PA, private segments, JFIF and EXIF thumbnails, MPF image IDs and
   trailing data are removed. JPEG DPI is now kept. iPhone HDR JPEGs render identically
   in macOS (SDR, HDR and gain maps).
+- WebP and GIF are rebuilt the same way. WebP keeps its image, alpha and animation
+  chunks, a sanitized ICC profile and the orientation; XMP, unknown chunks (including
+  inside animation frames) and trailing data are removed, and files that no longer
+  need the extended header are written in the simple format. GIF keeps images, color
+  tables, frame timing, transparency, the loop count and a sanitized ICC profile;
+  comments, plain-text overlays, XMP and other application extensions are removed.
+  Reserved bits in WebP and GIF headers are cleared.

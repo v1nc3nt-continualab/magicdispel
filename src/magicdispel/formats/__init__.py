@@ -8,9 +8,9 @@ Each format module provides:
 Formats not listed in REBUILT still go through the older ExifTool pipeline
 in core.py while they are migrated.
 """
-from . import bmp, jpeg, png
+from . import bmp, gif, jpeg, png, webp
 
-REBUILT = {"PNG": png, "APNG": png, "BMP": bmp, "JPEG": jpeg}
+REBUILT = {"PNG": png, "APNG": png, "BMP": bmp, "JPEG": jpeg, "WEBP": webp, "GIF": gif}
 
 
 def identify(data):
@@ -19,6 +19,10 @@ def identify(data):
         return "APNG" if png.is_animated(data) else "PNG"
     if data[:3] == b"\xff\xd8\xff":
         return "JPEG"
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "WEBP"
+    if data[:6] in (b"GIF87a", b"GIF89a"):
+        return "GIF"
     if data[:2] == b"BM":
         return "BMP"
     return None

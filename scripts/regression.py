@@ -45,8 +45,10 @@ DISPLAY_TAGS = re.compile(
     r"^(Orientation|[XY]Resolution|ResolutionUnit|PixelsPerUnit[XY]|PixelUnits|SRGBRendering|"
     r"Gamma|WhitePoint[XY]|(Red|Green|Blue)[XY]|ColorSpace|InteropIndex|BackgroundColor|"
     r"ColorPrimaries|TransferCharacteristics|MatrixCoefficients|VideoFullRangeFlag|JFIFVersion)$")
-# Positions and sizes of parts of the file, which change whenever other parts do.
-LAYOUT_TAGS = {"MPImageStart", "MPImageLength", "StripOffsets", "TileOffsets"}
+# Values describing the file's own layout (positions, sizes, which optional parts
+# are present, and so whether ExifTool calls it e.g. "Extended WEBP"), which
+# change whenever other parts are dropped.
+LAYOUT_TAGS = {"MPImageStart", "MPImageLength", "StripOffsets", "TileOffsets", "WebP_Flags", "FileType"}
 
 
 # ---------------------------------------------------------------- fingerprints
