@@ -12,6 +12,9 @@ from dataclasses import dataclass
 from typing import NamedTuple
 
 XMP_TYPE = b"application/rdf+xml\0"
+# Metadata item types. Programs that delete metadata in place, ExifTool among
+# them, leave such items with no data, so they may be empty.
+METADATA_ITEMS = {b"Exif", b"uri ", b"mime", b"jumb"}
 
 
 class StructureError(ValueError):
@@ -118,8 +121,8 @@ def layout(data):
     idat_box = one(b"idat", optional=True)
     idat = (idat_box.content, idat_box.end) if idat_box else None
     location = one(b"iloc")
-    prefix, width, entries, extents = read_locations(data, location, idat,
-                                                     {ident for ident, item in items.items() if item.xmp})
+    prefix, width, entries, extents = read_locations(
+        data, location, idat, {ident for ident, item in items.items() if item.kind in METADATA_ITEMS})
     if items.keys() != extents.keys():
         raise StructureError("item information and locations differ")
     reference_box = one(b"iref", optional=True)

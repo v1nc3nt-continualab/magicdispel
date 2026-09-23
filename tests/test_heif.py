@@ -139,6 +139,12 @@ class ItemTests(HeifTests):
         self.assertEqual(set(layout.items), {1, 3})
         self.assertIn(HEADROOM, b"".join(rebuilt[a:b] for a, b in layout.extents[3]))
 
+    def test_metadata_items_emptied_by_other_programs_are_removed(self):
+        # ExifTool's -all= leaves the EXIF and XMP items in place with no data.
+        items = [PRIMARY, (2, b"Exif", b""), (3, b"mime", b""), (4, b"uri ", MARKER)]
+        rebuilt = self.assertRebuilt(heif_file(items, refs=[(b"cdsc", ident, [1]) for ident in (2, 3, 4)]))
+        self.assertEqual(set(bmff.layout(rebuilt).items), {1})
+
     def test_editing_images_and_thumbnails_go_and_display_images_stay(self):
         # Item 3 is unreadable, but describes only the depth image and goes with
         # it. XMP item 7 has no HDR fields and goes; item 8 keeps its headroom.

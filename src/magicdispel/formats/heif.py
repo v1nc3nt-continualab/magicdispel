@@ -23,7 +23,7 @@ import struct
 from .. import icc, xmp
 from ..errors import FormatError, VerificationError
 from . import bmff
-from .bmff import StructureError, unsupported
+from .bmff import METADATA_ITEMS, StructureError, unsupported
 
 KEPT = {b"ftyp", b"meta", b"moov", b"mdat"}
 # Fragmented sequences keep samples outside moov; they are not supported.
@@ -42,7 +42,6 @@ PROFILE_CONTAINERS = {b"iprp", b"ipco", b"trak", b"mdia", b"minf", b"stbl"}
 # any other item type is refused rather than guessed at.
 IMAGE_ITEMS = {b"hvc1", b"av01", b"grid", b"iden", b"iovl", b"tmap", b"jpeg", b"avc1", b"hvt1",
                b"unci", b"vvc1", b"j2k1"}
-METADATA_ITEMS = {b"Exif", b"uri ", b"mime", b"jumb"}
 DISPLAY_AUXILIARIES = {
     b"urn:mpeg:hevc:2015:auxid:1",                    # alpha
     b"urn:mpeg:mpegB:cicp:systems:auxiliary:alpha",

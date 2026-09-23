@@ -74,6 +74,9 @@
 - Multi-picture JPEGs (such as iPhone HDR photos) that ExifTool has added metadata to are
   accepted. ExifTool leaves the first image's size in the index as it was; that size is no
   longer relied on, while MagicDispel's own index is still checked exactly.
+- HEIC files that ExifTool's `-all=` has already processed are accepted. ExifTool leaves
+  their EXIF and XMP items in place with no data; such empty metadata items are removed
+  like any other. Previously these files were refused as damaged.
 - A photo that fails unexpectedly is reported as an unexpected error and no longer stops
   the rest of a batch. A result its own format cannot read back counts as failing
   verification.
