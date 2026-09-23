@@ -67,6 +67,26 @@ magicdispel {version}：清除照片里的隐私信息，画质不变
     "bad_arguments": {"en": "Invalid arguments: {detail}\nRun magicdispel --help for usage.",
                       "zh": "参数有误：{detail}\n输入 magicdispel --help 查看用法。"},
     "cancelled": {"en": "\nCancelled.", "zh": "\n已取消。"},
+    # Why a file was not cleaned. Nothing is saved in any of these cases.
+    "damaged": {"en": "This {format} file is damaged or incomplete.",
+                "zh": "这个 {format} 文件已损坏或不完整。"},
+    "unsupported_variant": {"en": "This kind of {format} file is not supported.",
+                            "zh": "暂不支持这种 {format} 文件。"},
+    "unsupported_part": {"en": "This {format} file contains data that cannot be handled safely ({part}).",
+                         "zh": "这个 {format} 文件包含无法安全处理的数据（{part}）。"},
+    "unsupported_profile": {"en": "The color profile in this {format} file cannot be cleaned safely ({detail}).",
+                            "zh": "这个 {format} 文件的色彩配置无法安全清理（{detail}）。"},
+    "extra_image_data": {"en": "The image data in this {format} file carries extra hidden bytes.",
+                         "zh": "这个 {format} 文件的图像数据中夹带了多余的字节。"},
+    "verification_failed": {"en": "The cleaned copy did not pass verification ({detail}); nothing was saved.",
+                            "zh": "清理结果未通过校验（{detail}），没有保存。"},
+    "pixels_changed": {"en": "The cleaned copy would not look identical to the original; nothing was saved.",
+                       "zh": "清理后的画面与原图不一致，没有保存。"},
+    "metadata_remains": {"en": "Metadata remained after cleaning ({tags}); nothing was saved.",
+                         "zh": "清理后仍检测到元数据（{tags}），没有保存。"},
+    "source_changed": {"en": "Another program changed the original while it was being cleaned; "
+                             "nothing was saved. Please try again.",
+                       "zh": "处理期间原图被其他程序改动，没有保存，请重试。"},
 }
 
 

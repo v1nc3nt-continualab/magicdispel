@@ -25,3 +25,10 @@
   or `MAGICDISPEL_LANG`; rewritten help screen.
 - Regression harness (`scripts/regression.py`) for local sample corpora, with macOS
   ImageIO/ColorSync render checks and synthetic leak probes (`scripts/make_probes.py`).
+- PNG, APNG and BMP are rebuilt by MagicDispel itself from an allowlist of the chunks
+  needed for display, instead of asking ExifTool to delete known metadata. Private and
+  unknown chunks, C2PA manifests, text, time stamps and data after the image end are
+  now removed; DPI (`pHYs`) and color chunks (`sRGB`, `gAMA`, `cHRM`, `cICP`) are kept,
+  so Retina screenshots keep their size. Compressed image data must hold exactly the
+  image, with no extra bytes. BMP-to-PNG conversion keeps the DPI. These formats no
+  longer need ExifTool, which still double-checks results when installed.

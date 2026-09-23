@@ -143,7 +143,7 @@ class AnonymousNameTests(unittest.TestCase):
             self.assertEqual(source.read_bytes(),original)
             collision=root/('photo_'+'a'*32+'.jpg');collision.write_bytes(b'KEEP_EXISTING')
             with patch.object(core.secrets,'token_hex',side_effect=['a'*32,'b'*32]):
-                out=core.publish(targets[0],source,'.JPG',anonymous=True)
+                out=core.publish(targets[0].read_bytes(),source,'.JPG',anonymous=True)
             self.assertEqual(out.name,'photo_'+'b'*32+'.jpg')
             self.assertEqual(collision.read_bytes(),b'KEEP_EXISTING')
             self.assertEqual(out.read_bytes(),targets[0].read_bytes())

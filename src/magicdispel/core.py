@@ -5,6 +5,7 @@ import binascii
 from collections import Counter
 import errno
 import hashlib
+import io
 import json
 import math
 import os
@@ -18,6 +19,8 @@ import sys
 import tempfile
 import xml.etree.ElementTree as ET
 
+from . import formats
+from .errors import FormatError, VerificationError
 from .privacy import (sanitize_icc, sanitize_image_profiles, strip_heif_private,
                       strip_heif_auxiliary)
 
@@ -182,23 +185,6 @@ def decoded_snapshot(path):
                 digest.update(picture.mode.encode())
                 digest.update(picture.tobytes())
     return digest.digest()
-
-
-def convert_bmp(source, staged):
-    Image = pillow_image()
-    with Image.open(source) as picture:
-        if picture.format != "BMP" or picture.mode not in {"1", "L", "P", "RGB", "RGBA"}:
-            raise CleanError("暂不支持这种 BMP 编码，原图未改动")
-        picture.load()
-        # Build a new image from pixels so comments/EXIF cannot propagate.
-        fresh = Image.frombytes(picture.mode, picture.size, picture.tobytes())
-        if picture.mode == "P":
-            fresh.putpalette(picture.getpalette())
-        options = {}
-        for key in ("icc_profile", "transparency"):
-            if key in picture.info:
-                options[key] = picture.info[key]
-        fresh.save(staged, "PNG", **options)
 
 
 def tiff_delete_args(before):
@@ -371,7 +357,49 @@ def verify_metadata(after):
         raise CleanError("仍检测到元数据，未导出结果：" + "、".join(remaining))
 
 
-def publish(staged, source, suffix, anonymous=False):
+UNKNOWN_TAG = re.compile(r"^Unknown|_0x[0-9a-f]{4}$", re.IGNORECASE)
+
+
+def cross_check(exiftool, folder, data, kind):
+    """ExifTool's independent reading of a rebuilt file: no warnings, nothing
+    private, and no data it cannot identify."""
+    with tempfile.TemporaryDirectory(prefix=".magicdispel-", dir=folder) as temp:
+        path = Path(temp) / ("check" + FORMATS[kind][0])
+        path.write_bytes(data)
+        after = inspect(exiftool, path)
+    unknown = [key for key in after if UNKNOWN_TAG.search(key.split(":")[-1])]
+    if unknown:
+        raise VerificationError("metadata_remains", tags=", ".join(unknown))
+    verify_metadata(after)
+
+
+def clean_rebuilt(exiftool, source, data, kind, anonymous):
+    """Formats with their own rebuilder: rebuild, confirm three ways, publish."""
+    module = formats.REBUILT[kind]
+    rebuilt = module.rebuild(data)
+    module.verify(data, rebuilt)
+    try:
+        original_pixels = decoded_snapshot(io.BytesIO(data))
+    except (OSError, SyntaxError, ValueError):
+        # Without a decodable original there is nothing to compare against.
+        raise FormatError("damaged", format=kind)
+    try:
+        rebuilt_pixels = decoded_snapshot(io.BytesIO(rebuilt))
+    except (OSError, SyntaxError, ValueError):
+        raise VerificationError("verification_failed", detail="the result cannot be decoded")
+    if original_pixels != rebuilt_pixels:
+        raise VerificationError("pixels_changed")
+    if exiftool:
+        cross_check(exiftool, source.parent, rebuilt, kind)
+    if hashlib.sha256(data).digest() != file_digest(source):
+        raise VerificationError("source_changed")
+    suffixes = FORMATS[kind]
+    suffix = source.suffix if source.suffix.lower() in suffixes else suffixes[0]
+    return publish(rebuilt, source, suffix, anonymous=anonymous)
+
+
+def publish(data, source, suffix, anonymous=False):
+    """Write data next to source under a new name; never overwrite anything."""
     index = 0
     while True:
         tail = "_clean" if index == 0 else "_clean_" + str(index)
@@ -384,8 +412,8 @@ def publish(staged, source, suffix, anonymous=False):
             index += 1
             continue
         try:
-            with output, staged.open("rb") as incoming:
-                shutil.copyfileobj(incoming, output, 1024 * 1024)
+            with output:
+                output.write(data)
             clear_output_attributes(dest)
             return dest
         except BaseException:
@@ -692,6 +720,11 @@ def clean(exiftool, argument, anonymous=False):
     source = Path(os.path.abspath(os.path.expanduser(argument)))
     if not source.is_file():
         raise CleanError("不是可读取的图片文件：" + str(source))
+    data = source.read_bytes()
+    kind = formats.identify(data)
+    if kind in formats.REBUILT:
+        return clean_rebuilt(exiftool, source, data, kind, anonymous)
+    # Formats still cleaned with ExifTool while they are migrated.
     before_digest = file_digest(source)
     before = inspect(exiftool, source)
     file_type = image_type(before)
@@ -718,9 +751,7 @@ def clean(exiftool, argument, anonymous=False):
                 input_path.write_bytes(trimmed)
                 before = inspect(exiftool, input_path)
                 original_profiles = profile_blocks(exiftool, input_path)
-        if file_type == "BMP":
-            convert_bmp(source, staged)
-        elif multi_jpeg:
+        if multi_jpeg:
             clean_mpf(exiftool, source, staged)
         elif file_type == "JPEG":
             if input_path == source and source.suffix.lower() not in suffixes:
@@ -756,4 +787,4 @@ def clean(exiftool, argument, anonymous=False):
         verify(before, after, pixels_verified=check_frames, encoding_verified=file_type == "TIFF")
         if before_digest != file_digest(source):
             raise CleanError("处理期间原图被其他程序改动，未导出结果，请重试")
-        return publish(staged, source, suffix, anonymous=anonymous)
+        return publish(staged.read_bytes(), source, suffix, anonymous=anonymous)

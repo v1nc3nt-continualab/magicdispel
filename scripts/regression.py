@@ -24,6 +24,7 @@ import datetime
 import hashlib
 import json
 import os
+import re
 import shutil
 import struct
 import subprocess
@@ -38,7 +39,12 @@ from magicdispel import core
 
 MARKER = b"SECRET-40.7128N"
 HELPER = Path(__file__).with_name("native_render.swift")
-CACHE_VERSION = 2
+CACHE_VERSION = 3
+# Display fields an output may newly keep, provided the value is the input's own.
+DISPLAY_TAGS = re.compile(
+    r"^(Orientation|[XY]Resolution|ResolutionUnit|PixelsPerUnit[XY]|PixelUnits|SRGBRendering|"
+    r"Gamma|WhitePoint[XY]|(Red|Green|Blue)[XY]|ColorSpace|InteropIndex|BackgroundColor|"
+    r"ColorPrimaries|TransferCharacteristics|MatrixCoefficients|VideoFullRangeFlag)$")
 
 
 # ---------------------------------------------------------------- fingerprints
@@ -323,7 +329,7 @@ def clean_sample(exiftool, corpus, sample, workdir):
     return record
 
 
-def input_fingerprints(corpus, samples, renderer, workers):
+def input_fingerprints(corpus, samples, renderer, exiftool, workers):
     """Inputs never change, so their fingerprints are cached by content hash."""
     cache_path = corpus / ".cache" / "inputs.json"
     try:
@@ -340,11 +346,13 @@ def input_fingerprints(corpus, samples, renderer, workers):
         with concurrent.futures.ThreadPoolExecutor(workers) as pool:
             pillow = dict(zip(missing, pool.map(lambda i: pillow_fingerprint(paths[i]), missing)))
         native = renderer.fingerprints([paths[ident] for ident in missing])
+        tags = exiftool_tags(exiftool, [paths[ident] for ident in missing])
         for ident in missing:
             cache["files"][hashes[ident]] = {
                 "structure": structure(paths[ident]),
                 "pillow": pillow[ident],
                 "native": native.get(str(paths[ident])),
+                "tags": tags.get(str(paths[ident]), {}),
                 "probe": MARKER in paths[ident].read_bytes(),
             }
         cache_path.parent.mkdir(exist_ok=True)
@@ -372,7 +380,7 @@ def run(corpus, workers, keep):
     exiftool = core.find_exiftool()
     core.check_dependency(exiftool)
     renderer = NativeRenderer(corpus / ".cache")
-    inputs = input_fingerprints(corpus, samples, renderer, workers)
+    inputs = input_fingerprints(corpus, samples, renderer, exiftool, workers)
     workdir = Path(tempfile.mkdtemp(prefix="regression-", dir=corpus / ".cache"))
     try:
         with concurrent.futures.ThreadPoolExecutor(workers) as pool:
@@ -467,18 +475,23 @@ def check_against_baseline(record, old, identical, expected_changes):
             notes.append("message changed")
         return problems, notes
     new, previous = record["output"], old["output"]
-    # ExifTool numbers duplicate tags Copy1, Copy2...; removing one renumbers the
-    # rest, so compare how often each tag occurs rather than the numbered names.
-    now, then = tag_counts(new["tags"]), tag_counts(previous["tags"])
-    gained = sorted((now - then).elements())
-    if gained:
-        problems.append("new metadata tags: " + ", ".join(gained))
-    lost = sorted((then - now).elements())
+    now, then, source = tag_items(new["tags"]), tag_items(previous["tags"]), tag_items(record["input"]["tags"])
+    # BMP fields have other names in PNG; the macOS check compares their effect.
+    converted = record["input_suffix"].lower() == ".bmp"
+
+    def kept_display_field(item):
+        return DISPLAY_TAGS.match(item[0].split(":")[-1]) and (converted or source[item])
+
+    gained = now - then
+    restored = sorted(key for key, value in gained.elements() if kept_display_field((key, value)))
+    unexpected = sorted("%s=%s" % item for item in gained.elements() if not kept_display_field(item))
+    if unexpected:
+        problems.append("new or changed metadata: " + ", ".join(unexpected))
+    if restored:
+        notes.append("display fields kept from the input: " + ", ".join(restored))
+    lost = sorted(key for key, _ in (then - now).elements())
     if lost:
-        notes.append("tags removed: " + ", ".join(lost))
-    changed = sorted(k for k in set(new["tags"]) & set(previous["tags"]) if new["tags"][k] != previous["tags"][k])
-    if changed:
-        notes.append("tag values changed: " + ", ".join(changed))
+        notes.append("tags removed or changed: " + ", ".join(lost))
     if new["structure"] != previous["structure"]:
         notes.append("structure: %s -> %s" % (" ".join(previous["structure"]), " ".join(new["structure"])))
     if new["sha256"] != previous["sha256"]:
@@ -486,9 +499,11 @@ def check_against_baseline(record, old, identical, expected_changes):
     return problems, notes
 
 
-def tag_counts(tags):
-    return collections.Counter(":".join(part for part in key.split(":") if not part.startswith("Copy"))
-                               for key in tags)
+def tag_items(tags):
+    """(tag, value) pairs as a multiset. ExifTool numbers duplicates Copy1,
+    Copy2...; removing one renumbers the rest, so the numbers are dropped."""
+    return collections.Counter((":".join(part for part in key.split(":") if not part.startswith("Copy")), value)
+                               for key, value in tags.items())
 
 
 def git_label(repository):
