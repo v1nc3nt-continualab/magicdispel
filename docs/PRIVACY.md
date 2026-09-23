@@ -2,7 +2,8 @@
 
 MagicDispel rebuilds each file from an allowlist: it copies only the parts a viewer needs to
 show the image and leaves everything else behind. It does not search for known metadata to
-delete, so metadata it has never heard of is removed too. It does not promise forensic
+delete, so metadata it has never heard of is removed too, and the parts it keeps must match
+their exact layout, so they cannot carry anything else along. It does not promise forensic
 anonymization.
 
 ## What is kept, and why
@@ -20,7 +21,8 @@ anonymization.
   gain, in a fresh maker note holding nothing else.
 - **HDR.** Gain-map images (JPEG multi-picture files, HEIF auxiliary images and ISO `tmap`
   items), ISO 21496-1 gain-map metadata, Apple gain curves, and recognized numeric gain-map XMP
-  fields.
+  fields. Of the images in a JPEG multi-picture file, only the photo and gain maps with its
+  proportions are kept.
 - **Structure.** Transparency, animation frames, timing and loop count, TIFF pages and page
   numbers, and the format's own headers.
 - **The file name**, with `_clean` added and without the dates, times and timestamps that
@@ -33,11 +35,12 @@ anonymization.
 
 Everything not listed above, including: EXIF capture time, camera, lens, serial numbers,
 location and maker notes; XMP (except gain-map fields); IPTC and Photoshop blocks; comments and
-text chunks; C2PA manifests; embedded thumbnails and previews, which may show an uncropped
-original; HEIF depth maps, lens calibration, portrait and semantic mattes, style maps, Apple
-property lists, item names, and item properties such as descriptions, creation times and camera
-parameters; JPEG MPF image IDs; image-sequence creation times, handler and encoder names
-and user data; TIFF EXIF and GPS directories, descriptions, private tags and sub-images; and
+text chunks; C2PA manifests; embedded thumbnails and previews, including the preview images
+of JPEG multi-picture files, which may show an uncropped original; HEIF depth maps, lens
+calibration, portrait and semantic mattes, style maps, Apple property lists, item names, and
+item properties such as descriptions, creation times and camera parameters; JPEG MPF image
+IDs; in image sequences, every box not needed to play them, and creation times, handler and
+encoder names; TIFF EXIF and GPS directories, descriptions, private tags and sub-images; and
 unknown or private data blocks and data after the end of an image.
 
 Removing auxiliary HEIF images limits later portrait, depth-of-field and photographic-style
@@ -52,7 +55,13 @@ edits. Tested HEIC and HDR JPEG files render identically on macOS in SDR and HDR
   holds exactly the strips or tiles its image needs, uncompressed ones at exactly their size, and
   every kept tag has exactly the number of values the specification gives it. HEIF item
   properties are kept only if they say how to decode and show an image. JPEG multi-picture
-  indexes are written fresh.
+  indexes are written fresh. Every kept ICC color tag, ISO 21496-1 gain-map metadata block and
+  Apple HDR curve must match its type's layout: a byte outside it that is not zero, after a
+  curve, in a reserved field or between the parts of a lookup table, gets the file refused.
+- **Image sequences.** Animated AVIF and HEIF files keep only the boxes on a fixed list:
+  headers, tracks, edits and sample tables, and in each sample entry its decoder
+  configuration and color and display properties. Readers skip boxes they do not know, so
+  any other box, however it is named, is emptied rather than kept.
 - **HEIF in place.** HEIF files are cleaned without moving any image data, so every offset
   stays valid: the item tables are rewritten in the space they had, removed items and boxes are
   zero-filled, bytes that no remaining item or sample uses are zeroed, and boxes at the end of
@@ -60,15 +69,19 @@ edits. Tested HEIC and HDR JPEG files render identically on macOS in SDR and HDR
 - **Fail closed.** Anything that cannot be handled safely is refused, not passed through: an
   unknown critical PNG chunk, an unknown HEIF item type or auxiliary image, a HEIF property of
   unknown meaning that readers may not ignore, an image that depends on a removed layer, image
-  groups other than alternatives (such as the stereo pairs of spatial photos), fragmented image
-  sequences, media stored outside the file, BigTIFF, old-style JPEG in TIFF, metadata inside
-  JPEG-compressed TIFF strips, unrecognized ICC tags. RAW photos built on TIFF (DNG, CR2, NEF and
-  others) are refused too: their TIFF pages hold only a preview.
+  groups other than alternatives (such as the stereo pairs of spatial photos), JPEG
+  multi-picture images other than previews and gain maps (such as stereo pairs), sequence
+  tracks other than pictures and their alpha, fragmented image sequences, media stored outside
+  the file, BigTIFF, old-style JPEG in TIFF, metadata inside JPEG-compressed TIFF strips,
+  unrecognized ICC tags and floating-point ICC transforms, gain-map metadata of an unknown
+  version. RAW photos built on TIFF (DNG, CR2, NEF and others) are refused too: their TIFF
+  pages hold only a preview.
 - **Checked before saving.** The rebuilder parses its own result independently and compares it
   with what the original should yield: for HEIF, for instance, that every retained image item is
   byte-identical, XMP holds only gain-map fields, no editing image, thumbnail or item name
-  remains, profiles are sanitized, and unused bytes are zero; for TIFF, that no byte of the file is unaccounted for. Pillow must then decode identical
-  pixels, frames, timing and transparency (all formats but HEIC). If ExifTool 12.73+ is
+  remains, profiles are sanitized, and unused bytes are zero; for TIFF, that no byte of the
+  file is unaccounted for. Pillow must then decode identical pixels, frames, timing and
+  transparency (all formats but HEIC; for JPEG, of the images kept). If ExifTool 12.73+ is
   installed, it reads the result as a second opinion, and any warning, private field or data it
   cannot identify stops the save. The original's hash is compared before and after, so a file
   changed by another program during cleaning is not published.
@@ -101,7 +114,11 @@ When anonymity matters, share a separate copy and look at what it shows.
 
 On macOS, the unit tests and a local corpus of 60 real and synthetic samples pass: every output
 renders identically in macOS ImageIO/ColorSync (pixels, sRGB and Display P3 renders, SDR, HDR,
-gain maps, orientation and DPI), and 11 synthetic leak probes come out clean. On macOS,
+gain maps, orientation and DPI), and 11 synthetic leak probes come out clean. Files built by an
+independent review to hide data where 0.1.1 did not look (a preview in a multi-picture JPEG,
+bytes after an ICC curve, in ISO gain-map metadata and in an image-sequence box) are cleaned or
+refused since 0.1.2, and 634 ICC profiles from macOS and the corpus sanitize exactly as
+before. On macOS,
 Windows and Linux, CI runs the unit tests with Python 3.10 and 3.13, with and without ExifTool,
 and installs MagicDispel with the install scripts. Windows and Linux are validated by those
 synthetic tests, not by a corpus of real photos.

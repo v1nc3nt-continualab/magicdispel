@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+Fixes from an independent review, which built files that hid data where 0.1.1 did not look.
+Photos as cameras, phones and editors write them were not affected: the 60 test photos
+clean exactly as before.
+
+- JPEG multi-picture files keep only the photo and its HDR gain maps. Previews, which may show
+  more than the cropped photo, are removed; other extra images, such as stereo pairs, are
+  refused. A gain map must have the photo's proportions.
+- ICC color tags must match their type's layout exactly: anything after a curve, in reserved
+  fields or between the parts of a lookup table is refused, as are floating-point transforms
+  (D2Bx/B2Dx), which are not checked byte for byte. Apple's legacy HDR curve is checked the same way.
+- ISO 21496-1 gain-map metadata, in JPEG and in HEIF/AVIF `tmap` items, must have exactly the
+  standard's layout, and version 0.
+- Image sequences (animated AVIF and HEIF) keep only the boxes that play them, from a fixed list.
+  Before, only known metadata boxes were emptied, so an unknown private box stayed unless
+  ExifTool was installed to catch it. Tracks other than pictures and their alpha are refused.
+- The regression harness counts a missing macOS render as a failure, not as a match, and does
+  not reuse incomplete results.
 - The package description on PyPI matches the README's summary: "Remove private metadata
   from photos on your own computer, without changing a single pixel".
 

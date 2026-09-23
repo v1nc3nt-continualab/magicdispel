@@ -43,14 +43,15 @@ copy appears next to each original.
 
 - **It rebuilds instead of deleting.** Most tools delete the metadata they know about.
   MagicDispel writes a new file from only the parts needed to show the image, so metadata it
-  has never heard of is left behind too.
+  has never heard of is left behind too. The parts it keeps must match their exact layout, so
+  nothing can ride along inside them.
 - **Every pixel stays.** Compressed image data is copied byte for byte, never recompressed.
   Color profiles, orientation, DPI, transparency, animation and HDR gain maps are kept, so a
   photo looks exactly the same, in HDR too.
 - **It finds what others miss.** Depth maps and portrait mattes inside iPhone photos,
-  thumbnails that may show the uncropped original, C2PA manifests, data hidden after the end
-  of the image, the dates and times in file names, and the display model and serial number
-  in screenshots' color profiles.
+  thumbnails and previews that may show the uncropped original, C2PA manifests, data hidden
+  after the end of the image, the dates and times in file names, and the display model and
+  serial number in screenshots' color profiles.
 - **It checks before it saves.** Every result is read back on its own and compared with the
   original, frame by frame. ExifTool, if installed, gives an independent second opinion. If
   anything is off, nothing is saved.
@@ -92,15 +93,15 @@ describe every check.
 
 | Format | Kept | Removed |
 | --- | --- | --- |
-| JPEG | image data, JFIF density, orientation, DPI, color space, ICC profile; HDR gain-map images (MPF), Apple HDR headroom and gain-map XMP | other EXIF and XMP, IPTC/Photoshop, comments, C2PA, thumbnails, maker notes, trailing data |
+| JPEG | image data, JFIF density, orientation, DPI, color space, ICC profile; HDR gain-map images (MPF), Apple HDR headroom and gain-map XMP | other EXIF and XMP, IPTC/Photoshop, comments, C2PA, thumbnails and preview images, maker notes, trailing data |
 | PNG, APNG | image data, palette, transparency, color chunks (sRGB, gAMA, cHRM, cICP, HDR), DPI, animation, ICC profile, orientation | text, time stamps, C2PA, private chunks, anything after the end |
 | HEIC, HEIF | image items and tiles, HDR gain maps (Apple and ISO), alpha, orientation, ICC profile, HDR XMP fields | EXIF, other XMP, Apple property lists, depth and calibration, portrait and semantic mattes, style maps, thumbnails, item descriptions and times, unused data |
-| AVIF | as HEIF, including animations; sequence times, names and user data are cleared | as HEIF |
+| AVIF | as HEIF, including animations, which keep only what plays them | as HEIF, plus sequence times, names and user data |
 | WebP | image data, alpha, animation, ICC profile, orientation | other EXIF, XMP, unknown chunks |
 | GIF | images, palettes, frame timing, transparency, loop count, ICC profile | comments, text overlays, XMP, other extensions |
 | TIFF | image data, decoding tags, DPI, orientation, page numbers, ICC profile | EXIF and GPS directories, XMP, IPTC, Photoshop, descriptions, private tags, sub-images |
 | BMP | converted to lossless PNG with the same pixels, DPI and profile | everything else |
-| RAW, video, PDF | not supported; RAW files built on TIFF (DNG, CR2, NEF...) are recognized and refused | |
+| RAW, video, PDF, stereo photos | not supported; RAW files built on TIFF (DNG, CR2, NEF...) and stereo JPEG and HEIC photos are recognized and refused | |
 
 ICC profiles keep their color data. Their date becomes a fixed placeholder (`2000-01-01`),
 their description `Clean`, and device and creator fields are cleared. Images up to 268
