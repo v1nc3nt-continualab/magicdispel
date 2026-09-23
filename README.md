@@ -2,8 +2,6 @@
 
 Remove private metadata from photos on your own computer, without touching image quality.
 
-**Unpublished draft:** the installation instructions below work once the first release is published.
-
 ```console
 magicdispel photo.jpg
 magicdispel "photo one.heic" screenshot.png
@@ -141,9 +139,8 @@ changes outcome or gains metadata. Pure refactors should also pass `--identical`
 `--without-exiftool` checks the path users without ExifTool take.
 
 `.github/workflows/test.yml` runs the tests on macOS, Windows and Linux with Python 3.10 and
-3.13, and the install scripts on all three. `release.yml` publishes a tagged version to PyPI
-once those pass. Neither has run yet: Windows and Linux support remains to be verified before
-release. Local macOS results do not establish support for other systems.
+3.13, with and without ExifTool, and the install scripts on all three. `release.yml` publishes a
+tagged version to PyPI once those pass.
 
 ## License and attribution
 

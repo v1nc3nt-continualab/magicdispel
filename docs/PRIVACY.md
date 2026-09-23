@@ -101,9 +101,10 @@ When anonymity matters, share a separate copy and look at what it shows.
 
 On macOS, the unit tests and a local corpus of 60 real and synthetic samples pass: every output
 renders identically in macOS ImageIO/ColorSync (pixels, sRGB and Display P3 renders, SDR, HDR,
-gain maps, orientation and DPI), and 11 synthetic leak probes come out clean. A CI matrix for
-Windows, Linux and macOS is prepared but has not run; do not treat Windows or Linux as validated
-until it has.
+gain maps, orientation and DPI), and 11 synthetic leak probes come out clean. On macOS,
+Windows and Linux, CI runs the unit tests with Python 3.10 and 3.13, with and without ExifTool,
+and installs MagicDispel with the install scripts. Windows and Linux are validated by those
+synthetic tests, not by a corpus of real photos.
 
 References: [ExifTool FAQ](https://exiftool.org/faq.html#Q32),
 [Apple location metadata guidance](https://support.apple.com/guide/personal-safety/ips0d7a5df82/web).

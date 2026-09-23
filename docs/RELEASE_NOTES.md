@@ -1,5 +1,5 @@
-Unpublished draft: MagicDispel 0.1.0 removes private metadata from photos on your computer,
-without touching image quality.
+MagicDispel 0.1.0 removes private metadata from photos on your computer, without touching
+image quality.
 
 Install it with one command. On macOS and Linux:
 
@@ -29,5 +29,4 @@ checked before it is saved. ExifTool is optional; when installed, it double-chec
 This is not an anonymity tool: what a picture shows can still identify people and places. Read
 the privacy details before sharing sensitive photos.
 
-Release remains paused until Windows and Linux have been tested on those systems. No release
-tag or download exists yet.
+Tested on macOS, Windows and Linux with Python 3.10 and 3.13.

@@ -1,8 +1,8 @@
 # Changelog
 
-## 0.1.0 (unreleased)
+## 0.1.0 (2026-09-24)
 
-- Draft command-line package targeting macOS, Windows and Linux.
+- Command-line package for macOS, Windows and Linux.
 - Local metadata cleaning for JPEG, PNG/APNG, HEIC/HEIF, AVIF, WebP, GIF and TIFF.
 - Lossless BMP-to-PNG conversion and frame/page verification for GIF/APNG/TIFF.
 - Correct handling of lossless and extended WebP format names.
@@ -15,9 +15,9 @@
 - Protect shared image dependencies and reject unsupported auxiliary layouts.
 - Remove HEIF XMP toolkit strings and unused item properties.
 - Add `--anonymous` random output filenames with collision protection.
-- Add synthetic auxiliary-graph and filename tests; prepare, but do not yet execute,
-  the Windows/Linux/macOS CI matrix. The tests need only Pillow; with ExifTool installed
-  they also check each result with it, and CI runs them both ways.
+- Synthetic auxiliary-graph and filename tests, run by CI on macOS, Windows and Linux.
+  The tests need only Pillow; with ExifTool installed they also check each result with it,
+  and CI runs them both ways.
 - Explicit dependency checks and installation documentation.
 - Clean macOS screenshots, whose display profiles carry Apple parametric curves
   (`aarg`/`aagg`/`aabg`, kept) and display identity/setup tags (`dscm`, `mmod`,
