@@ -10,7 +10,7 @@ import tempfile
 import unittest
 
 from magicdispel import core
-from magicdispel.privacy import PrivacyError, sanitize_icc, sanitize_adaptive_curve
+from magicdispel.privacy import PrivacyError, icc_entries, sanitize_icc, sanitize_adaptive_curve
 
 MARKER = 'MD_ICC_USER'
 ET = core.find_exiftool()
@@ -63,6 +63,51 @@ def colors(profile):
     sample = Image.frombytes('RGB', (256, 1), bytes(range(256)) * 3)
     return ImageCms.profileToProfile(sample, ImageCms.ImageCmsProfile(io.BytesIO(profile)),
                                      ImageCms.createProfile('LAB'), outputMode='LAB').tobytes()
+
+
+def s15(*values):
+    return struct.pack('>%di' % len(values), *(round(v * 65536) for v in values))
+
+
+def para_curve(function=3, *parameters):
+    parameters = parameters or (2.4, 1 / 1.055, 0.055 / 1.055, 1 / 12.92, 0.04045)
+    return b'para' + b'\0' * 4 + struct.pack('>HH', function, 0) + s15(*parameters)
+
+
+def display_profile(**replaced):
+    """Shaped like the profile a macOS screenshot embeds: v2 matrix/TRC colors,
+    Apple para curves, and display identity/setup tags that carry MARKER."""
+    marker = MARKER.encode()
+    name = (MARKER + ' Studio Display').encode('utf-16be')
+    gamma = b'curv' + b'\0' * 4 + struct.pack('>IH', 1, round(2.2 * 256))
+    tags = {
+        b'desc': b'desc' + b'\0' * 4 + struct.pack('>I', len(marker) + 1) + marker + b'\0' * 79,
+        b'dscm': b'mluc' + b'\0' * 4 + struct.pack('>II', 1, 12) + b'enUS' + struct.pack('>II', len(name), 28) + name,
+        b'cprt': b'text' + b'\0' * 4 + b'Copyright ' + marker + b'\0',
+        b'wtpt': b'XYZ ' + b'\0' * 4 + s15(0.9642, 1.0, 0.8249),
+        b'rXYZ': b'XYZ ' + b'\0' * 4 + s15(0.5143, 0.2411, -0.0011),
+        b'gXYZ': b'XYZ ' + b'\0' * 4 + s15(0.2922, 0.6929, 0.0418),
+        b'bXYZ': b'XYZ ' + b'\0' * 4 + s15(0.1577, 0.0660, 0.7841),
+        b'rTRC': gamma, b'gTRC': gamma, b'bTRC': gamma,
+        b'aarg': para_curve(), b'aagg': para_curve(), b'aabg': para_curve(),
+        b'vcgt': b'vcgt' + b'\0' * 4 + struct.pack('>I', 1) + s15(*[1.0, 0.0, 1.0] * 3),
+        b'ndin': b'ndin' + b'\0' * 4 + marker.ljust(54, b'\0'),
+        b'mmod': b'mmod' + b'\0' * 4 + marker.ljust(32, b'\0'),
+        b'vcgp': b'vcgp' + b'\0' * 4 + marker.ljust(48, b'\0'),
+    }
+    tags.update((tag.encode(), value) for tag, value in replaced.items())
+    profile = bytearray(128)
+    profile[4:8], profile[8:12], profile[12:24] = b'appl', b'\x02\x10\0\0', b'mntrRGB XYZ '
+    profile[24:36] = struct.pack('>6H', 2026, 9, 15, 12, 7, 6)
+    profile[36:44], profile[48:52], profile[80:84] = b'acspAPPL', b'APPL', b'appl'
+    profile[68:80] = s15(0.9642, 1.0, 0.8249)
+    profile += struct.pack('>I', len(tags)) + b'\0' * (12 * len(tags))
+    for i, (tag, value) in enumerate(tags.items()):
+        offset = len(profile)
+        profile += value + b'\0' * (-len(value) % 4)
+        struct.pack_into('>4sII', profile, 132 + 12 * i, tag, offset, len(value))
+    struct.pack_into('>I', profile, 0, len(profile))
+    return bytes(profile)
 
 
 class ProfilePrivacyTests(unittest.TestCase):
@@ -143,6 +188,33 @@ class ProfilePrivacyTests(unittest.TestCase):
             for a, b in zip(before, after):
                 self.assertEqual(colors(a), colors(b))
                 self.assertNotIn(MARKER.encode('utf-16be'), b)
+
+    def test_display_profile_keeps_curves_and_drops_display_identity(self):
+        profile = display_profile()
+        clean = sanitize_icc(profile)
+        self.assertEqual(colors(profile), colors(clean))
+        self.assertNotIn(MARKER.encode(), clean)
+        self.assertNotIn(MARKER.encode('utf-16be'), clean)
+        before, after = icc_entries(profile), icc_entries(clean)
+        for tag in (b'wtpt', b'rXYZ', b'gXYZ', b'bXYZ', b'rTRC', b'gTRC', b'bTRC', b'aarg', b'aagg', b'aabg'):
+            self.assertEqual(after[tag], before[tag])
+        for tag in (b'dscm', b'mmod', b'ndin', b'vcgt', b'vcgp'):
+            self.assertNotIn(tag, after)
+        # CMM, platform, manufacturer, model and creator are cleared.
+        self.assertEqual(clean[4:8] + clean[40:44] + clean[48:56] + clean[80:84], b'\0' * 20)
+
+    def test_malformed_apple_curves_are_rejected(self):
+        for curve in (para_curve(7), para_curve()[:-4], para_curve(0, 2.2, 1.0),
+                      b'curv' + b'\0' * 4 + struct.pack('>IH', 1, 563)):
+            with self.subTest(curve=curve[:12]), self.assertRaises(PrivacyError):
+                sanitize_icc(display_profile(aarg=curve))
+
+    def test_screenshot_png_with_display_profile(self):
+        with tempfile.TemporaryDirectory(prefix='icc-display-') as tmp:
+            source = Path(tmp) / 'Screenshot 2026-09-23.png'
+            Image.new('RGBA', (32, 24), (40, 120, 200, 255)).save(source, icc_profile=display_profile())
+            output = core.clean(ET, str(source))
+            self.assertEqual(detected_profiles(output), [sanitize_icc(display_profile())])
 
     def test_corrupt_icc_ranges_are_rejected(self):
         broken = bytearray(fixture_profile())

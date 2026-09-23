@@ -11,12 +11,16 @@ class PrivacyError(ValueError):
 
 ICC_DATE = struct.pack('>6H', 2000, 1, 1, 0, 0, 0)
 ICC_MAX_SIZE = 64 * 1024 * 1024
-ICC_TEXT_TAGS = {
+# Tags that describe where a profile came from rather than how to convert
+# colors. They are dropped; desc and cprt are rewritten with neutral text.
+ICC_DROPPED_TAGS = {
+    # Descriptions, device names, calibration dates and dictionaries.
     b'desc', b'cprt', b'dmnd', b'dmdd', b'dscm', b'vued', b'calt', b'targ',
     b'meta', b'pseq', b'psid', b'mmod', b'devs', b'scrd', b'crdi',
-    # Display setup data is not needed for an embedded image's PCS transform.
-    # Keep the actual XYZ/TRC and Apple parametric curves below instead.
-    b'ndin', b'vcgp',
+    # Display setup: native panel data, video-card gamma (per-display
+    # calibration) and its parameters. An embedded image profile is only used
+    # for the PCS transform, which relies on the XYZ/TRC/para tags kept below.
+    b'ndin', b'vcgt', b'vcgp',
 }
 ICC_COLOR_TYPES = {
     b'rXYZ': {b'XYZ '}, b'gXYZ': {b'XYZ '}, b'bXYZ': {b'XYZ '},
@@ -27,7 +31,8 @@ ICC_COLOR_TYPES = {
     b'view': {b'view'}, b'meas': {b'meas'}, b'tech': {b'sig '},
     b'gamt': {b'mft1', b'mft2', b'mAB ', b'mBA '},
     b'rig0': {b'sig '}, b'rig2': {b'sig '}, b'ciis': {b'sig '},
-    b'hdgm': {b'gmap'}, b'vcgt': {b'vcgt'},
+    b'hdgm': {b'gmap'},
+    # Apple's per-channel parametric curves in macOS display profiles.
     b'aarg': {b'para'}, b'aagg': {b'para'}, b'aabg': {b'para'},
 }
 for _n in range(3):
@@ -94,7 +99,7 @@ def icc_color_signature(profile):
     entries = icc_entries(profile)
     kept = {}
     for tag, value in entries.items():
-        if tag in ICC_TEXT_TAGS:
+        if tag in ICC_DROPPED_TAGS:
             continue
         if tag not in ICC_COLOR_TYPES or value[:4] not in ICC_COLOR_TYPES[tag]:
             raise PrivacyError('Unsupported ICC color tag: ' + repr(tag))
