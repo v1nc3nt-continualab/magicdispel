@@ -17,6 +17,8 @@ FORMATS = {"PNG", "APNG", "BMP", "JPEG", "WEBP", "GIF", "AVIF", "TIFF"}
 MEGAPIXELS = 268
 Image.MAX_IMAGE_PIXELS = MEGAPIXELS * 1_000_000 // 2
 warnings.filterwarnings("ignore", category=Image.DecompressionBombWarning)
+# Pillow warns about damaged files it can partly read; the comparison decides.
+warnings.filterwarnings("ignore", category=UserWarning, module=r"PIL\.")
 STRIP = 256  # rows hashed at a time, so no frame is copied whole
 
 
@@ -35,17 +37,19 @@ def opened(data, kind):
 
 
 def compare(original, rebuilt, kind):
-    """Pillow must decode the same frames, timing and transparency from both."""
+    """Pillow must decode the same frames, timing and transparency from both.
+    Pillow's decoders fail in many ways (OSError, SyntaxError, RuntimeError and
+    more); any failure means the file cannot be checked."""
     try:
         before = digest(original, kind)
     except FormatError:
         raise
-    except (OSError, SyntaxError, ValueError):
+    except Exception:
         # Without a decodable original there is nothing to compare against.
-        raise FormatError("damaged", format=kind)
+        raise FormatError("undecodable", format=kind)
     try:
         after = digest(rebuilt, kind)
-    except (OSError, SyntaxError, ValueError):
+    except Exception:
         raise VerificationError("verification_failed", detail="the result cannot be decoded")
     if before != after:
         raise VerificationError("pixels_changed")

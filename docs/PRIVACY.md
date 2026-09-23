@@ -32,7 +32,8 @@ Everything not listed above, including: EXIF capture time, camera, lens, serial 
 location and maker notes; XMP (except gain-map fields); IPTC and Photoshop blocks; comments and
 text chunks; C2PA manifests; embedded thumbnails and previews, which may show an uncropped
 original; HEIF depth maps, lens calibration, portrait and semantic mattes, style maps, Apple
-property lists and item names; JPEG MPF image IDs; image-sequence creation times, handler and encoder names
+property lists, item names, and item properties such as descriptions, creation times and camera
+parameters; JPEG MPF image IDs; image-sequence creation times, handler and encoder names
 and user data; TIFF EXIF and GPS directories, descriptions, private tags and sub-images; and
 unknown or private data blocks and data after the end of an image.
 
@@ -44,15 +45,22 @@ edits. Tested HEIC and HDR JPEG files render identically on macOS in SDR and HDR
 - **Rebuild, not delete.** Each format has its own rebuilder (`src/magicdispel/formats/`). Parts
   with a fixed size must have exactly that size, so they cannot carry extra bytes. PNG image data
   must inflate to exactly the scanlines the header describes, with nothing after the compressed
-  stream. JPEG multi-picture indexes are written fresh.
+  stream, and its palette and transparency hold exactly what the color type allows. A TIFF page
+  holds exactly the strips or tiles its image needs, uncompressed ones at exactly their size, and
+  every kept tag has exactly the number of values the specification gives it. HEIF item
+  properties are kept only if they say how to decode and show an image. JPEG multi-picture
+  indexes are written fresh.
 - **HEIF in place.** HEIF files are cleaned without moving any image data, so every offset
   stays valid: the item tables are rewritten in the space they had, removed items and boxes are
   zero-filled, bytes that no remaining item or sample uses are zeroed, and boxes at the end of
   the file are dropped. This is why HEIC files do not shrink much.
 - **Fail closed.** Anything that cannot be handled safely is refused, not passed through: an
-  unknown critical PNG chunk, an unknown HEIF item type or auxiliary image, an image that depends
-  on a removed layer, fragmented image sequences, media stored outside the file, BigTIFF,
-  old-style JPEG in TIFF, metadata inside JPEG-compressed TIFF strips, unrecognized ICC tags.
+  unknown critical PNG chunk, an unknown HEIF item type or auxiliary image, a HEIF property of
+  unknown meaning that readers may not ignore, an image that depends on a removed layer, image
+  groups other than alternatives (such as the stereo pairs of spatial photos), fragmented image
+  sequences, media stored outside the file, BigTIFF, old-style JPEG in TIFF, metadata inside
+  JPEG-compressed TIFF strips, unrecognized ICC tags. RAW photos built on TIFF (DNG, CR2, NEF and
+  others) are refused too: their TIFF pages hold only a preview.
 - **Checked before saving.** The rebuilder parses its own result independently and compares it
   with what the original should yield: for HEIF, for instance, that every retained image item is
   byte-identical, XMP holds only gain-map fields, no editing image, thumbnail or item name

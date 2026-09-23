@@ -63,7 +63,8 @@ class Layout:
     reference_box: Box        # iref, or None
     props: dict               # {index: Box}, numbered from 1
     associations: dict        # {id: [property indices]}
-    association_boxes: list   # [(ipma Box, [(id, serialized entry)])]
+    essential: dict           # {id: {indices of the properties a reader must understand}}
+    association_boxes: list   # [(ipma Box, [ids in order])]
     prop_box: Box             # iprp, or None
 
 
@@ -128,9 +129,11 @@ def layout(data):
     reference_box = one(b"iref", optional=True)
     references = read_references(data, reference_box, items) if reference_box else []
     prop_box = one(b"iprp", optional=True)
-    props, associations, association_boxes = read_properties(data, prop_box, items) if prop_box else ({}, {}, [])
+    props, associations, essential, association_boxes = (read_properties(data, prop_box, items) if prop_box
+                                                         else ({}, {}, {}, []))
     return Layout(top, meta, children, info, count_size, location, prefix, width, items, entries, extents,
-                  primary, idat, references, reference_box, props, associations, association_boxes, prop_box)
+                  primary, idat, references, reference_box, props, associations, essential, association_boxes,
+                  prop_box)
 
 
 def auxiliary_types(data, found):
@@ -271,14 +274,14 @@ def read_references(data, iref, items):
 
 
 def read_properties(data, iprp, items):
-    """Properties {index: Box}, associations {id: [indices]} and the ipma
-    entries as serialized, from iprp."""
+    """Properties {index: Box}, associations {id: [indices]}, the essential
+    ones {id: {indices}}, and the items of each ipma box, from iprp."""
     parts = list(boxes(data, iprp.content, iprp.end))
     containers = [part for part in parts if part.kind == b"ipco"]
     if len(containers) != 1 or any(part.kind not in (b"ipco", b"ipma", b"free") for part in parts):
         raise unsupported("item property container")
     props = dict(enumerate(boxes(data, containers[0].content, containers[0].end), 1))
-    associations, association_boxes = {}, []
+    associations, essential, association_boxes = {}, {}, []
     for part in parts:
         if part.kind != b"ipma":
             continue
@@ -287,9 +290,8 @@ def read_properties(data, iprp, items):
             raise unsupported("item property association version")
         # Version 1 has 4-byte item IDs; flag 1 makes each property index 2 bytes.
         id_width, index_width = (2 if data[content] == 0 else 4), (2 if data[content + 3] & 1 else 1)
-        p, entries = content + 8, []
+        p, idents = content + 8, []
         for _ in range(int.from_bytes(data[content + 4:content + 8], "big")):
-            begin = p
             if p + id_width + 1 > end:
                 raise StructureError("truncated item property association")
             ident = int.from_bytes(data[p:p + id_width], "big")
@@ -298,14 +300,15 @@ def read_properties(data, iprp, items):
             if ident not in items or p + count * index_width > end or ident in associations:
                 raise StructureError("invalid item property association")
             # The top bit of each index marks the property as essential.
-            values = [int.from_bytes(data[q:q + index_width], "big") & ((1 << (index_width * 8 - 1)) - 1)
-                      for q in range(p, p + count * index_width, index_width)]
-            if any(value and value not in props for value in values):
+            flag = 1 << (index_width * 8 - 1)
+            values = [int.from_bytes(data[q:q + index_width], "big") for q in range(p, p + count * index_width, index_width)]
+            if any(value & ~flag and value & ~flag not in props for value in values):
                 raise StructureError("missing item property")
             p += count * index_width
-            associations[ident] = values
-            entries.append((ident, bytes(data[begin:p])))
+            associations[ident] = [value & ~flag for value in values]
+            essential[ident] = {value & ~flag for value in values if value & flag}
+            idents.append(ident)
         if p != end:
             raise StructureError("unexpected item property association data")
-        association_boxes.append((part, entries))
-    return props, associations, association_boxes
+        association_boxes.append((part, idents))
+    return props, associations, essential, association_boxes

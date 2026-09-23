@@ -118,7 +118,7 @@ ExifTool 装在不常见的位置时，可以把 `MAGICDISPEL_EXIFTOOL` 设为�
 | GIF | 图像、调色板、帧时序、透明度、循环次数、ICC 配置 | 注释、文字叠加层、XMP、其他扩展 |
 | TIFF | 图像数据、解码所需标签、DPI、方向、页码、ICC 配置 | EXIF 和 GPS 目录、XMP、IPTC、Photoshop 数据、描述文字、私有标签、子图 |
 | BMP | 无损转为 PNG，像素、DPI 和色彩配置不变 | 其余全部 |
-| RAW、视频、PDF | 不支持 | |
+| RAW、视频、PDF | 不支持；基于 TIFF 的 RAW（DNG、CR2、NEF 等）会被识别并拒绝 | |
 
 无法安全重建的特殊变体会被拒绝，而不是原样放行，例如 BigTIFF、分片的图像序列、未知类型的 HEIF 条目。
 最大可处理 2.68 亿像素的图片（足够容纳 2 亿像素手机拍的照片），更大的会被拒绝。

@@ -8,9 +8,15 @@ sanitized ICC profile. Everything else is dropped: EXIF and GPS directories,
 XMP, IPTC and Photoshop blocks, descriptive text, private tags, sub-images such
 as thumbnails, and free space. The byte order is kept, since 16-bit samples are
 stored in it. BigTIFF and old-style JPEG compression are refused, and so is
-metadata inside JPEG-compressed strips.
+metadata inside JPEG-compressed strips. So are RAW photos built on TIFF (DNG,
+CR2, NEF...): their first page is only a preview.
+
+Nothing kept may carry extra bytes: every kept tag holds exactly the number of
+values the specification gives it, a page holds exactly the strips or tiles
+its image needs, and uncompressed ones have exactly their size.
 """
 import struct
+from math import ceil
 
 from .. import icc
 from ..errors import FormatError, VerificationError
@@ -18,10 +24,19 @@ from ..exif import LONG, SHORT, TYPE_SIZES, UNDEFINED
 from . import jpeg
 
 CLASSIC, BIG = 42, 43  # the version after the byte order; 43 is BigTIFF
+NEW_SUBFILE_TYPE, WIDTH, HEIGHT, BITS, COMPRESSION, PHOTOMETRIC = 254, 256, 257, 258, 259, 262
+SAMPLES, ROWS_PER_STRIP, PLANAR, TILE_WIDTH, TILE_LENGTH = 277, 278, 284, 322, 323
 STRIPS, STRIP_COUNTS, TILES, TILE_COUNTS = 273, 279, 324, 325
-COMPRESSION, JPEG_COMPRESSION, OLD_JPEG = 259, 7, 6
+UNCOMPRESSED, OLD_JPEG, JPEG_COMPRESSION, YCBCR = 1, 6, 7, 6
 JPEG_TABLES, ICC = 347, 34675
+SUB_IFDS, DNG_VERSION = 330, 50706
 MAX_PAGES = 10000
+# The number of values of kept tags: fixed, or one per sample (one value
+# alone also stands for every sample).
+COUNTS = {254: 1, 255: 1, 256: 1, 257: 1, 259: 1, 262: 1, 263: 1, 266: 1, 274: 1, 277: 1, 278: 1,
+          282: 1, 283: 1, 284: 1, 290: 1, 292: 1, 293: 1, 296: 1, 297: 2, 317: 1, 318: 2, 319: 6,
+          321: 2, 322: 1, 323: 1, 332: 1, 334: 1, 342: 6, 529: 3, 530: 2, 531: 1, 532: 6}
+PER_SAMPLE = {258, 280, 281, 339, 340, 341}
 # Tags needed to decode and show a page, copied unchanged (offsets are recomputed).
 KEPT = {
     254, 255,                      # new and old subfile type
@@ -39,6 +54,8 @@ KEPT = {
 
 
 def rebuild(data):
+    if data[8:10] == b"CR":  # Canon CR2 marks itself right after the TIFF header
+        raise FormatError("raw_photo")
     order, pages = parse(data)
     output = bytearray((b"II*\0" if order == "<" else b"MM\0*") + b"\0" * 4)
     link = 4  # where the offset of the next page's directory goes
@@ -130,8 +147,12 @@ def read_directory(data, offset, order):
         tags[tag] = (kind, data[start:start + size])
         if size > 4:
             spans.append((start, start + size))
-    if tags.get(COMPRESSION) and integers(tags[COMPRESSION], order) == [OLD_JPEG]:
+    # A DNG, or a preview page whose full image sits in a sub-IFD, is a RAW photo.
+    if DNG_VERSION in tags or (SUB_IFDS in tags and value(tags, NEW_SUBFILE_TYPE, 0, order) & 1):
+        raise FormatError("raw_photo")
+    if value(tags, COMPRESSION, UNCOMPRESSED, order) == OLD_JPEG:
         raise FormatError("unsupported_variant", format="TIFF (old-style JPEG)")
+    check_counts(tags, order)
     offsets_tag, counts_tag = (TILES, TILE_COUNTS) if TILES in tags else (STRIPS, STRIP_COUNTS)
     if offsets_tag not in tags or counts_tag not in tags:
         raise damaged()
@@ -145,11 +166,60 @@ def read_directory(data, offset, order):
         blocks.append(data[start:start + size])
         if size:
             spans.append((start, start + size))
-    if tags.get(COMPRESSION) and integers(tags[COMPRESSION], order) == [JPEG_COMPRESSION]:
+    check_layout(tags, blocks, order)
+    if value(tags, COMPRESSION, UNCOMPRESSED, order) == JPEG_COMPRESSION:
         for block in blocks + ([tags[JPEG_TABLES][1]] if JPEG_TABLES in tags else []):
             check_jpeg_block(block)
     next_offset = unpack(data, order + "I", table_end - 4)[0]
     return {"tags": tags, "blocks": blocks, "spans": spans}, next_offset
+
+
+def check_counts(tags, order):
+    """Kept tags hold exactly as many values as the specification gives them."""
+    samples = value(tags, SAMPLES, 1, order)
+    bits = max(integers(tags[BITS], order)) if BITS in tags else 1
+    for tag, (kind, data) in tags.items():
+        count = len(data) // TYPE_SIZES[kind]
+        allowed = ({COUNTS[tag]} if tag in COUNTS else {1, samples} if tag in PER_SAMPLE
+                   else set(range(samples + 1)) if tag == 338       # extra samples
+                   else {2, 2 * samples} if tag == 336                # dot range
+                   else {1 << bits} if tag == 291                     # gray response curve
+                   else {1 << bits, 3 << bits} if tag == 301          # transfer function
+                   else {3 << bits} if tag == 320 else None)          # palette
+        if tag in KEPT and allowed is not None and count not in allowed:
+            raise damaged()
+
+
+def check_layout(tags, blocks, order):
+    """A page holds exactly the strips or tiles its image needs; uncompressed
+    ones hold exactly their pixels."""
+    width, height = value(tags, WIDTH, 0, order), value(tags, HEIGHT, 0, order)
+    samples = value(tags, SAMPLES, 1, order)
+    bits = integers(tags[BITS], order) if BITS in tags else [1]
+    if not width or not height or len(bits) not in (1, samples):
+        raise damaged()
+    bits = bits * samples if len(bits) == 1 else bits
+    # Bits per pixel of each plane: samples are stored together, or one plane each.
+    planes = [sum(bits)] if value(tags, PLANAR, 1, order) == 1 else bits
+    if TILES in tags:
+        tile_width, tile_length = value(tags, TILE_WIDTH, 0, order), value(tags, TILE_LENGTH, 0, order)
+        if not tile_width or not tile_length:
+            raise damaged()
+        tiles = ceil(width / tile_width) * ceil(height / tile_length)
+        sizes = [tile_length * ((tile_width * plane + 7) // 8) for plane in planes for _ in range(tiles)]
+    else:
+        rows = min(value(tags, ROWS_PER_STRIP, height, order) or height, height)
+        strips = ceil(height / rows)
+        sizes = [min(rows, height - n * rows) * ((width * plane + 7) // 8)
+                 for plane in planes for n in range(strips)]
+    if len(blocks) != len(sizes):
+        raise damaged()
+    # Subsampled YCbCr packs its samples differently; compressed sizes are unknown.
+    if value(tags, COMPRESSION, UNCOMPRESSED, order) == UNCOMPRESSED and value(tags, PHOTOMETRIC, 0, order) != YCBCR:
+        if any(len(block) > size for block, size in zip(blocks, sizes)):
+            raise FormatError("extra_image_data", format="TIFF")
+        if any(len(block) < size for block, size in zip(blocks, sizes)):
+            raise damaged()
 
 
 def check_jpeg_block(block):
@@ -178,6 +248,11 @@ def write_directory(output, entries, order):
             values += value + b"\0" * (len(value) % 2)
     output += table + b"\0" * 4 + values
     return start + table_size - 4
+
+
+def value(tags, tag, default, order):
+    """A tag's first value, or `default` without the tag."""
+    return integers(tags[tag], order)[0] if tag in tags else default
 
 
 def integers(entry, order):

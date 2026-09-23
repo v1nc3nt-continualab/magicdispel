@@ -140,6 +140,24 @@ class RebuildTests(unittest.TestCase):
                 png.rebuild(tampered)
             self.assertEqual(caught.exception.key, "extra_image_data")
 
+    def test_palette_and_transparency_hold_nothing_extra(self):
+        rgb, palette = encode(gradient()), encode(gradient("P"))
+        entries = len(dict((k, p) for k, p, _ in png.chunks(palette))[b"PLTE"]) // 3
+        for tampered in (insert(rgb, b"tRNS", bytes(6) + MARKER), insert(palette, b"tRNS", bytes(entries + 1)),
+                         replace(palette, b"PLTE", bytes(3 * entries + 1)), insert(encode(gradient("L")), b"PLTE", bytes(3))):
+            with self.subTest(size=len(tampered)):
+                with self.assertRaises(FormatError) as caught:
+                    png.rebuild(tampered)
+                self.assertEqual(caught.exception.key, "damaged")
+
+    def test_huge_images_are_refused_before_inflating(self):
+        header = struct.pack(">IIBBBBB", 30000, 30000, 8, 2, 0, 0, 0)
+        data = png.SIGNATURE + png.serialize(b"IHDR", header) + png.serialize(b"IDAT", zlib.compress(b"")) \
+            + png.serialize(b"IEND", b"")
+        with self.assertRaises(FormatError) as caught:
+            png.rebuild(data)
+        self.assertEqual(caught.exception.key, "too_large")
+
     def test_unknown_critical_chunk_is_refused(self):
         with self.assertRaises(FormatError) as caught:
             png.rebuild(insert(encode(gradient()), b"ZZZZ", MARKER))
@@ -169,7 +187,7 @@ class RebuildTests(unittest.TestCase):
             path.write_bytes(broken)
             with self.assertRaises(FormatError) as caught:
                 core.clean(str(path))
-            self.assertEqual(caught.exception.key, "damaged")
+            self.assertEqual(caught.exception.key, "undecodable")
             self.assertEqual(sorted(p.name for p in Path(folder).iterdir()), ["broken.png"])
 
     def test_cleaning_without_exiftool(self):

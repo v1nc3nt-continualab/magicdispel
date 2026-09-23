@@ -91,6 +91,11 @@ magicdispel {version}：清除照片里的隐私信息，画质不变
                          "zh": "这个 {format} 文件包含无法安全处理的数据（{part}）。"},
     "unsupported_profile": {"en": "The color profile in this {format} file cannot be cleaned safely ({detail}).",
                             "zh": "这个 {format} 文件的色彩配置无法安全清理（{detail}）。"},
+    "undecodable": {"en": "This {format} file cannot be decoded to check the result, so it was not cleaned.",
+                    "zh": "无法解码这个 {format} 文件来核对结果，因此没有清理。"},
+    "raw_photo": {"en": "RAW photos (DNG, CR2, NEF, ARW and others) are not supported. Export a JPEG or HEIC "
+                        "copy first.",
+                  "zh": "暂不支持 RAW 照片（DNG、CR2、NEF、ARW 等），请先导出为 JPG 或 HEIC。"},
     "too_large": {"en": "This {format} image is too large to check safely (the limit is {limit} megapixels).",
                   "zh": "这张 {format} 图片太大，无法安全校验（上限为 {limit} 百万像素）。"},
     "extra_image_data": {"en": "The image data in this {format} file carries extra hidden bytes.",

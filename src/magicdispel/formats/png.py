@@ -11,7 +11,7 @@ because the PNG rules forbid decoders from skipping it.
 import struct
 import zlib
 
-from .. import exif, icc
+from .. import exif, icc, pixels
 from ..errors import FormatError, VerificationError
 
 SIGNATURE = b"\x89PNG\r\n\x1a\n"
@@ -137,13 +137,19 @@ def check_image_data(parts):
     if (not width or not height or color not in CHANNELS or depth not in BIT_DEPTHS[color]
             or compression or filtering or interlace not in (0, 1)):
         raise damaged()
+    if width * height > pixels.MEGAPIXELS * 1_000_000:  # before inflating anything
+        raise FormatError("too_large", format="PNG", limit=pixels.MEGAPIXELS)
+    check_palette(parts, color)
     bits = CHANNELS[color] * depth
     check_stream([payload for kind, payload in parts if kind == b"IDAT"],
                  scanline_bytes(width, height, bits, interlace))
     frames = []  # APNG frames stored in fdAT chunks: (width, height, payloads)
     for kind, payload in parts:
         if kind == b"fcTL":
-            frames.append((*struct.unpack_from(">II", payload, 4), []))
+            frame_width, frame_height, x, y = struct.unpack_from(">IIII", payload, 4)
+            if not frame_width or not frame_height or x + frame_width > width or y + frame_height > height:
+                raise damaged()  # a frame must lie within the image
+            frames.append((frame_width, frame_height, []))
         elif kind == b"fdAT":
             if not frames or len(payload) < 4:
                 raise damaged()
@@ -151,6 +157,21 @@ def check_image_data(parts):
     for frame_width, frame_height, payloads in frames:
         if payloads:
             check_stream(payloads, scanline_bytes(frame_width, frame_height, bits, interlace))
+
+
+def check_palette(parts, color):
+    """PLTE and tRNS hold exactly what the color type allows, nothing more."""
+    palettes = [payload for kind, payload in parts if kind == b"PLTE"]
+    alphas = [payload for kind, payload in parts if kind == b"tRNS"]
+    # A palette image needs PLTE; truecolor ones may suggest one; gray ones may not have one.
+    if len(palettes) > 1 or len(alphas) > 1 or (color == 3 and not palettes) or (color in (0, 4) and palettes):
+        raise damaged()
+    entries = len(palettes[0]) // 3 if palettes else 0
+    if palettes and (len(palettes[0]) % 3 or not 1 <= entries <= 256):
+        raise damaged()
+    # tRNS: a gray level (2 bytes), an RGB color (6), or up to one alpha per palette entry.
+    if alphas and len(alphas[0]) not in {0: {2}, 2: {6}, 3: set(range(1, entries + 1))}.get(color, ()):
+        raise damaged()
 
 
 def scanline_bytes(width, height, bits, interlace):

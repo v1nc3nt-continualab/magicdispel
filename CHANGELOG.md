@@ -77,6 +77,22 @@
 - HEIC files that ExifTool's `-all=` has already processed are accepted. ExifTool leaves
   their EXIF and XMP items in place with no data; such empty metadata items are removed
   like any other. Previously these files were refused as damaged.
+- Hardening after an audit with crafted files and 4,000 mutated samples:
+  - HEIF item properties are now allowlisted. Only those needed to decode and show an image
+    stay, and fixed-size ones must have exactly their size. Descriptions (`udes`), creation
+    and modification times (`crtt`, `mdft`), camera parameters and unknown properties were
+    kept before and are now removed. An unknown property marked essential is refused.
+  - RAW photos built on TIFF (DNG, CR2, NEF and others) are refused with a clear message.
+    Before, a DNG was "cleaned" into a copy of its small preview.
+  - TIFF pages must hold exactly the strips or tiles their image needs, uncompressed ones at
+    exactly their size, and kept tags exactly the number of values the specification gives
+    them. Extra strips and values could carry hidden bytes.
+  - PNG palettes and transparency chunks must hold exactly what the color type allows
+    (an oversized tRNS chunk could carry hidden bytes). Images over the pixel limit are
+    refused before any data is inflated, and APNG frames must lie within the image.
+  - Any failure of Pillow's decoders now reads "cannot be decoded to check the result"
+    instead of an unexpected error (damaged AVIF files raised RuntimeError), and Pillow's
+    warnings about damaged files no longer appear in the terminal.
 - A photo that fails unexpectedly is reported as an unexpected error and no longer stops
   the rest of a batch. A result its own format cannot read back counts as failing
   verification.

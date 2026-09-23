@@ -41,6 +41,13 @@ class CompareTests(unittest.TestCase):
             pixels.compare(data, data[:60], "PNG")
         self.assertEqual(caught.exception.key, "verification_failed")
 
+    def test_any_decoder_failure_on_the_original_is_reported_as_undecodable(self):
+        data = png(Image.new("RGB", (8, 8)))
+        with patch.object(pixels, "digest", side_effect=RuntimeError("decoder failed")), \
+                self.assertRaises(FormatError) as caught:
+            pixels.compare(data, data, "AVIF")
+        self.assertEqual(caught.exception.key, "undecodable")
+
     def test_images_over_the_limit_are_refused(self):
         data = png(Image.new("RGB", (100, 100)))
         with patch.object(Image, "MAX_IMAGE_PIXELS", 1000), self.assertRaises(FormatError) as caught:

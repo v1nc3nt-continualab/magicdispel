@@ -197,6 +197,23 @@ class ItemTests(HeifTests):
             with self.subTest(case=index):
                 self.assertRefused(data, key)
 
+    def test_only_display_properties_stay(self):
+        # A description and a creation time go; a property of unknown meaning goes
+        # too, unless a reader may not ignore it (essential): then the file is refused.
+        description = full(b"udes", 0, b"en\0" + MARKER + b"\0\0\0")
+        created = full(b"crtt", 1, struct.pack(">Q", 3_900_000_000_000))
+        data = heif_file([PRIMARY], properties=[description, created, box(b"abcd", MARKER)],
+                         associations={1: [1, 2, 3, 4]})
+        layout = bmff.layout(self.assertRebuilt(data))
+        self.assertEqual([layout.props[index].kind if index else 0 for index in layout.associations[1]],
+                         [b"ispe", 0, 0, 0])
+        self.assertRefused(heif_file([PRIMARY], properties=[box(b"abcd", MARKER)], associations={1: [1, 2 | 0x80]}),
+                           "unsupported_part")
+
+    def test_fixed_size_properties_may_not_carry_extra_bytes(self):
+        self.assertRefused(heif_file([PRIMARY], properties=[box(b"irot", b"\0" + MARKER)], associations={1: [1, 2]}),
+                           "unsupported_part")
+
     def test_profiles_are_sanitized(self):
         data = heif_file([PRIMARY], properties=[box(b"colr", b"prof" + PROFILE)], associations={1: [1, 2]})
         rebuilt = self.assertRebuilt(data)

@@ -15,8 +15,8 @@ def rebuild(data):
         encoded = as_png(data)
     except FormatError:
         raise
-    except (OSError, SyntaxError, ValueError):
-        raise FormatError("damaged", format="BMP")
+    except Exception:  # Pillow's decoders fail in many ways
+        raise FormatError("undecodable", format="BMP")
     return png.rebuild(encoded)
 
 

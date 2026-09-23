@@ -9,6 +9,12 @@ displayed images need a removed item is refused. Item and handler names are
 blanked and ICC profiles sanitized. HEIF orientation lives in irot/imir
 properties, not in EXIF.
 
+Item properties: only those that say how to decode and show an image are
+kept, fixed-size ones at exactly their size. Descriptions, creation and
+modification times, camera parameters and unknown properties go; an unknown
+property marked essential, which a reader may not ignore, makes the file
+unsupported.
+
 Boxes: top-level boxes other than ftyp, meta, moov and mdat become zero-filled
 `free` boxes, and are dropped entirely at the end of the file; so do boxes in
 meta other than the item tables; bytes in mdat and idat that no remaining item
@@ -56,6 +62,20 @@ EDITING_AUXILIARIES = {
 } | {b"urn:com:apple:photo:%s:aux:semantic%smatte" % (year, name)
      for year, name in ((b"2019", b"skin"), (b"2019", b"hair"), (b"2019", b"teeth"),
                         (b"2020", b"glasses"), (b"2020", b"sky"))}
+# Item properties needed to decode and show an image: decoder configurations;
+# size, layout and orientation; color and HDR; the role of an auxiliary image.
+DISPLAY_PROPERTIES = {
+    b"hvcC", b"av1C", b"avcC", b"vvcC", b"jpgC", b"j2kH", b"uncC", b"cmpd", b"lhvC", b"oinf", b"tols",
+    b"ispe", b"pixi", b"clap", b"irot", b"imir", b"pasp", b"rloc", b"iscl", b"a1op", b"a1lx", b"lsel",
+    b"colr", b"clli", b"mdcv", b"cclv", b"amve",
+    b"auxC",
+}
+# Descriptive properties: user descriptions, creation and modification times,
+# accessibility text, camera intrinsics and extrinsics, clock information.
+DESCRIPTIVE_PROPERTIES = {b"udes", b"crtt", b"mdft", b"altt", b"cmin", b"cmex", b"taic", b"itai"}
+# Payload sizes of fixed-size properties, which then cannot carry extra bytes.
+PROPERTY_SIZES = {b"ispe": 12, b"irot": 1, b"imir": 1, b"pasp": 8, b"clap": 32, b"clli": 4, b"mdcv": 24,
+                  b"a1op": 1, b"lsel": 2}
 # Reference types that may point to or from a removed item.
 REMOVABLE_REFERENCES = {b"dimg", b"cdsc", b"auxl", b"thmb"}
 MAX_XMP = 16 * 1024 * 1024
@@ -84,14 +104,16 @@ def rebuild(data):
         if error.damaged:
             raise FormatError("damaged", format=name)
         raise FormatError("unsupported_part", format=name, part=str(error))
+    except RecursionError:  # boxes nested beyond any real file
+        raise FormatError("damaged", format=name)
 
 
 def verify(original, rebuilt):
     """Check the result on its own terms, as listed in the module docstring."""
     try:
         check(original, rebuilt)
-    except (StructureError, icc.ProfileError, xmp.XMPError) as error:
-        fail(str(error))
+    except (StructureError, icc.ProfileError, xmp.XMPError, RecursionError) as error:
+        fail(str(error) or type(error).__name__)
 
 
 def cleaned(data):
@@ -234,7 +256,7 @@ def rewrite_tables(data, layout, deleted, live, result):
     if layout.reference_box:
         replacements[layout.reference_box.start] = item_references(data, layout, deleted, live)
     if layout.prop_box:
-        replacements[layout.prop_box.start] = item_properties(data, layout, live)
+        replacements[layout.prop_box.start] = item_properties(data, layout, live, kept_properties(data, layout, live))
     for child in layout.children:
         if child.kind == b"grpl":
             check_groups(data, child, deleted)
@@ -286,20 +308,55 @@ def item_references(data, layout, deleted, live):
     return bmff.box(b"iref", data[iref.content:iref.content + 4] + b"".join(entries))
 
 
-def item_properties(data, layout, live):
-    """iprp with associations for the live items only, and unused properties
-    turned into free boxes, which keeps every property's index."""
-    used = {index for ident in live for index in layout.associations.get(ident, [])}
+def kept_properties(data, layout, live):
+    """The indices of the properties the live items keep: those needed to show them."""
+    kept = set()
+    for ident in live:
+        for index in layout.associations.get(ident, []):
+            prop = layout.props.get(index)  # index 0 means no property
+            if prop and prop.kind in DISPLAY_PROPERTIES:
+                check_size(data, prop)
+                kept.add(index)
+            elif prop and index in layout.essential[ident] and prop.kind not in DESCRIPTIVE_PROPERTIES:
+                raise unsupported("item property " + listed([prop.kind]))
+    return kept
+
+
+def check_size(data, prop):
+    """A fixed-size property must have exactly its size."""
+    size = prop.end - prop.content
+    if prop.kind == b"pixi":  # a version and flags, the channel count, a depth per channel
+        expected = 5 + data[prop.content + 4] if size > 4 else 0
+    elif prop.kind == b"colr" and data[prop.content:prop.content + 4] == b"nclx":
+        expected = 11  # primaries, transfer, matrix and range
+    else:
+        expected = PROPERTY_SIZES.get(prop.kind, size)
+    if size != expected:
+        raise unsupported("extra data in item property " + listed([prop.kind]))
+
+
+def item_properties(data, layout, live, kept):
+    """iprp with every property but the kept ones turned into a free box, which
+    keeps each property's index. A live item's other associations become index
+    0, "no property", so the tables keep their size."""
     parts = []
     for part in bmff.boxes(data, layout.prop_box.content, layout.prop_box.end):
         if part.kind == b"ipco":
-            parts.append(bmff.box(b"ipco", b"".join(bytes(data[prop.start:prop.end]) if index in used else blank(prop)
+            parts.append(bmff.box(b"ipco", b"".join(bytes(data[prop.start:prop.end]) if index in kept else blank(prop)
                                                     for index, prop in layout.props.items())))
         elif part.kind == b"ipma":
-            entries = next(entries for found, entries in layout.association_boxes if found == part)
-            kept = [entry for ident, entry in entries if ident in live]
+            # Version 1 has 4-byte item IDs; flag 1 makes each property index 2 bytes.
+            id_width, index_width = (2 if data[part.content] == 0 else 4), (2 if data[part.content + 3] & 1 else 1)
+            flag = 1 << (index_width * 8 - 1)  # marks a property as essential
+            entries = []
+            for ident in next(idents for found, idents in layout.association_boxes if found == part):
+                if ident in live:
+                    indices = layout.associations[ident]
+                    entries.append(ident.to_bytes(id_width, "big") + bytes([len(indices)]) + b"".join(
+                        (index | (flag if index in layout.essential[ident] else 0) if index in kept else 0)
+                        .to_bytes(index_width, "big") for index in indices))
             parts.append(bmff.box(b"ipma", data[part.content:part.content + 4]
-                                  + len(kept).to_bytes(4, "big") + b"".join(kept)))
+                                  + len(entries).to_bytes(4, "big") + b"".join(entries)))
         else:
             parts.append(blank(part))
     return bmff.box(b"iprp", b"".join(parts))
@@ -551,6 +608,12 @@ def check_cleaned_items(original, before, rebuilt, after):
             fail("image item %d changed" % ident)
         if rebuilt[item.name[0]:item.name[1]].strip(b" "):
             fail("item name kept")
+        for index in after.associations.get(ident, []):
+            prop = after.props.get(index)
+            if prop and prop.kind not in DISPLAY_PROPERTIES:
+                fail("item property %r kept" % prop.kind)
+            if prop:
+                check_size(rebuilt, prop)
         # Item tables may be compacted, so item profiles are matched by item.
         if item_profiles(rebuilt, after, ident) != [icc.sanitize(profile)
                                                     for profile in item_profiles(original, before, ident)]:

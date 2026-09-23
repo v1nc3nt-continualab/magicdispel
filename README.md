@@ -125,7 +125,7 @@ Exit codes: `0` success or help, `1` one or more files not cleaned, `2` invalid 
 | GIF | images, palettes, frame timing, transparency, loop count, ICC profile | comments, text overlays, XMP, other extensions |
 | TIFF | image data, decoding tags, DPI, orientation, page numbers, ICC profile | EXIF and GPS directories, XMP, IPTC, Photoshop, descriptions, private tags, sub-images |
 | BMP | converted to lossless PNG with the same pixels, DPI and profile | everything else |
-| RAW, video, PDF | not supported | |
+| RAW, video, PDF | not supported; RAW files built on TIFF (DNG, CR2, NEF...) are recognized and refused | |
 
 Variants that cannot be rebuilt safely, such as BigTIFF, fragmented image sequences or
 unknown HEIF item types, are refused rather than passed through. Images up to 268 megapixels
