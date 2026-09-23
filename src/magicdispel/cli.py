@@ -1,58 +1,56 @@
-"""Portable command-line entry point."""
+"""Command line: type magicdispel, drag photos into the terminal, press Enter."""
 
 import argparse
 import sys
 
 from . import __version__
 from .core import CleanError, check_dependency, clean, find_exiftool
+from .messages import message
+
+
+class Parser(argparse.ArgumentParser):
+    """Report bad arguments in the user's language; the help text is our own."""
+
+    def error(self, detail):
+        print(message("bad_arguments", detail=detail), file=sys.stderr)
+        sys.exit(2)
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(
-        prog="magicdispel",
-        description="Remove common photo metadata locally while preserving image quality.",
-        epilog=("Type magicdispel and a space, drag in one or more photos, then press Enter.\n"
-                "Outputs: photo_clean.jpg, photo_clean_1.jpg, ... next to the original.\n"
-                "Formats: JPEG, PNG/APNG, HEIC/HEIF, AVIF, WebP, GIF, TIFF, BMP.\n"
-                "BMP becomes lossless PNG; other formats keep their image encoding.\n"
-                "Keeps color/orientation, HDR gain maps and transparency.\n"
-                "Removes HEIF thumbnails, depth/calibration, masks and editing-only style maps.\n"
-                "Sanitizes ICC identity fields; profile dates use a fixed 2000-01-01 placeholder.\n"
-                "Later portrait/depth/style editing may be reduced.\n"
-                "This is not a zero-metadata or anonymity tool."),
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-    )
-    parser.add_argument("--version", action="version", version="%(prog)s " + __version__)
-    parser.add_argument("--check", action="store_true", help="check the ExifTool dependency")
-    parser.add_argument("--anonymous", action="store_true",
-                        help="use a random output name without the original filename (does not anonymize image content)")
-    parser.add_argument("photos", metavar="PHOTO", nargs="*")
+    parser = Parser(prog="magicdispel", add_help=False)
+    parser.add_argument("-h", "--help", action="store_true")
+    parser.add_argument("--version", action="store_true")
+    parser.add_argument("--check", action="store_true")
+    parser.add_argument("--anonymous", action="store_true")
+    parser.add_argument("photos", nargs="*")
     args = parser.parse_args(argv)
-    if not args.photos and not args.check:
-        parser.print_help()
+    if args.version:
+        print("magicdispel " + __version__)
+        return 0
+    if args.help or not (args.photos or args.check):
+        print(message("help", version=__version__))
         return 0
     try:
         exiftool = find_exiftool()
-        version = check_dependency(exiftool)
+        exiftool_version = check_dependency(exiftool)
         if args.check:
-            print("Ready: magicdispel " + __version__ + " / ExifTool " + version)
-            print("ExifTool: " + exiftool)
+            print(message("ready", version=__version__, exiftool_version=exiftool_version,
+                          exiftool=exiftool))
         failures = 0
-        for argument in args.photos:
+        for photo in args.photos:
             try:
-                destination = clean(exiftool, argument, anonymous=args.anonymous)
-                print("Cleaned: " + str(destination))
+                print(message("cleaned", path=clean(exiftool, photo, anonymous=args.anonymous)))
             except (CleanError, OSError, ValueError) as error:
                 failures += 1
-                print("Failed: " + argument + "\n  " + str(error), file=sys.stderr)
+                print(message("failed", photo=photo, reason=error), file=sys.stderr)
         if len(args.photos) > 1:
-            print("Done: {} succeeded, {} failed.".format(len(args.photos) - failures, failures))
+            print(message("summary", succeeded=len(args.photos) - failures, failed=failures))
         return 1 if failures else 0
     except (CleanError, OSError) as error:
-        print("Error: " + str(error), file=sys.stderr)
+        print(message("error", reason=error), file=sys.stderr)
         return 1
     except KeyboardInterrupt:
-        print("\nCancelled.", file=sys.stderr)
+        print(message("cancelled"), file=sys.stderr)
         return 130
 
 
