@@ -23,8 +23,11 @@ anonymization.
   fields.
 - **Structure.** Transparency, animation frames, timing and loop count, TIFF pages and page
   numbers, and the format's own headers.
-- **The file name**, with `_clean` added, unless `--anonymous` replaces it with a random
-  128-bit token that contains no name, time, MAC address or user ID.
+- **The file name**, with `_clean` added and without the dates, times and timestamps that
+  screenshots, cameras and chat apps put in names: `Screenshot 2026-09-23 at 15.14.15.png`
+  becomes `Screenshot_clean.png`, `IMG_20240501_123456.jpg` becomes `IMG_clean.jpg`.
+  `--keep-name` keeps the name as it is; `--anonymous` replaces it with a random 128-bit token
+  that contains no name, time, MAC address or user ID.
 
 ## What is removed
 

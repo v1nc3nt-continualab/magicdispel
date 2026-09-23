@@ -13,8 +13,9 @@ magicdispel --anonymous 照片.jpg
 ```
 
 输入 `magicdispel` 和一个空格，把一张或多张照片拖进终端，按回车。
-清理后的新照片保存在原图旁边，名为 `照片_clean.jpg`。原图不会被修改，也不会覆盖任何已有文件：
-再次清理会依次生成 `_clean_1`、`_clean_2`……
+清理后的新照片保存在原图旁边，名为 `照片_clean.jpg`；截图、手机相机写进文件名的日期和时间会被去掉，
+比如 `截屏2026-09-23 下午3.14.15.png` 变成 `截屏_clean.png`。原图不会被修改，也不会覆盖任何已有文件：
+再次清理会依次生成 `_clean_1`、`_clean_2`……想原样保留文件名用 `--keep-name`；
 使用 `--anonymous` 时，新文件改名为 `photo_<随机字符>.jpg`。它只改文件名，不会改动画面内容。
 
 ## 工作方式
@@ -96,6 +97,7 @@ magicdispel --check
 magicdispel --version
 magicdispel "照片 1.jpg" "照片 2.heic"
 magicdispel --anonymous "照片 1.jpg"
+magicdispel --keep-name "截屏2026-09-23 下午3.14.15.png"
 ```
 
 文件名有空格时用引号包住，或者直接把文件拖进终端。Windows 是否支持拖入取决于所用的终端，

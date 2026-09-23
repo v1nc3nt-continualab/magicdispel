@@ -16,12 +16,14 @@ magicdispel {version}: remove private metadata from photos, keeping image qualit
 Usage: type magicdispel and a space, drag photos into the terminal, press Enter.
        magicdispel photo.jpg screenshot.png ...
 
-A cleaned copy is saved next to each original, named photo_clean.jpg.
+A cleaned copy is saved next to each original, named photo_clean.jpg, without
+the dates and times the original's name may contain (as in screenshots).
 Originals are never modified and existing files are never overwritten.
 
 Options:
   --anonymous   name outputs photo_<random>.jpg instead of after the original
                 (the picture itself is not changed)
+  --keep-name   keep the original's name as it is, dates and times included
   --check       check that everything needed is installed
   --version     show the version
   -h, --help    show this help
@@ -41,11 +43,13 @@ magicdispel {version}：清除照片里的隐私信息，画质不变
       magicdispel 照片.jpg 截图.png ...
 
 清理后的新照片保存在原图旁边，名为 照片_clean.jpg。
+原文件名里的日期和时间（比如截图名里的）会被去掉。
 原图不会被修改，也不会覆盖任何已有文件（重名时自动编号）。
 
 选项：
   --anonymous   新文件改用随机名字 photo_<随机字符>.jpg，不带原文件名
                 （不会改动画面内容）
+  --keep-name   原样保留原文件名，包括其中的日期和时间
   --check       检查运行所需的组件是否已安装
   --version     显示版本号
   -h, --help    显示这段帮助

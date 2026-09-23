@@ -22,7 +22,9 @@ def main(argv=None):
     parser.add_argument("-h", "--help", action="store_true")
     parser.add_argument("--version", action="store_true")
     parser.add_argument("--check", action="store_true")
-    parser.add_argument("--anonymous", action="store_true")
+    naming = parser.add_mutually_exclusive_group()
+    naming.add_argument("--anonymous", dest="naming", action="store_const", const="anonymous", default="plain")
+    naming.add_argument("--keep-name", dest="naming", action="store_const", const="original")
     parser.add_argument("photos", nargs="*")
     args = parser.parse_args(argv)
     if args.version:
@@ -42,7 +44,7 @@ def main(argv=None):
         failures = 0
         for photo in args.photos:
             try:
-                print(message("cleaned", path=clean(photo, second_check, anonymous=args.anonymous)))
+                print(message("cleaned", path=clean(photo, second_check, args.naming)))
             except Exception as error:  # one photo failing never stops the others
                 failures += 1
                 print(message("failed", photo=photo, reason=explained(error)), file=sys.stderr)

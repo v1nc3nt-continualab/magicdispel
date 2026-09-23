@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 from PIL import Image
 
-from magicdispel import __version__, cli, core, exiftool, messages
+from magicdispel import __version__, cli, core, exiftool, messages, names
 
 
 def run(*arguments, language="en"):
@@ -110,13 +110,25 @@ class AnonymousNameTests(unittest.TestCase):
             self.assertEqual(source.read_bytes(), original)
             taken = folder / ("photo_" + "a" * 32 + ".jpg")
             taken.write_bytes(b"KEEP_EXISTING")
-            with patch.object(core.secrets, "token_hex", side_effect=["a" * 32, "b" * 32]):
-                output = core.publish(outputs[0].read_bytes(), source, ".JPG", anonymous=True)
+            with patch.object(names.secrets, "token_hex", side_effect=["a" * 32, "b" * 32]):
+                output = core.publish(outputs[0].read_bytes(), source, ".JPG", "anonymous")
             self.assertEqual(output.name, "photo_" + "b" * 32 + ".jpg")
             self.assertEqual(taken.read_bytes(), b"KEEP_EXISTING")
             bmp = folder / "姓名.bmp"
             Image.new("RGB", (8, 8), "red").save(bmp)
-            self.assertRegex(core.clean(str(bmp), anonymous=True).name, r"^photo_[0-9a-f]{32}\.png$")
+            self.assertRegex(core.clean(str(bmp), naming="anonymous").name, r"^photo_[0-9a-f]{32}\.png$")
+
+    def test_dates_and_times_leave_the_name_unless_it_is_kept(self):
+        with tempfile.TemporaryDirectory(prefix="cli-") as folder:
+            screenshot = Path(folder, "截屏2026-09-23 下午3.14.15.png")
+            Image.new("RGB", (8, 8), "blue").save(screenshot)
+            self.assertEqual(run(str(screenshot)).returncode, 0)
+            self.assertEqual(run("--keep-name", str(screenshot)).returncode, 0)
+            self.assertEqual(sorted(path.name for path in Path(folder).glob("*_clean*")),
+                             ["截屏2026-09-23 下午3.14.15_clean.png", "截屏_clean.png"])
+            result = run("--keep-name", "--anonymous", str(screenshot), language="zh")
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("参数有误", result.stderr)
 
 
 class LanguageTests(unittest.TestCase):

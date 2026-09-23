@@ -13,8 +13,10 @@ magicdispel --anonymous photo.jpg
 ```
 
 Type `magicdispel` and a space, drag one or more photos into the terminal, and press Enter.
-A cleaned copy named `photo_clean.jpg` appears next to each original. Originals are never
-modified and existing files are never overwritten: further copies get `_clean_1`, `_clean_2`...
+A cleaned copy named `photo_clean.jpg` appears next to each original, without the dates and
+times that screenshots and phone cameras put in names: `Screenshot 2026-09-23 at 15.14.15.png`
+becomes `Screenshot_clean.png`. Originals are never modified and existing files are never
+overwritten: further copies get `_clean_1`, `_clean_2`... `--keep-name` keeps the name as it is;
 `--anonymous` names the copy `photo_<random>.jpg` instead. It changes the name only, not what
 the picture shows.
 
@@ -101,6 +103,7 @@ magicdispel --check
 magicdispel --version
 magicdispel photo.jpg screenshot.png portrait.heic
 magicdispel --anonymous photo.jpg
+magicdispel --keep-name "Screenshot 2026-09-23 at 15.14.15.png"
 magicdispel -- "-filename-starts-with-a-dash.jpg"
 ```
 

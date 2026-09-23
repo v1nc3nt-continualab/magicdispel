@@ -77,6 +77,11 @@
 - HEIC files that ExifTool's `-all=` has already processed are accepted. ExifTool leaves
   their EXIF and XMP items in place with no data; such empty metadata items are removed
   like any other. Previously these files were refused as damaged.
+- Output names leave out the dates, times and timestamps that screenshots, phone cameras
+  and chat apps put in file names, which told when a picture was taken: `Screenshot
+  2026-09-23 at 15.14.15.png` becomes `Screenshot_clean.png`, `IMG_20240501_123456.jpg`
+  becomes `IMG_clean.jpg`, `mmexport1714567890123.jpg` becomes `mmexport_clean.jpg`. The
+  rest of the name stays. `--keep-name` keeps the name as it is.
 - Hardening after an audit with crafted files and 4,000 mutated samples:
   - HEIF item properties are now allowlisted. Only those needed to decode and show an image
     stay, and fixed-size ones must have exactly their size. Descriptions (`udes`), creation

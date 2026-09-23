@@ -2,22 +2,22 @@
 import errno
 import hashlib
 import os
-import secrets
 import subprocess
 import sys
 from pathlib import Path
 
-from . import exiftool, formats, pixels
+from . import exiftool, formats, names, pixels
 from .errors import FormatError, InputError, VerificationError
 
 
-def clean(argument, exiftool_path=None, anonymous=False):
+def clean(argument, exiftool_path=None, naming="plain"):
     """Save a cleaned copy of a photo next to it and return the copy's path.
 
     The format's module rebuilds the file from what is needed to show it and
     checks the result on its own; Pillow must decode identical frames where it
     can; ExifTool, when `exiftool_path` is given, reads it independently.
-    Nothing is saved unless every check passes.
+    Nothing is saved unless every check passes. `naming` is described in
+    names.candidates.
     """
     source = Path(os.path.abspath(os.path.expanduser(argument)))
     if not source.is_file():
@@ -41,7 +41,7 @@ def clean(argument, exiftool_path=None, anonymous=False):
     if hashlib.sha256(data).digest() != file_digest(source):
         raise VerificationError("source_changed")
     suffix = source.suffix if source.suffix.lower() in suffixes else suffixes[0]
-    return publish(rebuilt, source, suffix, anonymous=anonymous)
+    return publish(rebuilt, source, suffix, naming)
 
 
 def file_digest(path):
@@ -52,18 +52,13 @@ def file_digest(path):
     return digest.digest()
 
 
-def publish(data, source, suffix, anonymous=False):
+def publish(data, source, suffix, naming="plain"):
     """Write data next to source under a new name; never overwrite anything."""
-    index = 0
-    while True:
-        tail = "_clean" if index == 0 else "_clean_" + str(index)
-        name = ("photo_" + secrets.token_hex(16) + suffix.lower() if anonymous
-                else source.stem + tail + suffix)
+    for name in names.candidates(source.stem, suffix, naming):
         destination = source.with_name(name)
         try:
             output = destination.open("xb")
         except FileExistsError:
-            index += 1
             continue
         try:
             with output:
