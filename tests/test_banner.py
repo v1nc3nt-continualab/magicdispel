@@ -37,10 +37,12 @@ class BannerTests(unittest.TestCase):
             self.assertIn("Drag photos here.", text)
 
     def test_color_in_a_terminal_unless_no_color_is_set(self):
-        with patch.dict(os.environ, {"TERM": "xterm-256color"}):
-            os.environ.pop("NO_COLOR", None)
-            self.assertIn("\x1b[38;5;201m", welcome(100))
-        self.assertNotIn("\x1b[", welcome(100, NO_COLOR="1"))
+        # A console that accepts escape sequences, whatever the system running the tests.
+        with patch.object(banner, "windows_escapes", return_value=True):
+            with patch.dict(os.environ, {"TERM": "xterm-256color"}):
+                os.environ.pop("NO_COLOR", None)
+                self.assertIn("\x1b[38;5;201m", welcome(100))
+            self.assertNotIn("\x1b[", welcome(100, NO_COLOR="1"))
 
     def test_plain_text_outside_a_terminal(self):
         text = banner.welcome("1.2.3", "Drag photos here.", io.StringIO())

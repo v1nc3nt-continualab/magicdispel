@@ -65,8 +65,11 @@ def colors(stream):
     Windows consoles need their escape-sequence support switched on."""
     if os.environ.get("NO_COLOR") or os.environ.get("TERM") == "dumb":
         return False
-    if os.name != "nt":
-        return True
+    return os.name != "nt" or windows_escapes()
+
+
+def windows_escapes():
+    """Switch on escape sequences in the Windows console; whether that worked."""
     try:
         import ctypes
         kernel32 = ctypes.windll.kernel32
