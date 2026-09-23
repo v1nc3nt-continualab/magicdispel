@@ -233,12 +233,12 @@ def scan_end(data, position):
 
 def images(data, strict=False):
     """([(flags, dependent1, dependent2)], [image bytes]) of an MPF file, or
-    ([], [first image]) without an MPF index. With strict, the index may hold
-    nothing but its structure and the images must fill the file exactly."""
+    ([], [first image]) without an MPF index. With strict, the index must be
+    exactly as join_mpf writes it and the images must fill the file exactly."""
     indexes = [(start, end, payload) for marker, start, end, payload in segments(data)
                if marker == APP2 and payload.startswith(MPF_ID)]
     if not indexes:
-        end = next(end for marker, _, end, _ in segments(data) if marker == EOI)
+        end = image_end(data)
         if strict and end != len(data):
             raise VerificationError("verification_failed", detail="data after the JPEG end")
         return [], [data[:end]]
@@ -246,12 +246,12 @@ def images(data, strict=False):
         raise damaged()
     start, end, payload = indexes[0]
     try:
-        entries, frames, ranges, bare_index = split_mpf(data, start, payload[4:])
+        entries, frames, ranges, exact = split_mpf(data, start, payload[4:])
     except (KeyError, IndexError, struct.error, ValueError):
         raise damaged()
     if strict:
-        if not bare_index:
-            raise VerificationError("verification_failed", detail="MPF index holds more than the image list")
+        if not exact:
+            raise VerificationError("verification_failed", detail="MPF index is not exactly the image list")
         # Each image fills exactly its range (the first one plus its index), and
         # the ranges fill the file, so nothing can sit between or after them.
         sizes = [len(frames[0]) + end - start] + [len(frame) for frame in frames[1:]]
@@ -265,7 +265,8 @@ def images(data, strict=False):
 
 def split_mpf(data, start, tiff):
     """Entries, images and byte ranges listed by the MPF index in the segment at
-    `start`, and whether the index holds nothing but the image list."""
+    `start`, and whether the index is exactly as join_mpf writes it: the image
+    list alone, with the first image's true size."""
     order = {b"MM": ">", b"II": "<"}[tiff[:2]]
     if struct.unpack_from(order + "H", tiff, 2)[0] != 42:
         raise ValueError("MPF header")
@@ -276,7 +277,7 @@ def split_mpf(data, start, tiff):
         tag, kind, size, offset = struct.unpack_from(order + "HHII", tiff, directory + 2 + 12 * index)
         tags[tag] = kind, size, offset
     next_directory = struct.unpack_from(order + "I", tiff, directory + 2 + 12 * count)[0]
-    bare_index = set(tags) == {MPF_VERSION, IMAGE_COUNT, IMAGE_LIST} and not next_directory
+    bare = set(tags) == {MPF_VERSION, IMAGE_COUNT, IMAGE_LIST} and not next_directory
     kind, size, total = tags[IMAGE_COUNT]
     entry_kind, entry_size, offset = tags[IMAGE_LIST]
     if (kind, size) != (4, 1) or not 1 <= total <= MAX_IMAGES or (entry_kind, entry_size) != (7, total * 16):
@@ -285,8 +286,16 @@ def split_mpf(data, start, tiff):
     for index in range(total):
         flags, length, relative, dependent1, dependent2 = struct.unpack_from(
             order + "IIIHH", tiff, offset + 16 * index)
-        absolute = 0 if index == 0 else start + MPF_HEADER + relative
-        if (index == 0 and relative != 0) or flags & IMAGE_FORMAT or max(dependent1, dependent2) > total:
+        if index == 0:
+            # The first image holds the index and ends at its EOI. Programs that
+            # add metadata to it, ExifTool among them, often leave its listed
+            # size as it was, so that size is not relied on.
+            if relative != 0:
+                raise ValueError("MPF entry")
+            absolute, listed, length = 0, length, image_end(data)
+        else:
+            absolute = start + MPF_HEADER + relative
+        if flags & IMAGE_FORMAT or max(dependent1, dependent2) > total:
             raise ValueError("MPF entry")
         if length < 4 or absolute + length > len(data):
             raise ValueError("MPF range")
@@ -298,7 +307,12 @@ def split_mpf(data, start, tiff):
                                if not (marker == APP2 and body.startswith(MPF_ID))))
         entries.append((flags, dependent1, dependent2))
         ranges.append((absolute, absolute + length))
-    return entries, frames, ranges, bare_index
+    return entries, frames, ranges, bare and listed == ranges[0][1]
+
+
+def image_end(data):
+    """Where the image at the start of `data` ends: right after its EOI."""
+    return next(end for marker, _, end, _ in segments(data) if marker == EOI)
 
 
 def join_mpf(entries, frames):

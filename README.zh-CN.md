@@ -126,6 +126,7 @@ ExifTool 装在不常见的位置时，可以把 `MAGICDISPEL_EXIFTOOL` 设为�
 ## 开发
 
 见[英文说明](README.md#development)，其中介绍了单元测试和使用真实照片样本库的回归检查。
+单元测试只依赖 Pillow；装有 ExifTool 时，还会用它按其他软件的方式写入元数据，并复查每个结果。
 `.github/workflows/test.yml` 已为 macOS、Windows 和 Linux 准备好，但尚未运行；
 发布前必须完成 Windows 和 Linux 的验证，本机 macOS 的结果不能代表其他系统。
 

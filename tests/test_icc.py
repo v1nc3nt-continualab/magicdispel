@@ -1,0 +1,248 @@
+"""ICC profiles: where they came from is removed, how they convert colors is not."""
+import io
+import struct
+import tempfile
+import unittest
+from pathlib import Path
+
+from PIL import Image, ImageCms
+
+from magicdispel import core, icc
+
+MARKER = "MD_ICC_USER"
+PLACEHOLDER_DATE = struct.pack(">6H", 2000, 1, 1, 0, 0, 0)
+SRGB = ImageCms.ImageCmsProfile(ImageCms.createProfile("sRGB")).tobytes()
+
+
+def tag_table(profile):
+    """{tag: data}, read independently of the code under test."""
+    table = {}
+    for index in range(struct.unpack_from(">I", profile, 128)[0]):
+        tag, offset, size = struct.unpack_from(">4sII", profile, 132 + 12 * index)
+        table[tag] = profile[offset:offset + size]
+    return table
+
+
+def assemble(header, tags):
+    """A profile from a 128-byte header and {tag: data}, with the size filled in."""
+    profile = bytearray(header[:128] + struct.pack(">I", len(tags)) + bytes(12 * len(tags)))
+    for index, (tag, value) in enumerate(tags.items()):
+        offset = len(profile)
+        profile += value + bytes(-len(value) % 4)
+        struct.pack_into(">4sII", profile, 132 + 12 * index, tag, offset, len(value))
+    struct.pack_into(">I", profile, 0, len(profile))
+    return profile
+
+
+def user_profile(version=4, padded=False):
+    """sRGB with the user's name in its description, creator, model and profile
+    ID, calibration dates, and optionally dead space full of MARKER."""
+    tags = tag_table(SRGB)
+    if version == 4:
+        text = MARKER.encode("utf-16be")
+        tags[b"desc"] = b"mluc" + bytes(4) + struct.pack(">II", 1, 12) + b"enUS" + struct.pack(">II", len(text), 28) + text
+    else:
+        ascii_text, unicode_text = MARKER.encode() + b"\0", (MARKER + "\0").encode("utf-16be")
+        tags[b"desc"] = (b"desc" + bytes(4) + struct.pack(">I", len(ascii_text)) + ascii_text
+                         + struct.pack(">II", 0, len(unicode_text) // 2) + unicode_text + bytes(70))
+        tags[b"cprt"] = b"text" + bytes(4) + ascii_text
+        for tag in (b"rTRC", b"gTRC", b"bTRC"):
+            tags[tag] = b"curv" + bytes(4) + struct.pack(">IH", 1, round(2.2 * 256))
+    tags[b"calt"] = b"dtim" + bytes(4) + struct.pack(">6H", 2026, 9, 23, 4, 30, 19)
+    header = bytearray(SRGB[:128])
+    header[8] = version
+    header[4:8], header[24:36], header[48:56] = b"USER", struct.pack(">6H", 2026, 9, 23, 4, 30, 19), b"USERMODL"
+    header[80:84], header[84:100] = b"USER", b"PRIVATEPROFILEID"
+    profile = assemble(header, tags)
+    if padded:
+        profile += (MARKER.encode() + b"\0") * 6000
+        struct.pack_into(">I", profile, 0, len(profile))
+    return bytes(profile)
+
+
+def s15(*values):
+    return struct.pack(">%di" % len(values), *(round(value * 65536) for value in values))
+
+
+def para_curve(function=3, *parameters):
+    parameters = parameters or (2.4, 1 / 1.055, 0.055 / 1.055, 1 / 12.92, 0.04045)
+    return b"para" + bytes(4) + struct.pack(">HH", function, 0) + s15(*parameters)
+
+
+def display_profile(**replaced):
+    """Shaped like the profile a macOS screenshot embeds: v2 matrix/TRC colors,
+    Apple para curves, and display identity and setup tags that carry MARKER."""
+    marker = MARKER.encode()
+    name = (MARKER + " Studio Display").encode("utf-16be")
+    gamma = b"curv" + bytes(4) + struct.pack(">IH", 1, round(2.2 * 256))
+    tags = {
+        b"desc": b"desc" + bytes(4) + struct.pack(">I", len(marker) + 1) + marker + bytes(79),
+        b"dscm": b"mluc" + bytes(4) + struct.pack(">II", 1, 12) + b"enUS" + struct.pack(">II", len(name), 28) + name,
+        b"cprt": b"text" + bytes(4) + b"Copyright " + marker + b"\0",
+        b"wtpt": b"XYZ " + bytes(4) + s15(0.9642, 1.0, 0.8249),
+        b"rXYZ": b"XYZ " + bytes(4) + s15(0.5143, 0.2411, -0.0011),
+        b"gXYZ": b"XYZ " + bytes(4) + s15(0.2922, 0.6929, 0.0418),
+        b"bXYZ": b"XYZ " + bytes(4) + s15(0.1577, 0.0660, 0.7841),
+        b"rTRC": gamma, b"gTRC": gamma, b"bTRC": gamma,
+        b"aarg": para_curve(), b"aagg": para_curve(), b"aabg": para_curve(),
+        b"vcgt": b"vcgt" + bytes(4) + struct.pack(">I", 1) + s15(*[1.0, 0.0, 1.0] * 3),
+        b"ndin": b"ndin" + bytes(4) + marker.ljust(54, b"\0"),
+        b"mmod": b"mmod" + bytes(4) + marker.ljust(32, b"\0"),
+        b"vcgp": b"vcgp" + bytes(4) + marker.ljust(48, b"\0"),
+    }
+    tags.update((tag.encode(), value) for tag, value in replaced.items())
+    header = bytearray(128)
+    header[4:8], header[8:12], header[12:24] = b"appl", b"\x02\x10\0\0", b"mntrRGB XYZ "
+    header[24:36] = struct.pack(">6H", 2026, 9, 15, 12, 7, 6)
+    header[36:44], header[48:52], header[80:84] = b"acspAPPL", b"APPL", b"appl"
+    header[68:80] = s15(0.9642, 1.0, 0.8249)
+    return bytes(assemble(header, tags))
+
+
+def colors(profile):
+    """A row of colors converted to Lab through the profile by LittleCMS."""
+    sample = Image.frombytes("RGB", (256, 1), bytes(range(256)) * 3)
+    return ImageCms.profileToProfile(sample, ImageCms.ImageCmsProfile(io.BytesIO(profile)),
+                                     ImageCms.createProfile("LAB"), outputMode="LAB").tobytes()
+
+
+def profiles(data):
+    """The ICC profile of each page or frame, as Pillow reads it."""
+    with Image.open(io.BytesIO(data)) as picture:
+        found = []
+        for index in range(getattr(picture, "n_frames", 1)):
+            picture.seek(index)
+            found.append(picture.info.get("icc_profile"))
+        return found
+
+
+def gif_with_profile(image, profile):
+    """A GIF with its profile in an ICCRGBG1012 application extension, which
+    Pillow neither writes nor reads."""
+    buffer = io.BytesIO()
+    image.save(buffer, "GIF")
+    data = buffer.getvalue()
+    start = 13 + (3 << ((data[10] & 7) + 1) if data[10] & 0x80 else 0)  # after the global color table
+    pieces = [profile[n:n + 255] for n in range(0, len(profile), 255)]
+    extension = b"\x21\xff\x0bICCRGBG1012" + b"".join(bytes([len(piece)]) + piece for piece in pieces) + b"\0"
+    return data[:start] + extension + data[start:]
+
+
+def gif_profile(data):
+    """The profile in a GIF's ICCRGBG1012 extension, or None."""
+    start = data.find(b"\x21\xff\x0bICCRGBG1012")
+    if start < 0:
+        return None
+    position, pieces = start + 14, []
+    while data[position]:
+        pieces.append(data[position + 1:position + 1 + data[position]])
+        position += 1 + data[position]
+    return b"".join(pieces)
+
+
+class SanitizeTests(unittest.TestCase):
+    def assertClean(self, profile, cleaned):
+        self.assertEqual(colors(cleaned), colors(profile))
+        self.assertNotIn(MARKER.encode(), cleaned)
+        self.assertNotIn(MARKER.encode("utf-16be"), cleaned)
+        self.assertEqual(cleaned[24:36], PLACEHOLDER_DATE)
+        # CMM, platform, manufacturer, model, creator and profile ID are cleared.
+        self.assertEqual(cleaned[4:8] + cleaned[40:44] + cleaned[48:56] + cleaned[80:100], bytes(36))
+        self.assertEqual(ImageCms.getProfileDescription(ImageCms.ImageCmsProfile(io.BytesIO(cleaned))).strip(),
+                         "Clean")
+
+    def test_user_profiles_of_both_versions(self):
+        for version in (2, 4):
+            with self.subTest(version=version):
+                profile = user_profile(version)
+                cleaned = icc.sanitize(profile)
+                self.assertClean(profile, cleaned)
+                self.assertEqual(len(cleaned), len(profile))
+                self.assertNotIn(b"calt", tag_table(cleaned))
+
+    def test_display_profile_keeps_curves_and_drops_display_identity(self):
+        profile = display_profile()
+        cleaned = icc.sanitize(profile)
+        self.assertClean(profile, cleaned)
+        before, after = tag_table(profile), tag_table(cleaned)
+        for tag in (b"wtpt", b"rXYZ", b"gXYZ", b"bXYZ", b"rTRC", b"gTRC", b"bTRC", b"aarg", b"aagg", b"aabg"):
+            self.assertEqual(after[tag], before[tag])
+        for tag in (b"dscm", b"mmod", b"ndin", b"vcgt", b"vcgp"):
+            self.assertNotIn(tag, after)
+
+    def test_hdr_curve_loses_its_image_identifier_only(self):
+        value = bytearray(230)
+        value[:4] = b"gmap"
+        struct.pack_into(">6I", value, 12, 230, 98, 106, 106, 106, 0)
+        for offset in (36, 44, 52):
+            struct.pack_into(">II", value, offset, 150, 80)
+        value[60:64] = b"A2B0"
+        value[98:106] = b"\x01\x00\x08\x0c\0\0\0\0"
+        value[106:122] = b"TESTGUID01234567"
+        cleaned = icc.sanitize_adaptive_curve(bytes(value))
+        self.assertEqual(cleaned[:106] + cleaned[122:], value[:106] + value[122:])
+        self.assertEqual(cleaned[106:122], bytes(16))
+        value[20:24] = b"\0\0\0\1"
+        with self.assertRaises(icc.ProfileError):
+            icc.sanitize_adaptive_curve(bytes(value))
+
+    def test_malformed_apple_curves_are_refused(self):
+        for curve in (para_curve(7), para_curve()[:-4], para_curve(0, 2.2, 1.0),
+                      b"curv" + bytes(4) + struct.pack(">IH", 1, 563)):
+            with self.subTest(curve=curve[:12]), self.assertRaises(icc.ProfileError):
+                icc.sanitize(display_profile(aarg=curve))
+
+    def test_damaged_profiles_are_refused(self):
+        broken = bytearray(user_profile())
+        struct.pack_into(">I", broken, 140, len(broken) + 100)  # a tag reaching past the end
+        for profile in (bytes(broken), b"not a profile"):
+            with self.subTest(size=len(profile)), self.assertRaises(icc.ProfileError):
+                icc.sanitize(profile)
+
+
+class ContainerTests(unittest.TestCase):
+    def test_every_format_carries_the_sanitized_profile(self):
+        image, profile = Image.new("RGB", (32, 24), (71, 113, 219)), user_profile()
+        with tempfile.TemporaryDirectory(prefix="icc-") as folder:
+            for kind, suffix in (("JPEG", "jpg"), ("PNG", "png"), ("WEBP", "webp"), ("AVIF", "avif"),
+                                 ("TIFF", "tif"), ("GIF", "gif")):
+                with self.subTest(format=kind):
+                    source = Path(folder, "photo." + suffix)
+                    if kind == "GIF":
+                        source.write_bytes(gif_with_profile(image, profile))
+                    else:
+                        image.save(source, kind, icc_profile=profile)
+                    profile_in = gif_profile if kind == "GIF" else (lambda data: profiles(data)[0])
+                    self.assertEqual(profile_in(source.read_bytes()), profile)
+                    cleaned = core.clean(str(source)).read_bytes()
+                    self.assertEqual(profile_in(cleaned), icc.sanitize(profile))
+                    self.assertNotIn(MARKER.encode(), cleaned)
+
+    def test_a_profile_split_across_jpeg_segments(self):
+        profile = user_profile(version=2, padded=True)
+        with tempfile.TemporaryDirectory(prefix="icc-") as folder:
+            source = Path(folder, "large profile.jpg")
+            Image.new("RGB", (32, 24), (56, 91, 112)).save(source, icc_profile=profile)
+            self.assertGreater(source.read_bytes().count(b"ICC_PROFILE\0"), 1)
+            cleaned = core.clean(str(source)).read_bytes()
+            self.assertEqual(profiles(cleaned), [icc.sanitize(profile)])
+            self.assertNotIn(MARKER.encode(), cleaned)
+
+    def test_each_tiff_page_keeps_its_own_profile(self):
+        first, second = Image.new("RGB", (32, 24), "red"), Image.new("RGB", (32, 24), "blue")
+        first.info["icc_profile"], second.info["icc_profile"] = user_profile(4), user_profile(2)
+        with tempfile.TemporaryDirectory(prefix="icc-") as folder:
+            source = Path(folder, "pages.tif")
+            first.save(source, save_all=True, append_images=[second])
+            cleaned = core.clean(str(source)).read_bytes()
+            self.assertEqual(profiles(cleaned), [icc.sanitize(user_profile(4)), icc.sanitize(user_profile(2))])
+
+    def test_screenshot_with_a_display_profile(self):
+        with tempfile.TemporaryDirectory(prefix="icc-") as folder:
+            source = Path(folder, "Screenshot 2026-09-23.png")
+            Image.new("RGBA", (32, 24), (40, 120, 200, 255)).save(source, icc_profile=display_profile())
+            self.assertEqual(profiles(core.clean(str(source)).read_bytes()), [icc.sanitize(display_profile())])
+
+
+if __name__ == "__main__":
+    unittest.main()

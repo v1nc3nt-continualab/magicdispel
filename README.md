@@ -141,7 +141,8 @@ python -m unittest discover -s tests -v
 python -m build
 ```
 
-Several tests prepare their fixtures with ExifTool, so it is needed for development. No
+The tests need only Pillow. When ExifTool is installed, they also add metadata the way other
+programs write it and let ExifTool double-check each result; CI runs them both ways. No
 personal photos are included.
 
 Before and after any change to the cleaning code, run the regression harness over a folder

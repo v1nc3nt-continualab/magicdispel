@@ -22,6 +22,24 @@ class PipelineTests(unittest.TestCase):
             self.assertEqual(caught.exception.key, "verification_failed")
             self.assertEqual(sorted(path.name for path in Path(folder).iterdir()), ["photo.png"])
 
+    def test_nothing_is_saved_when_a_file_cannot_be_cleaned(self):
+        with tempfile.TemporaryDirectory(prefix="core-") as folder:
+            photo = Path(folder, "photo.jpg")
+            Image.new("RGB", (8, 8), "green").save(photo)
+            photo.write_bytes(photo.read_bytes()[:-40])
+            with self.assertRaises(FormatError):
+                core.clean(str(photo))
+            self.assertEqual(sorted(path.name for path in Path(folder).iterdir()), ["photo.jpg"])
+
+    def test_an_existing_file_is_never_replaced(self):
+        with tempfile.TemporaryDirectory(prefix="core-") as folder:
+            photo = Path(folder, "photo.png")
+            Image.new("RGB", (8, 8), "green").save(photo)
+            Path(folder, "photo_clean.png").write_bytes(b"KEEP")
+            self.assertEqual(core.clean(str(photo)).name, "photo_clean_1.png")
+            self.assertEqual(core.clean(str(photo)).name, "photo_clean_2.png")
+            self.assertEqual(Path(folder, "photo_clean.png").read_bytes(), b"KEEP")
+
 
 if __name__ == "__main__":
     unittest.main()

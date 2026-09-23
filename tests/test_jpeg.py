@@ -103,6 +103,36 @@ def mpf(frames, extra_tags=()):
     return frames[0][:2] + index + frames[0][2:] + b"".join(frames[1:])
 
 
+def image_list(data):
+    """The byte order of an MPF index and where its image list starts: 16
+    bytes per image (flags, size, offset from the index's TIFF header, and
+    two dependent images)."""
+    header = data.index(b"MPF\0") + 4
+    order = "<" if data[header:header + 2] == b"II" else ">"
+    directory = header + struct.unpack_from(order + "I", data, header + 4)[0]
+    for index in range(struct.unpack_from(order + "H", data, directory)[0]):
+        tag, _, _, value = struct.unpack_from(order + "HHII", data, directory + 2 + 12 * index)
+        if tag == 0xB002:
+            return order, header, header + value
+    raise AssertionError("no MPF image list")
+
+
+def pillow_mpo(count):
+    """A multi-picture file as Pillow writes it, with private EXIF. Pillow
+    records the third image's size as a running total; that is corrected
+    here from the image's offset."""
+    frames = [gradient(size=(48 - 8 * n, 32 - 4 * n)) for n in range(count)]
+    tags = Image.Exif()
+    tags[0x013B] = tags[0x0131] = MARKER.decode()  # artist and software
+    buffer = io.BytesIO()
+    frames[0].save(buffer, "MPO", save_all=True, append_images=frames[1:], exif=tags)
+    data = bytearray(buffer.getvalue())
+    order, header, images = image_list(data)
+    last = images + 16 * (count - 1)
+    struct.pack_into(order + "I", data, last + 4, len(data) - header - struct.unpack_from(order + "I", data, last + 8)[0])
+    return bytes(data)
+
+
 def decoded(data):
     with Image.open(io.BytesIO(data)) as image:
         frames = []
@@ -210,6 +240,37 @@ class MultiPictureTests(unittest.TestCase):
         self.assertNotIn(MARKER, rebuilt)
         with self.assertRaises(VerificationError):
             jpeg.verify(original, rebuilt + MARKER)
+
+    def test_files_written_by_pillow(self):
+        for count in (2, 3):
+            with self.subTest(count=count):
+                original = pillow_mpo(count)
+                rebuilt = jpeg.rebuild(original)
+                jpeg.verify(original, rebuilt)
+                self.assertNotIn(MARKER, rebuilt)
+                self.assertEqual(len(decoded(rebuilt)), count)
+                self.assertEqual(decoded(rebuilt), decoded(original))
+
+    def test_a_stale_size_for_the_first_image_is_not_relied_on(self):
+        # Adding metadata to the first image, ExifTool updates the other images'
+        # offsets but leaves the first image's listed size as it was.
+        original = bytearray(mpf(self.frames()))
+        order, _, images = image_list(original)
+        struct.pack_into(order + "I", original, images + 4, 100)
+        original = bytes(original)
+        with self.assertRaises(VerificationError):
+            jpeg.images(original, strict=True)
+        rebuilt = jpeg.rebuild(original)
+        jpeg.verify(original, rebuilt)
+        self.assertEqual(decoded(rebuilt), decoded(original))
+
+    def test_an_image_listed_outside_the_file_is_refused(self):
+        data = bytearray(pillow_mpo(2))
+        order, _, images = image_list(data)
+        struct.pack_into(order + "I", data, images + 16 + 8, 0xFFFFFFF0)
+        with self.assertRaises(FormatError) as caught:
+            jpeg.rebuild(bytes(data))
+        self.assertEqual(caught.exception.key, "damaged")
 
     def test_cleaning_without_exiftool(self):
         with tempfile.TemporaryDirectory(prefix="jpeg-") as folder:

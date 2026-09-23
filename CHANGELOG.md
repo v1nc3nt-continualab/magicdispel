@@ -16,7 +16,8 @@
 - Remove HEIF XMP toolkit strings and unused item properties.
 - Add `--anonymous` random output filenames with collision protection.
 - Add synthetic auxiliary-graph and filename tests; prepare, but do not yet execute,
-  the Windows/Linux/macOS CI matrix.
+  the Windows/Linux/macOS CI matrix. The tests need only Pillow; with ExifTool installed
+  they also check each result with it, and CI runs them both ways.
 - Explicit dependency checks and English/Chinese installation documentation.
 - Clean macOS screenshots, whose display profiles carry Apple parametric curves
   (`aarg`/`aagg`/`aabg`, kept) and display identity/setup tags (`dscm`, `mmod`,
@@ -70,6 +71,9 @@
   whole batch with a Python error. The pixel comparison now uses the decoded samples at
   full precision (16-bit included) and hashes them in strips, never copying a whole frame:
   a 200-megapixel photo is checked in under a second with about 0.9 GB of memory.
+- Multi-picture JPEGs (such as iPhone HDR photos) that ExifTool has added metadata to are
+  accepted. ExifTool leaves the first image's size in the index as it was; that size is no
+  longer relied on, while MagicDispel's own index is still checked exactly.
 - A photo that fails unexpectedly is reported as an unexpected error and no longer stops
   the rest of a batch. A result its own format cannot read back counts as failing
   verification.
