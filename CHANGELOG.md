@@ -103,6 +103,9 @@
   - Any failure of Pillow's decoders now reads "cannot be decoded to check the result"
     instead of an unexpected error (damaged AVIF files raised RuntimeError), and Pillow's
     warnings about damaged files no longer appear in the terminal.
+- ExifTool's second check reads each result from a pipe instead of a temporary file next to
+  the photo. On Windows, a photo in a folder with Chinese or other non-ASCII characters
+  failed the check, because Windows passes paths to ExifTool in its legacy code page.
 - A photo that fails unexpectedly is reported as an unexpected error and no longer stops
   the rest of a batch. A result its own format cannot read back counts as failing
   verification.

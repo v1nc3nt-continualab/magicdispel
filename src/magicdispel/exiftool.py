@@ -2,14 +2,15 @@
 
 When ExifTool 12.73 or newer is installed, every rebuilt file is read by it
 before being saved. Any warning, any field outside the display allowlist and
-any data ExifTool cannot identify stops the save. Nothing here writes images.
+any data ExifTool cannot identify stops the save. ExifTool reads the result
+from a pipe: no file is written, and no path, which Windows would pass in its
+legacy code page and ExifTool might misread, is involved.
 """
 import json
 import os
 import re
 import shutil
 import subprocess
-import tempfile
 from pathlib import Path
 
 from . import xmp
@@ -84,22 +85,19 @@ def usable(found_version):
     return bool(match) and tuple(map(int, match.groups())) >= (12, 73)
 
 
-def second_opinion(exiftool, folder, data, suffix, kind):
+def second_opinion(exiftool, data, kind):
     """Have ExifTool read a rebuilt file; raise VerificationError on anything off."""
-    with tempfile.TemporaryDirectory(prefix=".magicdispel-", dir=folder) as temp:
-        path = Path(temp) / ("check" + suffix)
-        path.write_bytes(data)
-        try:
-            tags = read(exiftool, path)
-        except ExifToolError as error:
-            raise VerificationError("exiftool_problem", detail=str(error))
+    try:
+        tags = read(exiftool, data)
+    except ExifToolError as error:
+        raise VerificationError("exiftool_problem", detail=str(error))
     check_tags(tags, kind)
 
 
-def read(exiftool, path):
-    """Every tag ExifTool finds, keyed "Group0:Group1[:CopyN]:Tag"; a warning raises."""
-    tags = json.loads(run(exiftool, ["-j", "-G0:1:4", "-a", "-s", "-n", "-e", "-u", "-all",
-                                     str(path)]).stdout)[0]
+def read(exiftool, data):
+    """Every tag ExifTool finds in `data`, keyed "Group0:Group1[:CopyN]:Tag"; a warning raises."""
+    tags = json.loads(run(exiftool, ["-j", "-G0:1:4", "-a", "-s", "-n", "-e", "-u", "-all", "-"],
+                          data).stdout)[0]
     for key, value in tags.items():
         if key.split(":")[-1] in ("Error", "Warning"):
             raise ExifToolError(str(value))
@@ -139,9 +137,10 @@ def rendering_field(parts, value):
     return False
 
 
-def run(exiftool, arguments):
+def run(exiftool, arguments, data=None):
+    """ExifTool's output for `arguments`, with `data` as its standard input."""
     result = subprocess.run([exiftool, "-config", "", "-charset", "filename=UTF8", *arguments],
-                            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                            input=data, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     if result.returncode:
         raise ExifToolError((result.stderr or result.stdout).decode("utf-8", "replace").strip()
                             or "ExifTool failed")

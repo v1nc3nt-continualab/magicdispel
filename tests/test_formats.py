@@ -3,6 +3,7 @@ metadata, cleaned, and checked independently of the code under test. With
 ExifTool installed, it adds metadata as other programs write it and double-
 checks each result. Never use personal photographs in this suite."""
 import io
+import os
 import subprocess
 import tempfile
 import unittest
@@ -106,10 +107,21 @@ def add_with_exiftool(path):
     if path.name == "pages.tiff":
         tags += ["-IFD1:Artist=" + MARKER, "-IFD1:Orientation#=3"]
     # -m: Pillow's animated WebP and AVIF files draw minor warnings from ExifTool.
-    result = subprocess.run([EXIFTOOL, "-config", "", "-m", "-overwrite_original", *tags, str(path)],
-                            capture_output=True)
+    result = exiftool_run(["-m", "-overwrite_original", *tags], path)
     if result.returncode:
         raise AssertionError(result.stderr.decode())
+
+
+def exiftool_run(arguments, path):
+    """ExifTool on a file whose path may not be ASCII. Windows passes command
+    lines in its legacy code page; a UTF-8 argument file reaches ExifTool intact."""
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".args", delete=False) as argfile:
+        argfile.write("\n".join([*arguments, str(path)]) + "\n")
+    try:
+        return subprocess.run([EXIFTOOL, "-config", "", "-charset", "filename=UTF8", "-@", argfile.name],
+                              capture_output=True)
+    finally:
+        os.unlink(argfile.name)
 
 
 def frames(data):
@@ -148,8 +160,7 @@ def private_fields(data):
 
 
 def image_data_hash(path):
-    return subprocess.check_output([EXIFTOOL, "-config", "", "-api", "ImageHashType=SHA256", "-s3",
-                                    "-ImageDataHash", str(path)])
+    return exiftool_run(["-api", "ImageHashType=SHA256", "-s3", "-ImageDataHash"], path).stdout
 
 
 class FormatTests(unittest.TestCase):

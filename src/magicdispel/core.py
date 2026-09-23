@@ -35,11 +35,11 @@ def clean(argument, exiftool_path=None, naming="plain"):
         raise VerificationError("verification_failed", detail="the result cannot be read back")
     if pixels.decodes(kind):
         pixels.compare(data, rebuilt, kind)
-    suffixes = formats.SUFFIXES[kind]
     if exiftool_path:
-        exiftool.second_opinion(exiftool_path, source.parent, rebuilt, suffixes[0], kind)
+        exiftool.second_opinion(exiftool_path, rebuilt, kind)
     if hashlib.sha256(data).digest() != file_digest(source):
         raise VerificationError("source_changed")
+    suffixes = formats.SUFFIXES[kind]
     suffix = source.suffix if source.suffix.lower() in suffixes else suffixes[0]
     return publish(rebuilt, source, suffix, naming)
 
