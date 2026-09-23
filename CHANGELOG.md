@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.2 (2026-09-24)
 
 Fixes from an independent review, which built files that hid data where 0.1.1 did not look.
 Photos as cameras, phones and editors write them were not affected: the 60 test photos
