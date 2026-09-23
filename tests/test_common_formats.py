@@ -7,6 +7,7 @@ import subprocess
 import tempfile
 
 from magicdispel import core
+from magicdispel.errors import VerificationError
 API = vars(core)
 ET = API['find_exiftool']()
 
@@ -130,7 +131,7 @@ class CommonFormatTests(unittest.TestCase):
             # Explicitly catch comment fields reported in the File family.
             try:
                 API['verify_metadata']({'File:FileType':'GIF', 'File:Comment':'PRIVATE_MARKER'})
-            except API['CleanError']:
+            except VerificationError:
                 pass
             else:
                 raise AssertionError('File:Comment escaped validation')

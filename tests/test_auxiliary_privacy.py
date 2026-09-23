@@ -11,6 +11,7 @@ from unittest.mock import patch
 
 from PIL import Image
 from magicdispel import core
+from magicdispel.errors import VerificationError
 from magicdispel.privacy import (PrivacyError, bmff_box, heif_layout,
     heif_auxiliary_types, strip_heif_auxiliary, strip_heif_private)
 
@@ -131,7 +132,7 @@ class AuxiliaryPrivacyTests(unittest.TestCase):
         for group,tag,value in [('XMP-depthData','IntrinsicMatrix',[1]*9),
                                 ('XMP-depthBlurEffect','RenderingParameters','UkVORA=='),
                                 ('XMP-x','XMPToolkit','XMP Core 6.0.0')]:
-            with self.subTest(tag=tag), self.assertRaises(core.CleanError):
+            with self.subTest(tag=tag), self.assertRaises(VerificationError):
                 core.verify_metadata({'File:FileType':'HEIC','XMP:'+group+':'+tag:value})
 
 

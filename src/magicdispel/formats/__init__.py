@@ -8,13 +8,13 @@ Each format module provides:
 Formats not listed in REBUILT still go through the older ExifTool pipeline
 in core.py while they are migrated.
 """
-from . import bmp, gif, heif, jpeg, png, webp
+from . import bmp, gif, heif, jpeg, png, tiff, webp
 
 REBUILT = {"PNG": png, "APNG": png, "BMP": bmp, "JPEG": jpeg, "WEBP": webp, "GIF": gif,
-           "HEIC": heif, "AVIF": heif}
+           "HEIC": heif, "AVIF": heif, "TIFF": tiff}
 # Formats Pillow decodes, for comparing pixels. For HEIC, heif.verify compares
 # every retained image item byte for byte instead.
-PILLOW_DECODES = {"PNG", "APNG", "BMP", "JPEG", "WEBP", "GIF", "AVIF"}
+PILLOW_DECODES = {"PNG", "APNG", "BMP", "JPEG", "WEBP", "GIF", "AVIF", "TIFF"}
 
 
 def identify(data):
@@ -29,6 +29,8 @@ def identify(data):
         return "WEBP"
     if data[:6] in (b"GIF87a", b"GIF89a"):
         return "GIF"
+    if data[:4] in (b"II*\0", b"MM\0*", b"II+\0", b"MM\0+"):  # the last two are BigTIFF
+        return "TIFF"
     if data[:2] == b"BM":
         return "BMP"
     return None

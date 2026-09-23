@@ -50,7 +50,9 @@ DISPLAY_TAGS = re.compile(
 # free space), which change whenever other parts are dropped or emptied. They
 # may appear, disappear or change without counting as metadata.
 LAYOUT_TAGS = {"MPImageStart", "MPImageLength", "StripOffsets", "TileOffsets", "WebP_Flags", "FileType",
-               "MediaDataOffset", "MediaDataSize", "MediaData", "Free", "Unknown_free"}
+               "MediaDataOffset", "MediaDataSize", "MediaData", "Free", "Unknown_free",
+               # ExifTool's names for the strip offsets of JPEG-compressed TIFF
+               "PreviewImageStart", "PreviewImageLength"}
 
 
 # ---------------------------------------------------------------- fingerprints
@@ -381,16 +383,19 @@ def load_manifest(corpus):
     return json.loads(path.read_text())
 
 
-def run(corpus, workers, keep):
+def run(corpus, workers, keep, without_exiftool=False):
     samples = load_manifest(corpus)
     exiftool = core.find_exiftool()
+    if not exiftool:
+        sys.exit("The harness itself reads metadata with ExifTool; please install it.")
     core.check_dependency(exiftool)
+    cleaner_exiftool = None if without_exiftool else exiftool
     renderer = NativeRenderer(corpus / ".cache")
     inputs = input_fingerprints(corpus, samples, renderer, exiftool, workers)
     workdir = Path(tempfile.mkdtemp(prefix="regression-", dir=corpus / ".cache"))
     try:
         with concurrent.futures.ThreadPoolExecutor(workers) as pool:
-            records = list(pool.map(lambda s: clean_sample(exiftool, corpus, s, workdir), samples))
+            records = list(pool.map(lambda s: clean_sample(cleaner_exiftool, corpus, s, workdir), samples))
         outputs = [Path(r["output"]) for r in records if r["status"] == "cleaned"]
         native = renderer.fingerprints(outputs)
         tags = exiftool_tags(exiftool, outputs)
@@ -534,10 +539,12 @@ def main():
                         help="samples whose outcome is allowed to change")
     parser.add_argument("--workers", type=int, default=min(8, os.cpu_count() or 1))
     parser.add_argument("--keep", type=Path, help="copy cleaned outputs to this new folder")
+    parser.add_argument("--without-exiftool", action="store_true",
+                        help="clean without ExifTool's second check, as for users who lack it")
     args = parser.parse_args()
 
     corpus = args.corpus.resolve()
-    records = run(corpus, args.workers, args.keep)
+    records = run(corpus, args.workers, args.keep, args.without_exiftool)
     baseline ={r["id"]: r for r in json.loads(args.baseline.read_text())["records"]} if args.baseline else {}
 
     failures = 0

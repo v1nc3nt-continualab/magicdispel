@@ -1,71 +1,67 @@
 # MagicDispel
 
-Clean common photo metadata locally while preserving image quality.
+Remove private metadata from photos on your own computer, without touching image quality.
 
-**Unpublished draft:** release and installation instructions below are pending validation and publication.
+**Unpublished draft:** the installation instructions below work once the first release is published.
 
 [中文说明](README.zh-CN.md)
 
 ```console
 magicdispel photo.jpg
-magicdispel "photo one.heic" "photo two.png"
+magicdispel "photo one.heic" screenshot.png
 magicdispel --anonymous photo.jpg
 ```
 
-Type `magicdispel`, add a space, drag one or more photos into your terminal,
-then press Enter. A new `photo_clean.jpg` appears next to the original.
-Existing files are never overwritten: subsequent copies use `_clean_1`, `_clean_2`, etc.
-Use `--anonymous` to generate `photo_<random>.jpg` without retaining the input filename.
-This changes the output name only; it does not anonymize visible image content.
+Type `magicdispel` and a space, drag one or more photos into the terminal, and press Enter.
+A cleaned copy named `photo_clean.jpg` appears next to each original. Originals are never
+modified and existing files are never overwritten: further copies get `_clean_1`, `_clean_2`...
+`--anonymous` names the copy `photo_<random>.jpg` instead. It changes the name only, not what
+the picture shows.
 
-## What it does
+## How it works
 
-- Removes common GPS, capture-time, device, author, comment, EXIF, IPTC and XMP metadata.
-- Keeps the original image encoding except BMP, which becomes lossless PNG.
-- Verifies image-data hashes and checks decoded frames for GIF/APNG/TIFF and BMP conversion.
-- Preserves orientation, ICC color conversion data, HDR gain maps and transparency.
-- Rebuilds ICC identity fields and removes HEIF URI metadata items, including Apple style property lists.
-- Removes recognized HEIF thumbnails, depth/calibration data, semantic/portrait masks and editing-only style maps.
-- Erases removed auxiliary payload bytes and unused properties, while protecting shared image tiles.
-- Checks for unexpected remaining metadata and refuses outputs that fail verification.
-- Processes files on your computer. No upload service, telemetry or network requests in the tool.
+MagicDispel does not hunt for known metadata to delete. It writes a new file from only the
+parts a viewer needs to show the image, such as the compressed pixels, color profile,
+orientation, DPI, transparency, animation timing and HDR gain maps, and leaves everything
+else behind: location, capture time, camera and lens details, author, comments, editing
+software, thumbnails, depth maps and portrait mattes, C2PA manifests, and private or unknown
+data blocks, wherever a format stores them.
 
-**This is not a zero-metadata or anonymity tool.** Sanitized ICC profiles, minimal EXIF display tags,
-HDR/alpha auxiliary images and recognized HDR XMP remain. ICC dates use the fixed privacy
-placeholder `2000-01-01 00:00:00`, descriptions become `Clean`, and original creator/device/profile
-identifiers are cleared. Recognized Apple adaptive-curve image identifiers are also cleared.
-Removing auxiliary data reduces later portrait/depth/style editing capabilities;
-tested SDR/HDR rendering was unchanged. The image itself, its default filename, or a match with a previously
-published image may still identify a person or place.
-See [privacy and format limits](docs/PRIVACY.md).
+- Image data is copied byte for byte. Only BMP is re-encoded, losslessly, as PNG.
+- ICC color profiles keep their color data; their dates become a fixed placeholder
+  (`2000-01-01`), their descriptions `Clean`, and device and creator fields are cleared.
+- Every result is checked before it is saved. The format's rebuilder parses it again on its
+  own; Pillow must decode identical pixels and frames (for HEIC, which Pillow cannot decode,
+  every image item is compared byte for byte instead); and ExifTool, if installed, gives an
+  independent second reading. If any check fails, nothing is saved.
+- Everything happens on your computer: no uploads, telemetry or network access.
+
+**This is not an anonymity tool.** What the picture shows, a match with a copy published
+earlier, or the account it is shared from can still identify people and places. Removing
+depth and style data also limits later portrait, depth-of-field and style edits.
+See [privacy and format details](docs/PRIVACY.md).
 
 ## Install
 
-Python **3.10+** and [ExifTool **12.73+**](https://exiftool.org/install.html) are required.
-ExifTool **13.55+** is recommended for recent iPhone HEIC files. ExifTool is a separate
-system dependency; installing the Python package alone does not install it.
-
-The first release can be installed directly from GitHub. A PyPI listing is not required.
+Python **3.10+** is required. [ExifTool](https://exiftool.org/) is optional: when version
+12.73 or newer is installed, MagicDispel uses it to double-check every result.
 
 ### macOS
 
-With [Homebrew](https://brew.sh/) installed:
+With [Homebrew](https://brew.sh/):
 
 ```sh
-brew install exiftool pipx
+brew install pipx
 pipx ensurepath
 pipx install "https://github.com/v1nc3nt-continualab/magicdispel/archive/refs/tags/v0.1.0.zip"
 ```
 
-Open a new terminal, then run `magicdispel --check`.
+Optional second check: `brew install exiftool`.
 
 ### Windows (PowerShell)
 
-Install Python and ExifTool using Windows Package Manager, or use their official installers:
-
 ```powershell
 winget install --exact --id Python.Python.3.12
-winget install --exact --id OliverBetz.ExifTool
 ```
 
 Open a new PowerShell window, then:
@@ -76,31 +72,27 @@ py -3.12 -m pipx ensurepath
 py -3.12 -m pipx install "https://github.com/v1nc3nt-continualab/magicdispel/archive/refs/tags/v0.1.0.zip"
 ```
 
-Open another terminal and run `magicdispel --check`.
-If you use ExifTool's ZIP distribution, keep `exiftool_files` beside the executable
-and rename `exiftool(-k).exe` to `exiftool.exe` as its installation instructions describe.
+Optional second check: `winget install --exact --id OliverBetz.ExifTool`.
 
 ### Linux
 
-On Ubuntu 24.04+ / a recent Debian release:
+On Ubuntu 24.04+ or a recent Debian:
 
 ```sh
-sudo apt update
-sudo apt install pipx libimage-exiftool-perl
+sudo apt install pipx
 pipx ensurepath
 pipx install "https://github.com/v1nc3nt-continualab/magicdispel/archive/refs/tags/v0.1.0.zip"
 ```
 
-Open a new terminal and run `magicdispel --check`. If your distribution provides an older
-ExifTool, upgrade it using the [official installation instructions](https://exiftool.org/install.html).
+Optional second check: `sudo apt install libimage-exiftool-perl`.
 
 ### Already using uv?
 
-After installing ExifTool:
-
 ```sh
-uv tool install --python 3.12 "https://github.com/v1nc3nt-continualab/magicdispel/archive/refs/tags/v0.1.0.zip"
+uv tool install "https://github.com/v1nc3nt-continualab/magicdispel/archive/refs/tags/v0.1.0.zip"
 ```
+
+Then open a new terminal and run `magicdispel --check`.
 
 ## Usage
 
@@ -112,33 +104,31 @@ magicdispel --anonymous photo.jpg
 magicdispel -- "-filename-starts-with-a-dash.jpg"
 ```
 
-Use a space after the command. Quote paths containing spaces, or drag the files into
-the terminal. On Windows, drag-and-drop support depends on your terminal; a quoted path
-always works. Directories and recursive processing are not supported.
+Quote paths containing spaces, or drag the files into the terminal. On Windows, drag-and-drop
+depends on the terminal; a quoted path always works. Folders are not processed recursively.
+The interface follows the system language (English or Simplified Chinese); set
+`MAGICDISPEL_LANG=en` or `zh` to choose. If ExifTool is installed somewhere unusual, set
+`MAGICDISPEL_EXIFTOOL` to its full path.
 
-Outputs stay in the input folder and keep the same image format, except BMP becomes PNG. Exit codes:
-`0` success/help, `1` one or more processing failures, `2` invalid command-line arguments,
-`130` interrupted. A failed item does not prevent the remaining items in a batch from running.
-
-If ExifTool is not on PATH, set `MAGICDISPEL_EXIFTOOL` to the full executable path.
-`--check` verifies that it can run and meets the minimum version.
+Exit codes: `0` success or help, `1` one or more files not cleaned, `2` invalid arguments,
+`130` interrupted. A failed file does not stop the rest of a batch.
 
 ## Formats
 
-| Format | Behavior |
-| --- | --- |
-| JPEG/JPG | Supported, including MPF/HDR auxiliary images; every image is cleaned and the MP index is rebuilt |
-| PNG/APNG | Supported; animation is preserved |
-| HEIC/HEIF | Keeps HDR/alpha; removes recognized editing-only auxiliaries and thumbnails, without recompressing retained images |
-| AVIF | Supported, including animated AVIF; frames and timing are verified |
-| WebP | Supported, including lossless and animated WebP |
-| GIF | Supported; transparency and animation are preserved |
-| TIFF/TIF | Supported, including JPEG compression; encoded strips/tiles, pages and bit depth are verified |
-| BMP | Converted to PNG with decoded pixels verified unchanged |
-| RAW, video, PDF | Not supported |
+| Format | Kept | Removed |
+| --- | --- | --- |
+| JPEG | image data, JFIF density, orientation, DPI, color space, ICC profile; HDR gain-map images (MPF), Apple HDR headroom and gain-map XMP | other EXIF and XMP, IPTC/Photoshop, comments, C2PA, thumbnails, maker notes, trailing data |
+| PNG, APNG | image data, palette, transparency, color chunks (sRGB, gAMA, cHRM, cICP, HDR), DPI, animation, ICC profile, orientation | text, time stamps, C2PA, private chunks, anything after the end |
+| HEIC, HEIF | image items and tiles, HDR gain maps (Apple and ISO), alpha, orientation, ICC profile, HDR XMP fields | EXIF, other XMP, Apple property lists, depth and calibration, portrait and semantic mattes, style maps, thumbnails, unused data |
+| AVIF | as HEIF, including animations; sequence times, names and user data are cleared | as HEIF |
+| WebP | image data, alpha, animation, ICC profile, orientation | other EXIF, XMP, unknown chunks |
+| GIF | images, palettes, frame timing, transparency, loop count, ICC profile | comments, text overlays, XMP, other extensions |
+| TIFF | image data, decoding tags, DPI, orientation, page numbers, ICC profile | EXIF and GPS directories, XMP, IPTC, Photoshop, descriptions, private tags, sub-images |
+| BMP | converted to lossless PNG with the same pixels, DPI and profile | everything else |
+| RAW, video, PDF | not supported | |
 
-Not every file variant will pass verification. Warnings, unexpected metadata or altered
-image hashes cause the tool to stop that file without publishing a result.
+Variants that cannot be rebuilt safely, such as BigTIFF, fragmented image sequences or
+unknown HEIF item types, are refused rather than passed through.
 
 ## Development
 
@@ -150,11 +140,11 @@ python -m unittest discover -s tests -v
 python -m build
 ```
 
-Integration tests generate synthetic images and require ExifTool. No personal photos
-are included.
+Several tests prepare their fixtures with ExifTool, so it is needed for development. No
+personal photos are included.
 
-Before and after any change to the cleaning code, run the regression harness over
-a folder of real sample photos kept outside the repository:
+Before and after any change to the cleaning code, run the regression harness over a folder
+of real sample photos kept outside the repository:
 
 ```sh
 python scripts/make_probes.py ~/magicdispel-corpus    # adds synthetic leak probes
@@ -162,15 +152,17 @@ python scripts/regression.py ~/magicdispel-corpus     # saves a run under runs/
 python scripts/regression.py ~/magicdispel-corpus --baseline ~/magicdispel-corpus/runs/<run>.json
 ```
 
-It checks that every output looks identical to its input (Pillow, and macOS
-ImageIO/ColorSync when available), that no probe marker survives, and, against a
-baseline, that no sample changes outcome or gains metadata. Pure refactors should
-also pass `--identical`. The local workflow `.github/workflows/test.yml` is prepared for macOS,
-Windows and Linux with Python 3.10/3.13. It has not been dispatched: Windows/Linux
-execution remains a release prerequisite. Local macOS results do not establish support
-for those systems. Synthetic HEIF graph tests do not replace actual HEIC decoder tests.
+It checks that every output looks identical to its input (Pillow, and macOS ImageIO/ColorSync
+when available), that no probe marker survives, and, against a baseline, that no sample
+changes outcome or gains metadata. Pure refactors should also pass `--identical`, and
+`--without-exiftool` checks the path users without ExifTool take.
+
+The workflow `.github/workflows/test.yml` is prepared for macOS, Windows and Linux with
+Python 3.10 and 3.13 but has not run yet: Windows and Linux support remains to be verified
+before release. Local macOS results do not establish support for other systems.
 
 ## License and attribution
 
-MagicDispel is MIT licensed. [ExifTool](https://exiftool.org/) is developed by Phil Harvey
-and distributed separately under its own license. MagicDispel is not affiliated with ExifTool.
+MagicDispel is MIT licensed. [ExifTool](https://exiftool.org/), an optional companion, is
+developed by Phil Harvey and distributed separately under its own license. MagicDispel is not
+affiliated with ExifTool.

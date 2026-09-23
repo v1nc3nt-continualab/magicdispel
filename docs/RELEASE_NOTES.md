@@ -1,11 +1,17 @@
-Unpublished draft: MagicDispel 0.1.0 cleans common photo metadata on your computer.
+Unpublished draft: MagicDispel 0.1.0 removes private metadata from photos on your computer,
+without touching image quality.
 
-Supported formats: JPEG, PNG/APNG, HEIC/HEIF, AVIF, WebP, GIF, TIFF and BMP.
-BMP becomes lossless PNG; other formats retain their image encoding. Originals are preserved,
-output names never overwrite existing files, and image data is verified before saving results.
+Type `magicdispel` and a space, drag photos into the terminal, and press Enter. A cleaned copy
+appears next to each original; originals are never modified and nothing is overwritten.
 
-Requires Python 3.10+ and ExifTool 12.73+; ExifTool 13.55+ is recommended for recent iPhone HEIC.
-After installing those dependencies, install with pipx:
+Supported formats: JPEG, PNG/APNG, HEIC/HEIF, AVIF, WebP, GIF, TIFF and BMP. Each file is
+rebuilt from only what is needed to show it, so location, capture time, camera details,
+author, comments, thumbnails, depth maps and portrait mattes, C2PA manifests and unknown data
+blocks are left behind. Image data is copied unchanged (BMP becomes lossless PNG), and color,
+orientation, DPI, transparency, animation and HDR gain maps are kept. Every result is checked
+before it is saved.
+
+Requires Python 3.10+. ExifTool is optional; when installed, it double-checks each result.
 
 ```sh
 pipx install "https://github.com/v1nc3nt-continualab/magicdispel/archive/refs/tags/v0.1.0.zip"
@@ -13,13 +19,9 @@ magicdispel --check
 magicdispel photo.jpg
 ```
 
-English and Chinese setup instructions for macOS, Windows and Linux are in the repository.
+English and Chinese instructions for macOS, Windows and Linux are in the repository. This is
+not an anonymity tool: what a picture shows can still identify people and places. Read the
+privacy details before sharing sensitive photos.
 
-This draft preserves color, orientation, HDR and transparency. It removes recognized
-HEIF editing-only auxiliary images, depth/calibration, masks and previews with their
-payloads. Later portrait/depth/style adjustments may be reduced. `--anonymous` uses
-a random output filename without carrying over the original name.
-It is not a zero-metadata/anonymity tool; read the privacy limitations before sharing sensitive photos.
-
-Release remains paused. Windows and Linux have not been tested on those systems here;
-the prepared CI matrix must run before publication. No release tag or download exists yet.
+Release remains paused until Windows and Linux have been tested on those systems. No release
+tag or download exists yet.

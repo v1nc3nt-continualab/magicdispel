@@ -1,4 +1,5 @@
-"""Command-line behavior in English and Chinese; no ExifTool needed for most cases."""
+"""Command-line behavior in English and Chinese, with and without ExifTool."""
+import io
 import os
 import subprocess
 import sys
@@ -9,7 +10,7 @@ from unittest.mock import patch
 
 from PIL import Image
 
-from magicdispel import __version__, messages
+from magicdispel import __version__, cli, messages
 
 
 def run(*arguments, language="en"):
@@ -49,6 +50,29 @@ class CommandLineTests(unittest.TestCase):
             self.assertIn("Done: 1 succeeded, 1 failed.", result.stdout)
             result = run(str(Path(folder, "missing.jpg")), language="zh")
             self.assertIn("失败：", result.stderr)
+
+
+class WithoutExifToolTests(unittest.TestCase):
+    """ExifTool is optional: without it, results are still checked and saved."""
+
+    def run_main(self, *arguments):
+        with patch.dict(os.environ, {"MAGICDISPEL_LANG": "en"}), \
+                patch.object(cli, "find_exiftool", return_value=None), \
+                patch("sys.stdout", new_callable=io.StringIO) as output:
+            return cli.main(list(arguments)), output.getvalue()
+
+    def test_check_reports_the_second_check_as_off(self):
+        code, output = self.run_main("--check")
+        self.assertEqual(code, 0)
+        self.assertIn("ExifTool second check: off", output)
+
+    def test_photos_are_cleaned(self):
+        with tempfile.TemporaryDirectory(prefix="cli-") as folder:
+            photo = Path(folder, "photo.jpg")
+            Image.new("RGB", (8, 8), "blue").save(photo)
+            code, output = self.run_main(str(photo))
+            self.assertEqual(code, 0)
+            self.assertTrue(Path(folder, "photo_clean.jpg").exists())
 
 
 class LanguageTests(unittest.TestCase):

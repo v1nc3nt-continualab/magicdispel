@@ -4,7 +4,7 @@ import argparse
 import sys
 
 from . import __version__
-from .core import CleanError, check_dependency, clean, find_exiftool
+from .core import CleanError, clean, exiftool_version, find_exiftool, supported_exiftool
 from .messages import message
 
 
@@ -31,11 +31,18 @@ def main(argv=None):
         print(message("help", version=__version__))
         return 0
     try:
-        exiftool = find_exiftool()
-        exiftool_version = check_dependency(exiftool)
+        # ExifTool is optional: when present and recent, it double-checks results.
+        exiftool, version = find_exiftool(), None
+        if exiftool:
+            version = exiftool_version(exiftool)
+            if not supported_exiftool(version):
+                exiftool = None
         if args.check:
-            print(message("ready", version=__version__, exiftool_version=exiftool_version,
-                          exiftool=exiftool))
+            print(message("ready", version=__version__))
+            if exiftool:
+                print(message("second_check_on", exiftool_version=version, exiftool=exiftool))
+            else:
+                print(message("second_check_old" if version else "second_check_off", exiftool_version=version))
         failures = 0
         for photo in args.photos:
             try:

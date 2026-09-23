@@ -13,6 +13,10 @@ class LocalizedError(ValueError):
         return message(self.key, **self.values)
 
 
+class InputError(LocalizedError):
+    """The argument is not a file, or not a format MagicDispel handles."""
+
+
 class FormatError(LocalizedError):
     """The file cannot be rebuilt safely, so nothing is saved."""
 

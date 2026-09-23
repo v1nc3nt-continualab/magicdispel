@@ -1,96 +1,98 @@
-# Privacy and format limits
+# Privacy and format details
 
-MagicDispel removes common capture and descriptive metadata while preserving image encoding,
-except BMP is converted losslessly to PNG.
-It does not promise forensic anonymization or removal of every metadata byte.
+MagicDispel rebuilds each file from an allowlist: it copies only the parts a viewer needs to
+show the image and leaves everything else behind. It does not search for known metadata to
+delete, so metadata it has never heard of is removed too. It does not promise forensic
+anonymization.
 
-The tool asks ExifTool to delete common metadata, retains color-space/orientation information,
-then sanitizes embedded ICC profiles before verification. HEIF editing-only auxiliary
-images, thumbnails and URI metadata are removed with dependency/range validation.
-This addresses known residues without assuming that ExifTool alone deletes every private structure.
+## What is kept, and why
 
-## Information deliberately retained
+- **Image data.** Compressed pixels are copied byte for byte. BMP is the only format that is
+  re-encoded, losslessly, as PNG.
+- **Color.** ICC profiles keep their color conversion data: matrices, curves, lookup tables,
+  Apple's parametric curves in screenshot profiles, and HDR adaptive curves (with their
+  image-specific identifier cleared). Every profile is rebuilt with the fixed date
+  `2000-01-01 00:00:00` and description `Clean`; creator, maker, model, CMM, platform and profile
+  ID are cleared, and display calibration data is removed. Color declarations of the formats
+  themselves are kept: PNG sRGB, gAMA, cHRM, cICP and HDR chunks, HEIF color boxes.
+- **Display fields.** Orientation, DPI, color space and the DCF interoperability index, written
+  into a fresh EXIF block holding nothing else. For iPhone HDR photos, Apple's HDR headroom and
+  gain, in a fresh maker note holding nothing else.
+- **HDR.** Gain-map images (JPEG multi-picture files, HEIF auxiliary images and ISO `tmap`
+  items), ISO 21496-1 gain-map metadata, Apple gain curves, and recognized numeric gain-map XMP
+  fields.
+- **Structure.** Transparency, animation frames, timing and loop count, TIFF pages and page
+  numbers, and the format's own headers.
+- **The file name**, with `_clean` added, unless `--anonymous` replaces it with a random
+  128-bit token that contains no name, time, MAC address or user ID.
 
-- ICC color conversion matrices, LUTs and curves. Profiles are rebuilt with a fixed date
-  of `2000-01-01 00:00:00`, description `Clean`, and cleared creator, maker/model, CMM,
-  platform and old profile ID fields. Calibration dates, descriptive dictionaries and
-  unreferenced profile padding are removed. The fixed date is a privacy placeholder.
-- Necessary EXIF orientation/color/version fields and normal codec/container information.
-- Recognized numeric HEIF XMP fields required for HDR gain maps.
-- JPEG gain-map XMP, HDR gain curves/ISO gain-map payloads, and only the numeric
-  Apple HDRHeadroom/HDRGain MakerNote fields. These are rendering information.
-- HEIF HDR gain maps and alpha images, plus their display dependencies. Recognized depth,
-  camera-calibration, semantic/portrait mask, linear-thumbnail and style-delta auxiliaries,
-  and `thmb` previews, are removed. Their metadata, actual payload bytes and unreferenced
-  properties are erased. Image offsets are stable and shared tiles remain protected.
-  URI metadata items, including Apple style property lists, are also removed with their bytes.
-- The input filename, with `_clean` and an optional collision suffix appended, by default.
-  `--anonymous` instead uses a cryptographically random 128-bit token in the output name.
-  It contains no source name, time, MAC address or user ID; it does not modify visible content.
+## What is removed
 
-Only individually recognized HEIF HDR XMP fields are permitted. Toolkit strings are
-removed from retained HEIF XMP packets. Entire namespaces
-are not blindly exempted; unexpected XMP still fails verification. This check is not a proof
-that every opaque or private structure contains no personal information.
+Everything not listed above, including: EXIF capture time, camera, lens, serial numbers,
+location and maker notes; XMP (except gain-map fields); IPTC and Photoshop blocks; comments and
+text chunks; C2PA manifests; embedded thumbnails and previews, which may show an uncropped
+original; HEIF depth maps, lens calibration, portrait and semantic mattes, style maps and Apple
+property lists; JPEG MPF image IDs; image-sequence creation times, handler and encoder names
+and user data; TIFF EXIF and GPS directories, descriptions, private tags and sub-images; and
+unknown or private data blocks and data after the end of an image.
 
-A previous audit found capture-adjacent ICC dates, identifying profile descriptions and
-opaque PLIST data. These known residues are now removed. Recognized legacy Apple `hdgm/gmap`
-adaptive curves also have their image-specific 16-byte identifier cleared, while retaining
-the numerical curve. Unrecognized ICC tags or adaptive-curve layouts are rejected instead
-of being copied unchecked. This has not exhaustively characterized every proprietary format.
+Removing auxiliary HEIF images limits later portrait, depth-of-field and photographic-style
+edits. Tested HEIC and HDR JPEG files render identically on macOS in SDR and HDR.
 
-Removing auxiliary data reduces later portrait/depth/style editing capabilities. Tested
-HEIC and HDR JPEG images retained identical native SDR/HDR pixels and gain-map data.
-Old outputs are not retroactively updated: process the original or an old output again.
+## How nothing slips through
+
+- **Rebuild, not delete.** Each format has its own rebuilder (`src/magicdispel/formats/`). Parts
+  with a fixed size must have exactly that size, so they cannot carry extra bytes. PNG image data
+  must inflate to exactly the scanlines the header describes, with nothing after the compressed
+  stream. JPEG multi-picture indexes are written fresh.
+- **HEIF in place.** HEIF files are cleaned without moving anything, so every offset stays
+  valid: removed items and boxes are zero-filled, bytes that no remaining item or sample uses
+  are zeroed, and boxes at the end of the file are dropped. This is why HEIC files do not shrink
+  much.
+- **Fail closed.** Anything that cannot be handled safely is refused, not passed through: an
+  unknown critical PNG chunk, an unknown HEIF item type or auxiliary image, an image that depends
+  on a removed layer, fragmented image sequences, media stored outside the file, BigTIFF,
+  old-style JPEG in TIFF, metadata inside JPEG-compressed TIFF strips, unrecognized ICC tags.
+- **Checked before saving.** The rebuilder parses its own result independently and compares it
+  with what the original should yield: for HEIF, for instance, that every retained image item is
+  byte-identical, XMP holds only gain-map fields, profiles are sanitized, and unused bytes are
+  zero; for TIFF, that no byte of the file is unaccounted for. Pillow must then decode identical
+  pixels, frames, timing and transparency (all formats but HEIC). If ExifTool 12.73+ is
+  installed, it reads the result as a second opinion, and any warning, private field or data it
+  cannot identify stops the save. The original's hash is compared before and after, so a file
+  changed by another program during cleaning is not published.
+
+## Out of scope
+
+Data hidden inside the compressed image data itself, for example in JPEG scans, VP8 or HEVC
+frames, GIF LZW data or unused palette entries, is copied along with the image. Detecting such
+steganography is beyond this tool.
 
 ## File-system information
 
-Outputs are new files populated with the verified main byte stream. Original extended
-attributes, macOS resource forks and Windows NTFS alternate streams are not copied.
-macOS output xattrs are cleared; Linux user xattrs are cleared where supported.
-Normal permissions, directory security attributes, creation/modification times and
-OS-generated access-control metadata may exist or be regenerated afterward.
-
-## Image integrity
-
-ExifTool's image-data SHA-256 is compared before and after where available. Pillow checks
-all decoded GIF/APNG/AVIF frames and TIFF pages, including animation timing and transparency.
-TIFF also verifies its actual encoded strips/tiles and JPEG tables; this works even when
-ExifTool cannot calculate ImageDataHash for JPEG-compressed TIFFs.
-BMP is decoded and saved as PNG; decoded pixels must match before a result is accepted.
-The whole-file hash of the source is also checked to detect concurrent changes.
-For HEIF auxiliary removal, retained image item byte ranges must remain exactly equal.
-Subsequent ExifTool image/profile checks use the auxiliary-trimmed temporary input;
-removed image payloads intentionally no longer match the original. Only color profiles
-still used by retained items are preserved and sanitized. Primary/HDR/alpha dependencies
-remain; unknown auxiliary types, private layers needed by a retained image, overlapping
-payloads, and unsupported references are rejected. Unknown variants can still be refused.
-The image-data check is evidence against recompression, not a guarantee that every viewer
-will interpret every proprietary format identically. MPF JPEGs are split into constituent
-images, each image is cleaned and verified, then a fresh MP index is built. This removes
-original MP image identifiers. The compressed image coding bytes, sanitized ICC profiles,
-recognized HDR values and numerical gain curves are checked for every constituent image. Invalid indexes
-are rejected. Actual iPhone HDR JPEG validation also compared SDR/HDR pixels using macOS ImageIO.
+Outputs are new files containing only the verified bytes. Extended attributes, macOS resource
+forks and Windows alternate data streams of the original are not copied; macOS output
+attributes are cleared, as are Linux `user.` attributes where supported. Normal permissions and
+creation/modification times of the new file are set by the system.
 
 ## What this cannot prevent
 
-- Location/identity inference from visible signs, faces, documents, scenery or reflections.
-- Matching the image with a previously published or known original image.
+- Location or identity inferred from what the picture shows: faces, signs, documents,
+  scenery, reflections.
+- Matching the image with a previously published or known original.
 - Identification through the account or service used to share the result.
-- Information a sharing application adds after cleaning.
-- Deliberately hidden information, steganography or forensic sensor attribution.
+- Information a sharing application adds afterwards.
+- Deliberately hidden information, steganography or sensor fingerprinting.
 
-Use a separate sharing copy and inspect its visible content when anonymity matters.
-HDR/alpha layers, codec structure, color curves and original pixel content still provide
-possible source/matching clues. A stronger flattened export can sacrifice HDR behavior
-and still does not defeat image matching. The current command is not that export mode.
+When anonymity matters, share a separate copy and look at what it shows.
 
 ## Validation status
 
-macOS has real-file metadata and native SDR/HDR decoder checks. The repository includes
-a pending Windows/Linux/macOS CI matrix for synthetic format, graph and CLI tests.
-Windows and Linux have not been executed in this workspace; do not advertise them as
-validated until those runs complete. No personal photographs are included in CI fixtures.
+On macOS, the unit tests and a local corpus of 60 real and synthetic samples pass: every output
+renders identically in macOS ImageIO/ColorSync (pixels, sRGB and Display P3 renders, SDR, HDR,
+gain maps, orientation and DPI), and 11 synthetic leak probes come out clean. A CI matrix for
+Windows, Linux and macOS is prepared but has not run; do not treat Windows or Linux as validated
+until it has.
 
 References: [ExifTool FAQ](https://exiftool.org/faq.html#Q32),
 [Apple location metadata guidance](https://support.apple.com/guide/personal-safety/ips0d7a5df82/web).

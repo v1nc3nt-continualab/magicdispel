@@ -53,3 +53,10 @@
   dropped from the end; bytes in mdat and idat that no item or sample uses are zeroed.
   In image sequences, creation/modification times, handler and compressor names, user
   data and metadata boxes are cleared, and external media references are refused.
+- TIFF is written afresh: each page keeps its image data and the tags needed to decode
+  and show it, with a sanitized ICC profile; EXIF and GPS directories, XMP, IPTC,
+  Photoshop blocks, descriptions, private tags, sub-images and free space are removed.
+  Every byte of the result is accounted for. BigTIFF and old-style JPEG are refused.
+- **ExifTool is no longer required.** Every format is rebuilt by MagicDispel itself;
+  when ExifTool 12.73+ is installed it double-checks each result, and `--check` reports
+  whether that second check is on. The ExifTool-based cleaning pipeline is removed.
