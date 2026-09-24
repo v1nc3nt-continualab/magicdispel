@@ -196,6 +196,13 @@ No. What the picture shows can still identify people and places: faces, signs, r
 the view from a window. So can a match with a copy published before, or the account it is
 shared from. MagicDispel removes metadata; it does not change the picture.
 
+**How do I report a problem?**
+[Open an issue](https://github.com/v1nc3nt-continualab/magicdispel/issues/new/choose) and fill
+in the form, without attaching private photos. If a file keeps private data after cleaning,
+report it privately instead, as
+[SECURITY.md](https://github.com/v1nc3nt-continualab/magicdispel/blob/main/SECURITY.md)
+explains.
+
 ## Development
 
 ```sh

@@ -1,0 +1,17 @@
+name: Feature request
+description: Something MagicDispel should do, or do differently.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What you would like
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: What you need it for
+      description: Your situation matters more than the solution you have in mind.
+    validations:
+      required: true
