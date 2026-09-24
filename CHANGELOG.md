@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.4 (2026-09-24)
 
 Tested on 27 photos from 21 current phones and cameras (Samsung, Google Pixel, Xiaomi, Huawei,
 Honor, vivo, OnePlus, OPPO, Canon, Nikon, Sony, Fujifilm, Panasonic, OM System, Leica): all of
