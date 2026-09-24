@@ -27,7 +27,7 @@ from typing import NamedTuple
 
 from .. import icc
 from ..errors import VerificationError
-from . import bmff
+from . import bmff, configs
 from .bmff import StructureError, unsupported
 
 TIMED = {b"mvhd", b"tkhd", b"mdhd"}
@@ -38,21 +38,36 @@ SAMPLE_FIELDS = 8          # of any other: reserved bytes and a data reference i
 QUICKTIME_SOUND = {1: 16, 2: 36}
 VISUAL_HANDLERS = {b"pict", b"vide", b"auxv"}
 VENDOR = (12, 16)          # within a visual or sound entry: QuickTime's vendor code
+DATA_SIZE = (36, 40)       # within a visual entry: reserved, or QuickTime's data size, always 0
 COMPRESSOR_NAME = (42, 74)  # within a visual entry
+# A handler's component type: none (ISO), QuickTime's media handler, or its
+# data handler, with the kinds of data reference it may name.
+COMPONENTS = {b"\0\0\0\0": None, b"mhlr": None, b"dhlr": {b"alis", b"url ", b"rsrc"}}
+SAMPLE_RESERVED = 6         # the reserved bytes every sample entry starts with, cleared
+# Fields no reader uses, cleared with the times: reserved ones, and in mvhd
+# QuickTime's preview, poster, selection and current times. (start, end) in
+# the payload, by version 0 and 1.
+UNUSED = {b"mvhd": ([(26, 36), (72, 96)], [(38, 48), (84, 108)]),
+          b"tkhd": ([(16, 20), (24, 32), (38, 40)], [(24, 28), (36, 44), (50, 52)]),
+          b"smhd": ([(6, 8)], [(6, 8)])}
 # Payload sizes of fixed-size boxes, by version where they have versions 0 and 1.
 FIXED_SIZES = {b"mvhd": (100, 112), b"tkhd": (84, 96), b"mdhd": (24, 36), b"cslg": (24, 44), b"mehd": (8, 12),
                b"vmhd": 12, b"smhd": 8, b"nmhd": 4, b"gmin": 16, b"trex": 24, b"clef": 12, b"prof": 12, b"enof": 12}
 # Tables of a count and that many entries: (bytes before the count, entry size by version).
 TABLES = {b"stts": (4, (8, 8)), b"ctts": (4, (8, 8)), b"stss": (4, (4, 4)), b"stps": (4, (4, 4)),
-          b"stsc": (4, (12, 12)), b"stco": (4, (4, 4)), b"co64": (4, (8, 8)), b"elst": (4, (12, 20)),
-          b"stsh": (4, (8, 8))}
+          b"stsc": (4, (12, 12)), b"stco": (4, (4, 4)), b"co64": (4, (8, 8)), b"elst": (4, (12, 20))}
+TABLE_VERSIONS = {b"ctts": (0, 1), b"elst": (0, 1)}  # the others have only version 0
+TABLE_FLAGS = {b"elst": (0, 1)}  # an edit list's flag 1: its edits repeat, as animations loop
 # Boxes that belong in one place of a movie; one found anywhere else means a damaged file.
 PLACED = {b"trak", b"tkhd", b"edts", b"elst", b"mdia", b"mdhd", b"minf", b"stbl", b"stsd", b"stts", b"ctts",
           b"stsc", b"stsz", b"stco", b"co64", b"stss"}
 REPEATABLE = {b"trak", b"sgpd", b"sbgp"}  # the others appear once in their container
 # The boxes of a sample table that track_table reads.
 TABLE_PARTS = {b"stsd", b"stts", b"ctts", b"stsc", b"stsz", b"stz2", b"stco", b"co64", b"stss", b"stps", b"sdtp",
-               b"padb", b"subs", b"sgpd", b"sbgp"}
+               b"sgpd", b"sbgp"}
+# sdtp bytes with a reserved value (3) in whether a sample depends on others,
+# others on it, or it is coded redundantly.
+SDTP_RESERVED = bytes(3 in (value >> 4 & 3, value >> 2 & 3, value & 3) for value in range(256))
 # Sample groups kept, by grouping type: (the size of each description, its
 # reserved bits in the first byte). Roll and pre-roll distances, sync and
 # random access points, temporal levels and layers. Other groups only help
@@ -65,8 +80,18 @@ ENTRY_SIZES = {b"pasp": 8, b"clap": 32, b"fiel": 2, b"clli": 4, b"mdcv": 24, b"a
                b"gama": 4, b"dvcC": 24, b"dvvC": 24, b"dvwC": 24, b"hfov": 4, b"frma": 4, b"enda": 2,
                b"mp4a": 4, b"\0\0\0\0": 0, b"dac3": 3, b"damr": 9, b"d263": 7, b"pcmC": 6, b"srat": 8,
                b"SmDm": 28, b"CoLL": 8,  # VP9's mastering display and light levels
+               b"chrm": 2, b"ccst": 8,  # the chroma location of each field; coding constraints
                # spatial video: stereo views, hero eye, baseline, disparity, projection, packing
                b"stri": 5, b"hero": 5, b"blin": 8, b"dadj": 8, b"prji": 8, b"pkin": 8}
+# Sample entry boxes that are full boxes of version 0 and no flags.
+FULL_BOXES = {b"stri", b"hero", b"blin", b"dadj", b"prji", b"pkin", b"srat", b"pcmC", b"SmDm", b"CoLL", b"ccst",
+              b"auxi", b"chan", b"must"}
+CHROMA_LOCATIONS = 6  # the largest chroma location code
+CODING_RESERVED = 0x03FFFFFF  # ccst: the bits after its intra-coding flags and reference count
+ALPHA = {b"urn:mpeg:mpegB:cicp:systems:auxiliary:alpha", b"urn:mpeg:hevc:2015:auxid:1"}  # auxi types kept
+# A QuickTime channel layout (chan): its tags that use a channel bitmap, or
+# descriptions of the channels, and the most channels described.
+USE_DESCRIPTIONS, USE_BITMAP, CHANNELS = 0, 0x10000, 24
 COLOR_SIZES = {b"nclx": (11, 10), b"nclc": (10,)}  # some Android phones leave out nclx's range byte
 PROFILE_COLORS = {b"prof", b"rICC"}  # ICC profiles, sanitized
 DOLBY_VISION = {b"dvcC", b"dvvC", b"dvwC"}
@@ -74,10 +99,13 @@ DOLBY_VISION = {b"dvcC", b"dvvC", b"dvwC"}
 ENTRY_VENDORS = {b"d263": 4, b"damr": 4}
 # Data references that mean "in this file" when their flag 1 is set.
 SELF_REFERENCES = {b"url ", b"urn ", b"alis"}
-# Uncompressed QuickTime sound: bits per sample, or None to take the entry's own.
+# Uncompressed QuickTime sound: bits per sample, or None to take the sample
+# entry's own, which must be one of ENTRY_BITS (FFmpeg reads any other as 16).
 PCM_BITS = {b"twos": None, b"sowt": None, b"raw ": None, b"in24": 24, b"in32": 32, b"fl32": 32, b"fl64": 64,
             b"ulaw": 8, b"alaw": 8}
-LANGUAGE = 64  # longest extended language tag kept (elng)
+ENTRY_BITS = {8, 16, 24, 32, 64}
+ISO_PCM = {b"ipcm", b"fpcm"}  # ISO's uncompressed sound, whose bits per sample are in its pcmC box
+PCM = set(PCM_BITS) | ISO_PCM | {b"lpcm"}  # lpcm: QuickTime's, described by a version 2 entry
 CHUNK = 1 << 20
 BLOCK = 1 << 16  # table entries read at a time
 
@@ -127,6 +155,7 @@ class Table(NamedTuple):
     count: int            # samples
     stsd: bmff.Box
     stsz: bmff.Box
+    spare: list           # (start, end) of sample group descriptions no sample uses, cleared
 
 
 # ----------------------------------------------------------------------- tracks
@@ -207,12 +236,14 @@ def clean(buffer, moov, policy):
     """Clean a movie box in place, as the policy says; [Track] of those kept."""
     found = tracks(buffer, moov)
     removed = removed_tracks(buffer, found, policy)
+    spare = []
     for track in found:
         if track.ident in removed:
             empty(buffer, track.box)
         else:
-            track_table(buffer, track.box)
+            spare += track_table(buffer, track.box).spare
     clean_container(buffer, moov, policy, None, removed)
+    clear(buffer, spare)
     return [track for track in found if track.ident not in removed]
 
 
@@ -231,7 +262,7 @@ def clean_container(buffer, container, policy, track_handler, removed):
         elif found.kind in policy.boxes:
             clean_container(buffer, found, policy, handler(buffer, found) if found.kind == b"trak" else track_handler,
                             removed)
-        elif found.kind == b"tref" and policy.references is not None:
+        elif found.kind == b"tref":
             for reference in bmff.boxes(buffer, found.content, found.end):
                 targets = {int.from_bytes(buffer[p:p + 4], "big") for p in range(reference.content, reference.end, 4)}
                 if reference.kind == b"free" or targets <= removed:  # see removed_tracks: only dangling types
@@ -335,12 +366,14 @@ def entry_boxes(data, entry, fields):
 
 
 def entry_fields(entry, track_handler):
-    """The fields of a sample entry that are cleared: in a visual or sound
-    entry its vendor code and, in a visual one, its compressor name."""
-    spans = []
+    """The fields of a sample entry that are cleared: its reserved bytes, in
+    a visual or sound entry its vendor code and, in a visual one, its data
+    size and compressor name."""
+    spans = [(entry.content, entry.content + SAMPLE_RESERVED)]
     if track_handler in VISUAL_HANDLERS or track_handler == b"soun":
         spans.append((entry.content + VENDOR[0], entry.content + VENDOR[1]))
     if track_handler in VISUAL_HANDLERS:
+        spans.append((entry.content + DATA_SIZE[0], entry.content + DATA_SIZE[1]))
         spans.append((entry.content + COMPRESSOR_NAME[0], entry.content + COMPRESSOR_NAME[1]))
     return spans
 
@@ -368,16 +401,23 @@ def check_entry_box(data, found, children, siblings):
         if kind not in COLOR_SIZES and kind not in PROFILE_COLORS:
             raise unsupported("colr box of type " + kind.decode("latin-1"))
         sizes = COLOR_SIZES.get(kind, (size,))
-    elif found.kind == b"chan":  # QuickTime channel layout: a tag, a bitmap, then 20 bytes a channel
-        sizes = (16 + 20 * int.from_bytes(data[found.content + 12:found.content + 16], "big"),) if size >= 16 else ()
+    elif found.kind == b"chan":
+        sizes = (size,) if channel_layout(data, found) else ()
+    elif found.kind == b"auxi":  # the kind of auxiliary image: only alpha is kept
+        sizes = (size,) if size > 4 and data[found.end - 1] == 0 and \
+            bytes(data[found.content + 4:found.end - 1]) in ALPHA else ()
     elif found.kind == b"must":  # the box types a reader must understand, all of them listed ones
         listed = {bytes(data[p:p + 4]) for p in range(found.content + 4, found.end, 4)}
         sizes = (size,) if size >= 4 and size % 4 == 0 and not any(data[found.content:found.content + 4]) and \
             listed <= set(siblings) else ()
     else:
         sizes = (ENTRY_SIZES.get(found.kind, size),)
-    if size not in sizes:
+    if size not in sizes or found.kind in FULL_BOXES and any(data[found.content:found.content + 4]):
         raise unsupported("the %s box in a sample entry is not in its layout" % found.kind.decode("latin-1"))
+    configs.check(found.kind, data, found.content, found.end)
+    if found.kind == b"chrm" and max(data[found.content:found.end]) > CHROMA_LOCATIONS or \
+            found.kind == b"ccst" and int.from_bytes(data[found.content + 4:found.end], "big") & CODING_RESERVED:
+        raise unsupported("reserved values in the %s box" % found.kind.decode("latin-1"))
     if found.kind in DOLBY_VISION and (data[found.content + 4] & 0x03 or any(data[found.content + 5:found.end])):
         # after the compatibility ID and the metadata compression, reserved bits
         raise unsupported("reserved bits set in the Dolby Vision configuration")
@@ -391,6 +431,18 @@ def check_entry_box(data, found, children, siblings):
             if child.kind not in children or (child.kind == b"\0\0\0\0" and index != len(inner) - 1):
                 raise unsupported("%s box in %s" % (child.kind.decode("latin-1"), found.kind.decode("latin-1")))
             check_entry_box(data, child, children[child.kind], children)
+
+
+def channel_layout(data, found):
+    """Whether a QuickTime channel layout (chan) holds only what its tag uses:
+    a bitmap only with the bitmap tag, and descriptions of the channels, 20
+    bytes each, only with the descriptions tag."""
+    size = found.end - found.content
+    if size < 16:
+        return False
+    tag, bitmap, count = struct.unpack_from(">III", data, found.content + 4)
+    return (size == 16 + 20 * count and (not bitmap or tag == USE_BITMAP)
+            and (not count or tag == USE_DESCRIPTIONS and count <= CHANNELS))
 
 
 def profiles_in(data, entry, fields):
@@ -415,21 +467,23 @@ def check_layout(data, found):
     elif found.kind in TABLES:
         before, entry = TABLES[found.kind]
         count = int.from_bytes(data[found.content + before:found.content + before + 4], "big") if size >= 8 else 0
-        expected = before + 4 + count * entry[version] if version in (0, 1) and size >= 8 else None
+        flags = int.from_bytes(data[found.content + 1:found.content + 4], "big") if size >= 8 else None
+        expected = (before + 4 + count * entry[version] if size >= 8 and version in TABLE_VERSIONS.get(found.kind, (0,))
+                    and flags in TABLE_FLAGS.get(found.kind, (0,)) else None)
     elif found.kind == b"stsz":
         fixed, count = struct.unpack_from(">II", data, found.content + 4) if size >= 12 else (0, 0)
-        expected = 12 + (0 if fixed else 4 * count) if size >= 12 else None
+        expected = (12 + (0 if fixed else 4 * count) if size >= 12 and not any(data[found.content:found.content + 4])
+                    else None)
+    elif found.kind == b"hdlr":
+        component, subtype = (bytes(data[position:position + 4]) for position in (found.content + 4, found.content + 8))
+        expected = size if size >= HANDLER_FIELDS and component in COMPONENTS and \
+            subtype in (COMPONENTS[component] or {subtype}) else None
     elif found.kind == b"dref":
         count = int.from_bytes(data[found.content + 4:found.content + 8], "big") if size >= 8 else None
         if size < 8 or count != len(list(bmff.boxes(data, found.content + 8, found.end))):
             expected = None
         else:
             expected = size
-    elif found.kind == b"elng":  # an extended language tag, such as zh-Hant
-        tag = bytes(data[found.content + 4:found.end - 1])
-        expected = size if (4 < size <= 4 + LANGUAGE and not any(data[found.content:found.content + 4])
-                            and data[found.end - 1] == 0 and tag and all(c in b"-" or chr(c).isalnum() and c < 128
-                                                                          for c in tag)) else None
     elif found.kind not in FIXED_SIZES:
         return
     if size != expected:
@@ -438,12 +492,16 @@ def check_layout(data, found):
 
 def cleared_fields(data, found):
     """The spans of a box that are cleared: creation and modification times,
-    a handler's vendor code and name, data reference locations."""
+    fields no reader uses (see UNUSED), a handler's vendor code and name, data
+    reference locations. The box has its layout (see check_layout)."""
     if found.kind in TIMED:
-        size = 16 if found.end > found.content and data[found.content] == 1 else 8  # version 1: 64-bit times
-        if found.end - found.content < 4 + size:
+        version = 1 if found.end > found.content and data[found.content] == 1 else 0  # version 1: 64-bit times
+        if found.end - found.content < 4 + (8 << version):
             raise StructureError("truncated movie header")
-        return [(found.content + 4, found.content + 4 + size)]
+        return [(found.content + 4, found.content + 4 + (8 << version))] + [
+            (found.content + start, found.content + end) for start, end in UNUSED.get(found.kind, ([], []))[version]]
+    if found.kind in UNUSED:
+        return [(found.content + start, found.content + end) for start, end in UNUSED[found.kind][0]]
     if found.kind == b"hdlr":
         return [(found.content + HANDLER_FIELDS, found.end)] if found.end - found.content > HANDLER_FIELDS else []
     if found.kind == b"dref":
@@ -458,7 +516,7 @@ def data_references(data, dref):
         raise StructureError("truncated data references")
     spans = []
     for entry in bmff.boxes(data, dref.content + 8, dref.end):
-        if entry.kind not in SELF_REFERENCES or entry.end - entry.content < 4 or not data[entry.content + 3] & 1:
+        if entry.kind not in SELF_REFERENCES or data[entry.content:entry.content + 4] != b"\0\0\0\1":
             raise unsupported("external media reference")
         spans.append((entry.content + 4, entry.end))
     return spans
@@ -488,8 +546,9 @@ def track_table(data, trak):
     it one sample description, stts, stsc, stsz and chunk offset table (stco
     or co64), and the optional tables, each in its exact layout, all agreeing
     on the number of samples; every chunk holding samples of a listed
-    description, and every description used. Tables of samples are read a
-    block at a time: a long video has millions."""
+    description, none of them empty or sharing its bytes with another, and
+    every description used. Tables of samples are read a block at a time: a
+    long video has millions."""
     stbl = only(data, only(data, only(data, trak, b"mdia"), b"minf"), b"stbl")
     parts = {}
     for found in bmff.boxes(data, stbl.content, stbl.end):
@@ -510,8 +569,14 @@ def track_table(data, trak):
     entries = int.from_bytes(data[stsd.content + 4:stsd.content + 8], "big") if stsd.end - stsd.content >= 8 else 0
     count = int.from_bytes(data[stsz.content + 8:stsz.content + 12], "big")
     for kind in (b"stts", b"ctts"):
-        if kind in parts and sum(samples for samples, _ in entries_of(data, parts[kind][0], ">II")) != count:
-            raise StructureError("the %s table does not match the samples" % kind.decode("latin-1"))
+        if kind in parts:
+            total = 0
+            for samples, _ in entries_of(data, parts[kind][0], ">II"):
+                if not samples:
+                    raise StructureError("an empty %s entry" % kind.decode("latin-1"))
+                total += samples
+            if total != count:
+                raise StructureError("the %s table does not match the samples" % kind.decode("latin-1"))
     for kind in (b"stss", b"stps"):
         if kind in parts:
             previous = 0
@@ -519,11 +584,11 @@ def track_table(data, trak):
                 if not previous < number <= count:
                     raise StructureError("invalid %s table" % kind.decode("latin-1"))
                 previous = number
-    check_sample_groups(data, parts, count)
+    spare = check_sample_groups(data, parts, count)
     runs = list(entries_of(data, stsc, ">III"))  # from chunk `first` on, each holds `samples` of description `index`
     offsets = parts.get(b"co64") or parts[b"stco"]
     chunks = [offset for offset, in entries_of(data, offsets[0], ">Q" if offsets[0].kind == b"co64" else ">I")]
-    if (runs and runs[0][0] != 1 or any(a[0] >= b[0] for a, b in zip(runs, runs[1:]))
+    if (runs and runs[0][0] != 1 or chunks and not runs or any(a[0] >= b[0] for a, b in zip(runs, runs[1:]))
             or any(first > len(chunks) or not samples or not 0 < index <= entries for first, samples, index in runs)
             or count and len({index for _, _, index in runs}) != entries):  # each description used
         raise StructureError("invalid sample-to-chunk table")
@@ -541,11 +606,16 @@ def track_table(data, trak):
                   else sum(itertools.islice(sizes, per_chunk)))
         if offset + length > len(data):
             raise StructureError("samples past the end of the file")
+        if not length:
+            raise unsupported("a chunk of empty samples")
         ranges.append((offset, offset + length))
         sample += per_chunk
     if sample != count:
         raise StructureError("sample table does not match its samples")
-    return Table(ranges, count, stsd, stsz)
+    ordered = sorted(ranges)
+    if any(b[0] < a[1] for a, b in zip(ordered, ordered[1:])):
+        raise unsupported("chunks sharing their bytes")
+    return Table(ranges, count, stsd, stsz, spare)
 
 
 def only(data, container, kind):
@@ -575,27 +645,27 @@ def sample_sizes(data, stsz):
 
 
 def check_sample_groups(data, parts, count):
-    """The optional tables of samples: dependencies (sdtp), padding bits
-    (padb), sub-samples (subs), and the sample groups that are kept (see
-    GROUPINGS), each description of its type's size and each group within
-    the samples and descriptions."""
+    """The optional tables of samples: dependencies (sdtp), with no reserved
+    value, and the sample groups that are kept (see GROUPINGS): each
+    description of its type's size, each group of at least one sample, within
+    the samples and descriptions. Return the spans of the descriptions no
+    group uses and that are not the default, which are cleared. A description
+    of a grouping without groups must be the only one, as Apple writes its
+    temporal layers."""
     for sdtp in parts.get(b"sdtp", []):
-        if sdtp.end - sdtp.content != 4 + count or any(data[sdtp.content:sdtp.content + 4]):
+        if (sdtp.end - sdtp.content != 4 + count or any(data[sdtp.content:sdtp.content + 4])
+                or bytes(data[sdtp.content + 4:sdtp.end]).translate(SDTP_RESERVED).count(1)):
             raise unsupported("the sdtp box is not in its layout")
-    for padb in parts.get(b"padb", []):
-        padded = int.from_bytes(data[padb.content + 4:padb.content + 8], "big") if padb.end - padb.content >= 8 else -1
-        if (padded != count or padb.end - padb.content != 8 + (count + 1) // 2
-                or any(byte & 0x88 for byte in data[padb.content + 8:padb.end])):
-            raise unsupported("the padb box is not in its layout")
-    for subs in parts.get(b"subs", []):
-        check_subsamples(data, subs, count)
-    descriptions = {grouping(data, sgpd): group_descriptions(data, sgpd) for sgpd in parts.get(b"sgpd", [])
+    descriptions = {grouping(data, sgpd): group_descriptions(data, sgpd)[:2] for sgpd in parts.get(b"sgpd", [])
                     if grouping(data, sgpd) in GROUPINGS}
+    used = {kind: set() for kind in descriptions}
     for sbgp in parts.get(b"sbgp", []):
         kind, version = grouping(data, sbgp), data[sbgp.content]
         if kind not in descriptions:
             continue  # emptied (see clean_container)
-        if version not in (0, 1) or any(data[sbgp.content + 1:sbgp.content + 4]):
+        # Version 1 adds a grouping parameter, which no kept grouping type defines.
+        if version not in (0, 1) or any(data[sbgp.content + 1:sbgp.content + 4]) or \
+                version == 1 and any(data[sbgp.content + 8:sbgp.content + 12]):
             raise unsupported("the sbgp box is not in its layout")
         before = 8 if version == 1 else 4  # after the grouping type, and its parameter in version 1
         if sbgp.end - sbgp.content < 8 + before or \
@@ -605,90 +675,131 @@ def check_sample_groups(data, parts, count):
         grouped = 0
         for samples, index in entries_of(data, sbgp, ">II", before=before + 4):
             grouped += samples
-            if index > descriptions[kind]:
+            if not samples or index > descriptions[kind][0]:
                 raise unsupported("invalid sample group")
+            used[kind].add(index)
         if grouped > count:
             raise unsupported("invalid sample group")
+    spare = []
+    for sgpd in parts.get(b"sgpd", []):
+        kind = grouping(data, sgpd)
+        if kind in descriptions and any(grouping(data, sbgp) == kind for sbgp in parts.get(b"sbgp", [])):
+            spare += group_descriptions(data, sgpd, used[kind] | {descriptions[kind][1]})[2]
+        elif kind in descriptions and descriptions[kind][0] > 1:
+            raise unsupported("sample group descriptions no sample uses")
+    return spare
 
 
-def group_descriptions(data, sgpd):
-    """The number of descriptions in a sample group description of a kept type."""
+def group_descriptions(data, sgpd, used=None):
+    """(the number of descriptions, the default one's index or 0, spans) of a
+    sample group description of a kept type: with `used`, the indices of the
+    descriptions in use, the spans are those of the others, merged where
+    they meet."""
     kind, version = grouping(data, sgpd), data[sgpd.content]
     size, reserved = GROUPINGS[kind]
     position = sgpd.content + 8
     if version not in (0, 1, 2) or any(data[sgpd.content + 1:sgpd.content + 4]):
         raise unsupported("the sgpd box is not in its layout")
-    default = size
+    length, default = size, 0
     if version:
+        length = int.from_bytes(data[position:position + 4], "big")
+        position += 4
+    if version == 2:
         default = int.from_bytes(data[position:position + 4], "big")
-        position += 4 + (4 if version == 2 else 0)  # version 2: the default description's index
+        position += 4
     count = int.from_bytes(data[position:position + 4], "big")
     position += 4
-    for _ in range(count):
-        if default == 0:  # each entry says its own length
+    if default > count:
+        raise unsupported("the sgpd box is not in its layout")
+    spans = []
+    for index in range(1, count + 1):
+        if length == 0:  # each entry says its own length
             if int.from_bytes(data[position:position + 4], "big") != size:
                 raise unsupported("the sgpd box is not in its layout")
             position += 4
-        elif default != size:
+        elif length != size:
             raise unsupported("the sgpd box is not in its layout")
         if position + size > sgpd.end or data[position] & reserved:
             raise unsupported("the sgpd box is not in its layout")
+        if used is not None and index not in used:
+            if spans and spans[-1][1] == position:
+                spans[-1] = spans[-1][0], position + size
+            else:
+                spans.append((position, position + size))
         position += size
     if position != sgpd.end:
         raise unsupported("the sgpd box is not in its layout")
-    return count
-
-
-def check_subsamples(data, subs, count):
-    """Sub-sample information: for some samples, each after the previous one,
-    their sub-samples, each a size (2 bytes, or 4 in version 1), a priority, a
-    discardable flag and 4 bytes for the codec."""
-    version = data[subs.content] if subs.end - subs.content >= 8 else -1
-    if version not in (0, 1):
-        raise unsupported("the subs box is not in its layout")
-    item = (4 if version else 2) + 6
-    position, samples = subs.content + 8, 0
-    for _ in range(int.from_bytes(data[subs.content + 4:subs.content + 8], "big")):
-        if position + 6 > subs.end:
-            raise unsupported("the subs box is not in its layout")
-        samples += int.from_bytes(data[position:position + 4], "big")
-        position += 6 + item * int.from_bytes(data[position + 4:position + 6], "big")
-    if position != subs.end or samples > count:
-        raise unsupported("the subs box is not in its layout")
+    return count, default, spans
 
 
 def sound_unit(data, trak, stsd, stts, stsz):
-    """(bytes, frames) of uncompressed QuickTime sound, whose sample table
-    counts audio frames, each of one time unit, and gives their size, often as
-    1, whatever it is: players read whole chunks by the sizes in the sample
-    entry, as ffmpeg does. None for any other track."""
+    """(bytes, frames) that a sound track's chunks hold, from its sample entry,
+    or None where players read them by stsz. Players read uncompressed sound
+    by its entry, and FFmpeg reads any sound whose table counts frames of one
+    time unit each (one stts entry of delta 1) by its entry too, chunk by
+    chunk. Sound that players could read in two ways is refused: several or
+    version 1 sample descriptions (which FFmpeg reads by the file's brands),
+    sizes that disagree with the entry, or none to read chunks by."""
+    if handler(data, trak) != b"soun":
+        return None
     fixed = int.from_bytes(data[stsz.content + 4:stsz.content + 8], "big")
     durations = list(itertools.islice(entries_of(data, stts, ">II"), 2))
-    if handler(data, trak) != b"soun" or not fixed or len(durations) != 1 or durations[0][1] != 1:
-        return None
+    chunked = len(durations) == 1 and durations[0][1] == 1
     entries = list(bmff.boxes(data, stsd.content + 8, stsd.end))
-    fields = entries[0].content if len(entries) == 1 and not data[stsd.content] else None
-    version = int.from_bytes(data[fields + 8:fields + 10], "big") if fields is not None else None
-    unit = None
-    if version == 1 and entries[0].end - fields >= 44:    # bytes per frame, samples per packet
-        samples, _, frame = struct.unpack_from(">III", data, fields + 28)
-        unit = frame, samples
-    elif version == 2 and entries[0].end - fields >= 64:  # bytes and frames per packet
-        unit = struct.unpack_from(">II", data, fields + 56)
-    elif version == 0 and entries[0].kind in PCM_BITS:
-        bits = PCM_BITS[entries[0].kind] or int.from_bytes(data[fields + 18:fields + 20], "big")
-        unit = int.from_bytes(data[fields + 16:fields + 18], "big") * bits // 8, 1
-    if unit and all(unit):
-        return unit
-    if unit or fixed == 1:
+    pcm = any(entry.kind in PCM for entry in entries)
+    if not (chunked or pcm):
+        return None
+    if data[stsd.content] or len(entries) != 1:
+        raise unsupported("sound whose samples could be read in two ways")
+    unit = entry_unit(data, entries[0])
+    if unit and not all(unit) or pcm and not unit:
         raise unsupported("sound whose sample sizes are not given")
+    if chunked and unit:
+        if not fixed:  # a table of sizes, which players do not read
+            raise unsupported("sound whose samples could be read in two ways")
+        return unit
+    if chunked:  # compressed sound in an entry of version 0, read by stsz's size
+        if fixed in (0, 1):
+            raise unsupported("sound whose sample sizes are not given")
+        return None
+    if unit[1] != 1 or fixed != unit[0]:  # uncompressed, read sample by sample: by stsz, but no less than a frame
+        raise unsupported("sound whose samples could be read in two ways")
     return None
 
 
+def entry_unit(data, entry):
+    """(bytes, frames) of a packet of QuickTime sound of version 1 or 2, or of
+    a frame of uncompressed sound of version 0, by its channels and bits per
+    sample; None for any other entry."""
+    fields = entry.content
+    version = int.from_bytes(data[fields + 8:fields + 10], "big")
+    if version == 1 and entry.end - fields >= 44:    # samples per packet, then bytes per frame
+        samples, _, frame = struct.unpack_from(">III", data, fields + 28)
+        return frame, samples
+    if version == 2 and entry.end - fields >= 64:    # bytes and frames per packet
+        return struct.unpack_from(">II", data, fields + 56)
+    if version == 0 and entry.kind in ISO_PCM:
+        bits = next((data[found.content + 5] for found in entry_boxes(data, entry, SOUND_FIELDS)
+                     if found.kind == b"pcmC" and found.end - found.content == ENTRY_SIZES[b"pcmC"]), None)
+    elif version == 0 and entry.kind in PCM_BITS:
+        bits = PCM_BITS[entry.kind] or int.from_bytes(data[fields + 18:fields + 20], "big")
+    else:
+        return None
+    return (int.from_bytes(data[fields + 16:fields + 18], "big") * bits // 8, 1) if bits in ENTRY_BITS else None
+
+
 def movie_ranges(data, moov):
-    """(start, end) of the chunks of samples of every track in a movie, sorted."""
-    return sorted(span for trak in bmff.boxes(data, moov.content, moov.end) if trak.kind == b"trak"
-                  for span in track_table(data, trak).ranges)
+    """(start, end) of the media the tracks of a movie use: their chunks,
+    sorted, and merged where they meet or overlap, so that checking them costs
+    no more than the media."""
+    merged = []
+    for start, end in sorted(span for trak in bmff.boxes(data, moov.content, moov.end) if trak.kind == b"trak"
+                             for span in track_table(data, trak).ranges):
+        if merged and start <= merged[-1][1]:
+            merged[-1] = merged[-1][0], max(merged[-1][1], end)
+        else:
+            merged.append((start, end))
+    return merged
 
 
 # ------------------------------------------------------------------------ media
@@ -763,13 +874,12 @@ def check(original, rebuilt, moov, policy):
         for kind, targets in track.references:
             if not set(targets) <= idents or (policy.references is not None and kind not in policy.references):
                 fail("reference to a removed track")
-    check_container(original, rebuilt, moov, policy, None)
-    for track in found:
-        track_table(rebuilt, track.box)
+    spare = [span for track in found for span in track_table(rebuilt, track.box).spare]
+    check_container(original, rebuilt, moov, policy, None, spare)
     return found
 
 
-def check_container(original, rebuilt, container, policy, track_handler):
+def check_container(original, rebuilt, container, policy, track_handler, spare):
     children = list(bmff.boxes(rebuilt, container.content, container.end))
     allowed = policy.boxes[container.kind]
     check_repeats(rebuilt, children, allowed)
@@ -783,8 +893,8 @@ def check_container(original, rebuilt, container, policy, track_handler):
             fail("box %r changed" % found.kind)
         if found.kind in policy.boxes:
             check_container(original, rebuilt, found, policy,
-                            handler(rebuilt, found) if found.kind == b"trak" else track_handler)
-        elif found.kind == b"tref" and policy.references is not None:
+                            handler(rebuilt, found) if found.kind == b"trak" else track_handler, spare)
+        elif found.kind == b"tref":
             for reference in bmff.boxes(rebuilt, found.content, found.end):
                 if reference.kind == b"free":
                     if not zeroed(rebuilt, [(reference.content, reference.end)]):
@@ -795,7 +905,8 @@ def check_container(original, rebuilt, container, policy, track_handler):
             check_entries(original, rebuilt, found, policy, track_handler)
         else:
             check_layout(rebuilt, found)
-            if not matches(original, rebuilt, found, cleared_fields(rebuilt, found)):
+            cleared = cleared_fields(rebuilt, found) + [span for span in spare if found.content <= span[0] < found.end]
+            if not matches(original, rebuilt, found, cleared):
                 fail("box %r changed, or names or times kept" % found.kind)
 
 

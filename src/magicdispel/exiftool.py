@@ -53,6 +53,10 @@ UNKNOWN_TAG = re.compile(r"^Unknown|_0x[0-9a-f]{4}$", re.IGNORECASE)
 BMFF_STRUCTURE = ({"Unknown_" + name for name in ("edts", "av1C", "hvcC", "colr", "ccst", "pasp",
                                                    "btrt", "free", "altr", "idat")}
                   | {"Unknown_" + kind.decode("latin-1") for kind in mp4.STRUCTURE})
+# A second check that takes longer than this, or a problem longer than this to
+# describe, comes from a file made to exhaust it.
+TIMEOUT = 600  # seconds
+MESSAGE = 500  # bytes of ExifTool's own message kept
 # ExifTool's group names for the XMP namespaces whose HDR fields xmp.py keeps.
 XMP_GROUPS = {"XMP-hdrgm": xmp.ADOBE_GAIN_MAP, "XMP-apdi": xmp.APPLE_PIXEL_DATA,
               "XMP-HDRGainMap": xmp.APPLE_GAIN_MAP}
@@ -156,9 +160,12 @@ def rendering_field(parts, value):
 
 def run(exiftool, arguments, data=None):
     """ExifTool's output for `arguments`, with `data` as its standard input."""
-    result = subprocess.run([exiftool, "-config", "", "-charset", "filename=UTF8", *arguments],
-                            input=data, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    try:
+        result = subprocess.run([exiftool, "-config", "", "-charset", "filename=UTF8", *arguments],
+                                input=data, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=TIMEOUT)
+    except subprocess.TimeoutExpired:
+        raise ExifToolError("ExifTool took more than %d minutes" % (TIMEOUT // 60))
     if result.returncode:
-        raise ExifToolError((result.stderr or result.stdout).decode("utf-8", "replace").strip()
+        raise ExifToolError((result.stderr or result.stdout)[:MESSAGE].decode("utf-8", "replace").strip()
                             or "ExifTool failed")
     return result

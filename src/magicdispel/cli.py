@@ -41,10 +41,10 @@ def main(argv=None):
     if not (args.photos or args.check):
         print(banner.welcome(__version__, message("usage")))
         return 0
-    # Closing the terminal or stopping the process cancels as Ctrl+C does, which
-    # removes an unfinished copy.
-    for name in ("SIGTERM", "SIGHUP"):
-        if hasattr(signal, name):
+    # Stopping the process, closing its terminal (unless run with nohup) and
+    # Ctrl+Break cancel as Ctrl+C does, which removes an unfinished copy.
+    for name in ("SIGTERM", "SIGHUP", "SIGBREAK"):
+        if hasattr(signal, name) and signal.getsignal(getattr(signal, name)) is not signal.SIG_IGN:
             signal.signal(getattr(signal, name), cancel)
     try:
         # ExifTool is optional: when present and recent, it double-checks results.
@@ -57,15 +57,15 @@ def main(argv=None):
         failures = 0
         for photo in args.photos:
             try:
-                print(message("cleaned", path=clean(photo, second_check, args.naming)))
+                print(message("cleaned", path=visible(clean(photo, second_check, args.naming))))
             except Exception as error:  # one photo failing never stops the others
                 failures += 1
-                print(message("failed", photo=photo, reason=explained(error)), file=sys.stderr)
+                print(message("failed", photo=visible(photo), reason=visible(explained(error))), file=sys.stderr)
         if len(args.photos) > 1:
             print(message("summary", succeeded=len(args.photos) - failures, failed=failures))
         return 1 if failures else 0
     except Exception as error:
-        print(message("error", reason=explained(error)), file=sys.stderr)
+        print(message("error", reason=visible(explained(error))), file=sys.stderr)
         return 1
     except KeyboardInterrupt:
         print(message("cancelled"), file=sys.stderr)
@@ -74,6 +74,12 @@ def main(argv=None):
 
 def cancel(signum, frame):
     raise KeyboardInterrupt
+
+
+def visible(text):
+    """Text with its control characters written out, so that no name or message
+    taken from a file can send the terminal escape sequences."""
+    return "".join("\\x%02x" % ord(c) if ord(c) < 0x20 or 0x7F <= ord(c) < 0xA0 else c for c in str(text))
 
 
 def explained(error):

@@ -88,14 +88,23 @@ silence at the start of the sound.
   sound tracks stay; the samples of the tracks removed are zeroed with every other byte of the
   media data that no remaining sample uses. Every kept box has exactly the layout its type and
   version give it, and appears once where the standard allows one; a kept track's sample
-  tables must agree on its samples, chunks and sample descriptions, so that players read the
-  samples MagicDispel keeps and nothing else. Sample groups stay only for roll distances,
-  sync and random access points and temporal layers, whose every byte is checked; others,
-  which only help seeking, are emptied. The file type box may hold only known brands, and its
-  minor version, a number some encoders set, is kept as it is. The name of the codec's maker
-  in H.263 and AMR configurations is cleared. The check compares every box of the result with
-  the original's and every kept sample byte for byte. A video is cleaned in a copy next to the
-  original, and neither is read into memory.
+  tables must agree on its samples, chunks and sample descriptions, and no two chunks may share
+  bytes, so that players read the samples MagicDispel keeps and nothing else. A decoder
+  configuration must end where it says it does (avcC, hvcC, lhvC, esds, av1C, vpcC, dOps);
+  FLAC's may hold only its stream information, not tags or pictures. Sample groups stay only
+  for roll distances, sync and random access points and temporal layers, and their
+  descriptions that no sample uses are cleared; others, which only help seeking, are emptied,
+  as are shadow sync, sub-sample and padding tables. Reserved fields, QuickTime's preview,
+  poster and selection times, and a visual entry's data size are cleared. The file type box
+  keeps the brands that say how to read the file, and its minor version, a number some
+  encoders set; brands such as those naming a camera's maker are cleared. The name of the
+  codec's maker in H.263 and AMR configurations is cleared, and so is the extended language
+  tag, which may name a region. Uncompressed sound is read by its sample entry, as players
+  read it; sound they could read in two ways is refused. The check compares every box of the
+  result with the original's and every kept sample byte for byte. A video is cleaned in a copy
+  next to the original, and neither is read into memory. Until it is clean, the copy is named
+  `magicdispel-<random>.unfinished` and readable only by its owner; it then gets the original's
+  permissions.
 - **HEIF and videos in place.** HEIF files and videos are cleaned without moving any image or
   media data, so every offset stays valid: the item tables are rewritten in the space they had,
   removed items and boxes are zero-filled, bytes that no remaining item or sample uses are
@@ -110,8 +119,9 @@ silence at the start of the sound.
   tracks other than pictures and their alpha, fragmented image sequences and videos, encrypted
   and audio-only videos, video tracks other than video, sound, timed metadata, timecode and
   chapters (subtitles, for instance), video codecs and sample entry boxes not on the list
-  (Motion JPEG among them), 360-degree videos, sample tables that disagree, file types of
-  unknown brands, a removed track that another needs to be shown, media stored
+  (Motion JPEG among them), Google's 360-degree videos, sample tables that disagree, decoder
+  configurations with data after them, uncompressed sound players could read in two ways, file
+  types of unknown major brands, a removed track that another needs to be shown, media stored
   outside the file, BigTIFF, old-style JPEG in TIFF, metadata inside JPEG-compressed TIFF strips,
   unrecognized ICC tags and floating-point ICC transforms, gain-map metadata of an unknown
   version. RAW photos built on TIFF (DNG, CR2, NEF and others) are refused too: their TIFF
@@ -134,7 +144,16 @@ frames, GIF LZW data or unused palette entries, is copied along with the image. 
 inside video and sound samples, such as the SEI messages some encoders write into H.264 and
 HEVC frames: the frames of an iPhone's Live Photo video, for one, carry an 8-byte value of
 unknown meaning that other videos lack. Decoder configurations (such as hvcC and avcC) are
-copied whole too, as the samples are. Detecting such steganography is beyond this tool.
+copied whole too, as the samples are, up to their end; those of other codecs (VVC, APV, AC-4,
+MPEG-H, DTS and more) are not read at all. So are fields that players read and whose values a
+made-up file could choose freely: track IDs, display sizes and resolutions, the graphics mode,
+the composition offsets of cslg, roll distances. Detecting such steganography is beyond this
+tool.
+
+If MagicDispel is killed, or the drive a video is on goes away while it is being cleaned, the
+unfinished copy may stay next to it, named `magicdispel-<random>.unfinished`: it may still hold
+everything the original does, and can be deleted. Closing the console window on Windows kills
+MagicDispel the same way.
 
 A JPEG gain map that only an Ultra HDR GContainer directory points to, with no multi-picture
 index, is not recognized: it sits after the end of the image and is removed as trailing data,

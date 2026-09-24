@@ -5,6 +5,7 @@ import mmap
 import os
 import secrets
 import shutil
+import stat
 import subprocess
 import sys
 from contextlib import contextmanager
@@ -116,15 +117,26 @@ def output_suffix(source, kind):
 
 
 def reserve(source, suffix):
-    """A new, empty file next to the original, to clean a copy in: hidden, and
-    with a short name, which fits wherever the original's does."""
+    """A new, empty file next to the original, to clean a copy in. Should
+    MagicDispel be stopped where it cannot remove it (killed, or the
+    original's drive unplugged), its name says what it is."""
     while True:
-        partial = source.with_name(".magicdispel-%s.partial%s" % (secrets.token_hex(4), suffix))
+        partial = source.with_name("magicdispel-%s.unfinished%s" % (secrets.token_hex(4), suffix))
         try:
-            partial.open("xb").close()
+            create(partial).close()
             return partial
         except FileExistsError:
             continue
+
+
+def create(path):
+    """A new file that only its owner can read, open for writing; FileExistsError
+    if there is one. A copy gets the original's permissions once it is clean."""
+    return os.fdopen(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0), 0o600), "wb")
+
+
+def permissions(path):
+    return stat.S_IMODE(path.stat().st_mode)
 
 
 def file_digest(path):
@@ -140,12 +152,13 @@ def publish(data, source, suffix, naming="plain"):
     for name in names.candidates(source.stem, suffix, naming):
         destination = source.with_name(name)
         try:
-            output = destination.open("xb")
+            output = create(destination)
         except FileExistsError:
             continue
         try:
             with output:
                 output.write(data)
+            os.chmod(destination, permissions(source))
             clear_attributes(destination)
             return destination
         except BaseException:
@@ -158,11 +171,12 @@ def rename(path, source, suffix, naming="plain", noun="photo"):
     for name in names.candidates(source.stem, suffix, naming, noun):
         destination = source.with_name(name)
         try:
-            destination.open("xb").close()  # claims the name, which the copy then takes
+            create(destination).close()  # claims the name, which the copy then takes
         except FileExistsError:
             continue
         try:
             os.replace(path, destination)
+            os.chmod(destination, permissions(source))
             clear_attributes(destination)
             return destination
         except BaseException:

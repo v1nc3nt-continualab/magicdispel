@@ -43,18 +43,17 @@ CONTAINERS = {b"dinf"}  # boxes in meta whose own boxes are cleaned too
 # their sample entries the boxes that say how to decode and show the samples.
 VISUAL_ENTRIES = {b"av01", b"hvc1", b"hev1", b"avc1", b"avc3"}
 ENTRY_BOXES = dict.fromkeys({b"av1C", b"hvcC", b"avcC", b"lhvC", b"colr", b"pasp", b"clap", b"btrt", b"ccst",
-                             b"auxi", b"mdcv", b"clli", b"cclv", b"amve", b"fiel"})
+                             b"auxi", b"mdcv", b"clli", b"amve", b"fiel"})
 SEQUENCE = movie.Policy(
     boxes={
-        b"moov": {b"mvhd", b"trak", b"mvex"},
-        b"mvex": {b"mehd", b"trex"},
+        b"moov": {b"mvhd", b"trak"},
         b"trak": {b"tkhd", b"tref", b"edts", b"mdia"},
         b"edts": {b"elst"},
         b"mdia": {b"mdhd", b"hdlr", b"minf"},
         b"minf": {b"vmhd", b"nmhd", b"dinf", b"stbl"},
         b"dinf": {b"dref"},
-        b"stbl": {b"stsd", b"stts", b"ctts", b"cslg", b"stsc", b"stsz", b"stz2", b"stco", b"co64", b"stss",
-                  b"stsh", b"sdtp", b"sbgp", b"sgpd", b"subs"},
+        b"stbl": {b"stsd", b"stts", b"ctts", b"cslg", b"stsc", b"stsz", b"stco", b"co64", b"stss", b"sdtp",
+                  b"sbgp", b"sgpd"},
     },
     entries={handler: (VISUAL_ENTRIES, ENTRY_BOXES) for handler in (b"pict", b"vide", b"auxv")})
 # Coded, derived and tiled images. Metadata items are removed (XMP is reduced);
@@ -94,14 +93,16 @@ REMOVABLE_REFERENCES = {b"dimg", b"cdsc", b"auxl", b"thmb"}
 MAX_XMP = 16 * 1024 * 1024
 AVIF_BRANDS = {b"avif", b"avis"}
 HEIF_BRANDS = {b"heic", b"heix", b"heim", b"heis", b"hevc", b"hevx", b"hevm", b"hevs", b"mif1", b"msf1"}
+# The other brands of HEIF files that say how to read them: MIAF and its
+# profiles, AVIF's profiles, gain maps, ISO. Other compatible brands are
+# cleared (see bmff.unknown_brands).
+KNOWN_BRANDS = AVIF_BRANDS | HEIF_BRANDS | {b"miaf", b"MiHA", b"MiHB", b"MiHE", b"MiAn", b"MiPr", b"MiCm",
+                                            b"MA1A", b"MA1B", b"avio", b"tmap", b"mif2", b"iso8", b"unif"}
 
 
 def brand_format(data):
     """"AVIF", "HEIC" or None, from the file type box."""
-    if data[4:8] != b"ftyp" or len(data) < 16:
-        return None
-    size = int.from_bytes(data[:4], "big")
-    brands = {data[8:12]} | {data[n:n + 4] for n in range(16, min(size, len(data)) - 3, 4)}
+    brands = set(bmff.brands(data))
     if brands & AVIF_BRANDS:
         return "AVIF"
     return "HEIC" if brands & HEIF_BRANDS else None
@@ -134,6 +135,8 @@ def cleaned(data):
     if {found.kind for found in top} & REFUSED:
         raise unsupported("fragmented sequence")
     result = bytearray(data)
+    movie.clear(result, file_type_brands(data, top[0]))
+    kept = kept_boxes(top)
     layout = bmff.layout(data)
     if layout:
         clean_items(data, layout, result)
@@ -144,12 +147,22 @@ def cleaned(data):
             clean_boxes(result, children(found), found.end)
         elif found.kind == b"moov":
             movie.clean(result, found, SEQUENCE)
-        elif found.kind not in KEPT:
+        elif found not in kept:
             empty(result, found)
     for start, end in unused_media(result):
         result[start:end] = bytes(end - start)
     # Emptied boxes at the very end hold no offsets anyone needs.
-    return bytes(result[:max(found.end for found in top if found.kind in KEPT)])
+    return bytes(result[:max(found.end for found in kept)])
+
+
+def file_type_brands(data, ftyp):
+    """The compatible brands cleared from the file type box (see bmff.unknown_brands)."""
+    return bmff.unknown_brands(data, ftyp, KNOWN_BRANDS, KNOWN_BRANDS)
+
+
+def kept_boxes(top):
+    """The top-level boxes kept: the file type box that comes first, meta, moov and mdat."""
+    return {found for found in top if found.kind in KEPT and (found.kind != b"ftyp" or found is top[0])}
 
 
 # ----------------------------------------------------------------------- items
@@ -502,10 +515,11 @@ def listed(kinds):
 
 def check(original, rebuilt):
     top = top_boxes(rebuilt)
+    kept = kept_boxes(top)
     for found in top:
-        if found.kind not in KEPT and not (found.kind == b"free" and zeroed(rebuilt, [(found.content, found.end)])):
+        if found not in kept and not (found.kind == b"free" and zeroed(rebuilt, [(found.content, found.end)])):
             fail("unexpected box %r" % found.kind)
-    if rebuilt[:top[0].end] != original[:top[0].end]:
+    if not movie.matches(original, rebuilt, top[0], file_type_brands(original, top[0])):
         fail("file type box changed")
     before, after = bmff.layout(original), bmff.layout(rebuilt)
     if (before is None) != (after is None) or (after and after.primary != before.primary):

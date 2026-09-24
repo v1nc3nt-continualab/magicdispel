@@ -93,6 +93,36 @@ def box(kind, payload):
     return struct.pack(">I4s", len(payload) + 8, kind) + payload
 
 
+# ------------------------------------------------------------------ file type
+
+FILE_TYPE_LIMIT = 256  # bytes of a file type box after its header; real ones hold a few brands
+PADDING = bytes(4)     # an empty brand, which QuickTime pads its list with
+
+
+def brands(data):
+    """The brands of the file type box `data` starts with, the major brand
+    first, read from at most FILE_TYPE_LIMIT bytes."""
+    if data[4:8] != b"ftyp" or len(data) < 16:
+        return []
+    end = min(int.from_bytes(data[:4], "big"), len(data), 8 + FILE_TYPE_LIMIT)
+    return [bytes(data[8:12])] + [bytes(data[n:n + 4]) for n in range(16, end - 3, 4)]
+
+
+def unknown_brands(data, ftyp, known, majors):
+    """The spans of a file type box's compatible brands that are not `known`,
+    which are cleared: none says how to read the file, and some name a
+    camera's maker. The major brand, which readers may go by, must be one of
+    `majors`; the minor version is kept."""
+    size = ftyp.end - ftyp.content
+    major = bytes(data[ftyp.content:ftyp.content + 4])
+    if size < 8 or size % 4 or size > FILE_TYPE_LIMIT:
+        raise unsupported("a file type box of %d bytes" % size)
+    if major not in majors:
+        raise unsupported("file type " + major.decode("latin-1"))
+    return [(p, p + 4) for p in range(ftyp.content + 8, ftyp.end, 4)
+            if bytes(data[p:p + 4]) not in known and data[p:p + 4] != PADDING]
+
+
 def layout(data):
     """The item tables of the file's meta box, or None if it has none."""
     top = list(boxes(data))

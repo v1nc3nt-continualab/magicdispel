@@ -31,14 +31,17 @@ REFUSED = {b"moof", b"mfra", b"sidx", b"ssix", b"styp"}
 QUICKTIME = b"qt  "
 # What an older QuickTime movie, without a file type box, may start with.
 QUICKTIME_ATOMS = {b"moov", b"mdat", b"wide", b"free", b"skip", b"pnot"}
-# Brands of MP4 files: ISO, MP4, M4V and 3GPP, codecs, DASH and CMAF, and
-# those cameras and phones write. A file type box holds only these, and
-# QuickTime's, and zeros where QuickTime pads the list.
+# Brands of MP4 files that say how to read them: ISO, MP4, iTunes (M4V, M4A)
+# and 3GPP, codecs, DASH and CMAF. Other compatible brands, such as those
+# naming a camera's maker, are cleared (see bmff.unknown_brands).
 BRANDS = {b"isom", b"iso2", b"iso3", b"iso4", b"iso5", b"iso6", b"iso7", b"iso8", b"iso9", b"mp41", b"mp42",
-          b"mp71", b"avc1", b"av01", b"iamf", b"dby1", b"M4V ", b"M4VP", b"M4VH", b"3gp4", b"3gp5", b"3gp6",
-          b"3gp7", b"3gp8", b"3gp9", b"3g2a", b"3g2b", b"3g2c", b"3ge6", b"3ge7", b"3gg6", b"dash", b"cmfc",
-          b"cmf2", b"MSNV", b"XAVC", b"CAEP"}
-PADDING = bytes(4)
+          b"mp71", b"avc1", b"av01", b"iamf", b"dby1", b"M4V ", b"M4VP", b"M4VH", b"M4A ", b"M4B ", b"M4P ",
+          b"3gp4", b"3gp5", b"3gp6", b"3gp7", b"3gp8", b"3gp9", b"3g2a", b"3g2b", b"3g2c", b"3ge6", b"3ge7",
+          b"3gg6", b"3gr6", b"3gs6", b"3gs7", b"dash", b"cmfc", b"cmf2"}
+# Brands of cameras and their formats that some write as the major brand,
+# which is kept, as readers may go by it: Sony, Canon, Nikon, Panasonic,
+# Casio, KDDI, Adobe's F4V.
+MAKER_BRANDS = {b"XAVC", b"MSNV", b"CAEP", b"niko", b"pana", b"caqv", b"KDDI", b"mmp4", b"mqt ", b"f4v ", b"F4V "}
 VIDEO_ENTRIES = {b"avc1", b"avc3", b"hvc1", b"hev1", b"dvh1", b"dvhe", b"dvav", b"dva1", b"dav1", b"av01",
                  b"vp08", b"vp09", b"mp4v", b"s263", b"h263", b"vvc1", b"vvi1", b"apv1",
                  b"apch", b"apcn", b"apcs", b"apco", b"ap4h", b"ap4x"}  # the last six: ProRes
@@ -49,8 +52,8 @@ SPATIAL = {b"eyes": {b"stri": None, b"hero": None, b"cams": {b"blin": None}, b"c
 # decoder configurations (Dolby Vision's among them), color and HDR, pixel
 # shape and cropping, bit rates, and spatial video.
 VIDEO_BOXES = dict.fromkeys({b"avcC", b"hvcC", b"lhvC", b"av1C", b"vpcC", b"vvcC", b"apvC", b"d263", b"esds",
-                             b"dvcC", b"dvvC", b"dvwC", b"colr", b"pasp", b"clap", b"fiel", b"gama", b"btrt",
-                             b"mdcv", b"clli", b"amve", b"SmDm", b"CoLL", b"hfov"}) | {b"vexu": SPATIAL}
+                             b"dvcC", b"dvvC", b"dvwC", b"colr", b"pasp", b"clap", b"fiel", b"chrm", b"gama",
+                             b"btrt", b"mdcv", b"clli", b"amve", b"SmDm", b"CoLL", b"hfov"}) | {b"vexu": SPATIAL}
 SOUND_ENTRIES = {b"mp4a", b"alac", b"Opus", b"fLaC", b"ac-3", b"ec-3", b"ac-4", b"lpcm", b"ipcm", b"fpcm",
                  b"sowt", b"twos", b"in24", b"in32", b"fl32", b"fl64", b"raw ", b"ulaw", b"alaw", b"samr",
                  b"sawb", b"mha1", b"mhm1", b"iamf", b"dtsc", b"dtse", b"dtsh", b"dtsl", b"dtsx", b"mlpa",
@@ -98,12 +101,12 @@ MOVIE = movie.Policy(
         b"trak": {b"tkhd", b"tref", b"edts", b"mdia", b"tapt"},
         b"tapt": {b"clef", b"prof", b"enof"},  # QuickTime's display sizes
         b"edts": {b"elst"},
-        b"mdia": {b"mdhd", b"hdlr", b"elng", b"minf"},  # elng: the language, such as zh-Hant
+        b"mdia": {b"mdhd", b"hdlr", b"minf"},
         b"minf": {b"vmhd", b"smhd", b"gmhd", b"hdlr", b"dinf", b"stbl"},  # hdlr: QuickTime's data handler
         b"gmhd": {b"gmin"},  # the header of a scene illuminance track
         b"dinf": {b"dref"},
         b"stbl": {b"stsd", b"stts", b"ctts", b"cslg", b"stsc", b"stsz", b"stco", b"co64", b"stss", b"stps",
-                  b"stsh", b"sdtp", b"sbgp", b"sgpd", b"subs", b"padb"},
+                  b"sdtp", b"sbgp", b"sgpd"},
     },
     entries={b"vide": (VIDEO_ENTRIES, VIDEO_BOXES), b"soun": (SOUND_ENTRIES, SOUND_BOXES),
              b"meta": ({b"mebx"}, {b"keys": None})},  # only scene illuminance: see rendering
@@ -132,13 +135,10 @@ def brand_format(data):
     """"MOV", "MP4" or None, from the file type box."""
     if data[4:8] in QUICKTIME_ATOMS:
         return "MOV"
-    if data[4:8] != b"ftyp" or len(data) < 16:
-        return None
-    size = int.from_bytes(data[:4], "big")
-    brands = {data[8:12]} | {data[n:n + 4] for n in range(16, min(size, len(data)) - 3, 4)}
-    if data[8:12] == QUICKTIME:
+    brands = bmff.brands(data)
+    if brands[:1] == [QUICKTIME]:
         return "MOV"
-    return "MP4" if brands & BRANDS or QUICKTIME in brands else None
+    return "MP4" if set(brands) & (BRANDS | MAKER_BRANDS | {QUICKTIME}) else None
 
 
 def rebuild(data):
@@ -170,15 +170,15 @@ def cleaned(data, buffer):
     top = top_boxes(data)
     if {found.kind for found in top} & REFUSED:
         raise unsupported("fragmented video")
-    if top[0].kind == b"ftyp":
-        check_brands(data, top[0])
+    movie.clear(buffer, file_type_brands(data, top[0]))
     movies = [found for found in top if found.kind == b"moov"]
     if len(movies) != 1:
         raise StructureError("no single movie box")
     check_spherical(data, movies[0])
     kept = movie.clean(buffer, movies[0], MOVIE)
+    boxes = kept_boxes(top)
     for found in top:
-        if found.kind not in KEPT:
+        if found not in boxes:
             movie.empty(buffer, found)
     media = media_spans(top)
     used = movie.movie_ranges(buffer, movies[0])
@@ -187,7 +187,7 @@ def cleaned(data, buffer):
     for gap in movie.uncovered(used, media):
         movie.zero(buffer, *gap)
     # Emptied boxes at the very end, and anything else there, hold no offsets anyone needs.
-    return max(found.end for found in top if found.kind in KEPT), kept
+    return max(found.end for found in boxes), kept
 
 
 def top_boxes(data):
@@ -204,14 +204,17 @@ def top_boxes(data):
     return found
 
 
-def check_brands(data, ftyp):
-    """A file type box: a major brand, a minor version, which is kept as it
-    is, and compatible brands, all of them known."""
-    brands = [bytes(data[p:p + 4]) for p in range(ftyp.content, ftyp.end, 4)]
-    known = BRANDS | {QUICKTIME}
-    if (ftyp.end - ftyp.content) % 4 or len(brands) < 2 or brands[0] not in known or \
-            set(brands[2:]) - known - {PADDING}:  # brands[1] is the minor version
-        raise unsupported("file type " + b" ".join(brands[:1] + brands[2:]).decode("latin-1"))
+def kept_boxes(top):
+    """The top-level boxes kept: the file type box if it comes first, the movie and the media data."""
+    return {found for found in top if found.kind in KEPT and (found.kind != b"ftyp" or found is top[0])}
+
+
+def file_type_brands(data, first):
+    """The compatible brands cleared from the file type box, if the file
+    starts with one (see bmff.unknown_brands)."""
+    if first.kind != b"ftyp":
+        return []  # an older QuickTime movie
+    return bmff.unknown_brands(data, first, BRANDS | {QUICKTIME}, BRANDS | MAKER_BRANDS | {QUICKTIME})
 
 
 def check_spherical(data, moov):
@@ -239,12 +242,14 @@ def verify(original, rebuilt):
 def check(original, rebuilt):
     top = list(bmff.boxes(rebuilt))  # the result is boxes to its very end
     typed = original[4:8] == b"ftyp"  # older QuickTime movies have no file type box
-    if typed != (top[0].kind == b"ftyp") or typed and rebuilt[:top[0].end] != original[:top[0].end]:
+    if typed != (top[0].kind == b"ftyp") or typed and not movie.matches(original, rebuilt, top[0],
+                                                                        file_type_brands(original, top[0])):
         movie.fail("file type box changed")
+    boxes = kept_boxes(top)
     for found in top:
         if found.kind == b"free" and movie.zeroed(rebuilt, [(found.content, found.end)]):
             continue
-        if found.kind not in KEPT:
+        if found not in boxes:
             movie.fail("unexpected box %r" % found.kind)
         if rebuilt[found.start:found.content] != original[found.start:found.content]:
             movie.fail("box %r moved" % found.kind)

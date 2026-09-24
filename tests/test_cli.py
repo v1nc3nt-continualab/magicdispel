@@ -1,5 +1,6 @@
 """Command-line behavior, with and without ExifTool."""
 import io
+import signal
 import subprocess
 import sys
 import tempfile
@@ -46,6 +47,19 @@ class CommandLineTests(unittest.TestCase):
             self.assertIn("Cleaned: " + str(Path(folder, "photo one_clean.png")), result.stdout)
             self.assertIn("Failed: " + str(Path(folder, "missing.jpg")), result.stderr)
             self.assertIn("Done: 1 succeeded, 1 failed.", result.stdout)
+
+
+    def test_names_and_messages_cannot_send_escape_sequences(self):
+        result = run("missing \x1b[2J.jpg")
+        self.assertNotIn("\x1b", result.stderr)
+        self.assertIn("missing \\x1b[2J.jpg", result.stderr)
+
+    @unittest.skipUnless(hasattr(signal, "SIGHUP"), "no hang-up signal")
+    def test_a_run_that_ignores_hang_ups_keeps_ignoring_them(self):
+        script = ("import signal; signal.signal(signal.SIGHUP, signal.SIG_IGN); from magicdispel import cli; "
+                  "cli.main(['missing.jpg']); print(signal.getsignal(signal.SIGHUP) is signal.SIG_IGN)")
+        result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True)
+        self.assertEqual(result.stdout.split()[-1], "True")
 
 
 class WithoutExifToolTests(unittest.TestCase):

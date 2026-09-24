@@ -124,7 +124,8 @@ their description `Clean`, and device and creator fields are cleared. Images up 
 megapixels are checked, enough for 200-megapixel phone photos; larger ones are refused.
 Videos are cleaned in a copy next to the original without being read into memory: a 4.7 GB
 video took under five seconds on a Mac. Fragmented and encrypted videos, videos with
-subtitles, 360-degree videos, and codecs MagicDispel does not know are refused.
+subtitles, Google's 360-degree videos, and codecs MagicDispel does not know are refused.
+Apple's 180- and 360-degree videos keep their projection.
 
 ## File names
 

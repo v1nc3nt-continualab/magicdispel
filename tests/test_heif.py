@@ -277,6 +277,29 @@ class SequenceTests(unittest.TestCase):
                 heif.rebuild(sequence(handler=handler))
             self.assertEqual(caught.exception.key, "unsupported_part")
 
+    def test_nothing_rides_along_in_what_a_sequence_keeps(self):
+        planted = {
+            "a reference that is no reference": sequence(track_box=box(b"tref", box(b"free", MARKER))),
+            "fragment defaults": sequence(movie_box=box(b"mvex", full(b"trex", 0, bytes(4) + MARKER))),
+            "an unchecked color volume": sequence(entry_box=box(b"cclv", MARKER)),
+            "a second file type box": sequence() + box(b"ftyp", b"avis\0\0\0\0" + MARKER),
+        }
+        for reason, data in planted.items():
+            with self.subTest(reason):
+                rebuilt = heif.rebuild(data)
+                heif.verify(data, rebuilt)
+                self.assertNotIn(MARKER, rebuilt)
+        # A compatible brand that says nothing of how to read the file is cleared.
+        rebuilt = heif.rebuild(sequence().replace(b"avisavifmsf1", b"avisavifMDPV"))
+        self.assertTrue(rebuilt.startswith(box(b"ftyp", b"avis\0\0\0\0avisavif" + bytes(4))))
+        for reason, entry_box in {"coding constraints": full(b"ccst", 0, bytes(4) + MARKER),
+                                  "an auxiliary image other than alpha": full(b"auxi", 0, b"urn:depth\0")}.items():
+            with self.subTest(reason), self.assertRaises(FormatError):
+                heif.rebuild(sequence(entry_box=entry_box))
+        alpha = (full(b"auxi", 0, b"urn:mpeg:mpegB:cicp:systems:auxiliary:alpha\0")
+                 + full(b"ccst", 0, b"\x7c" + bytes(3)))
+        self.assertIn(alpha, heif.rebuild(sequence(entry_box=alpha)))
+
     def test_media_stored_elsewhere_is_refused(self):
         with self.assertRaises(FormatError) as caught:
             heif.rebuild(sequence(dref_flags=0))

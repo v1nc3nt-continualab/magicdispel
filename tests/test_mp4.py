@@ -47,15 +47,28 @@ def visual_entry(kind, boxes):
     return box(kind, fields + boxes + bytes(4))  # QuickTime's terminator
 
 
+def descriptor(tag, body):
+    """An MPEG-4 descriptor, its length in 4 bytes as Apple writes it."""
+    return bytes([tag, 0x80, 0x80, 0x80, len(body)]) + body
+
+
+def esds():
+    """An AAC decoder configuration: the ES descriptor, the decoder's, AAC's
+    own (LC, 48 kHz, stereo) and the sync layer's."""
+    decoder = descriptor(4, bytes([0x40, 0x15]) + bytes(3) + struct.pack(">II", 128000, 128000)
+                         + descriptor(5, bytes([0x11, 0x90])))
+    return full(b"esds", 0, descriptor(3, struct.pack(">HB", 1, 0) + decoder + descriptor(6, b"\x02")))
+
+
 def sound_entry(quicktime):
     if quicktime:  # version 1, with QuickTime's sound extension
         fields = (bytes(6) + struct.pack(">HHH", 1, 1, 0) + b"appl" + struct.pack(">HHhHI", 2, 16, -2, 0, 48000 << 16)
                   + struct.pack(">IIII", 1024, 0, 4, 2))
-        wave = box(b"wave", box(b"frma", b"mp4a") + box(b"mp4a", bytes(4)) + full(b"esds", 0, bytes(20))
+        wave = box(b"wave", box(b"frma", b"mp4a") + box(b"mp4a", bytes(4)) + esds()
                    + bytes(8))
         return box(b"mp4a", fields + wave)
     fields = bytes(6) + struct.pack(">H", 1) + bytes(8) + struct.pack(">HHHHI", 2, 16, 0, 0, 48000 << 16)
-    return box(b"mp4a", fields + full(b"esds", 0, bytes(20)))
+    return box(b"mp4a", fields + esds())
 
 
 def table(offset, sizes):
@@ -175,7 +188,22 @@ def inserted(data, path, payload):
     return bytes(result)
 
 
-class MovieTests(unittest.TestCase):
+def sound_movie(entry, durations, sizes):
+    """A video with a sound track of four 4-byte frames in one chunk, whose
+    stts is `durations` (after its count) and stsz `sizes`."""
+    video = (1, b"vide", visual_entry(b"avc1", box(b"avcC", bytes(7))), VIDEO, b"", b"vmhd")
+    data = movie_file(tracks=[video, (2, b"soun", entry, [b"PCM_", b"FRAM", b"ES_B", b"YTES"], b"", b"smhd")])
+    data = replaced(data, full(b"stts", 0, struct.pack(">III", 1, 4, 512)), full(b"stts", 0, durations))
+    return replaced(data, full(b"stsz", 0, struct.pack(">6I", 0, 4, 4, 4, 4, 4)), full(b"stsz", 0, sizes))
+
+
+def pcm_entry(kind=b"sowt", channels=2, bits=16):
+    """An uncompressed QuickTime sound entry of version 0."""
+    return box(kind, bytes(6) + struct.pack(">HHH", 1, 0, 0) + b"appl"
+               + struct.pack(">HHhHI", channels, bits, 0, 0, 48000 << 16))
+
+
+class VideoTests(unittest.TestCase):
     def assertCleaned(self, data):
         rebuilt = mp4.rebuild(data)
         mp4.verify(data, rebuilt)
@@ -186,6 +214,9 @@ class MovieTests(unittest.TestCase):
         with self.assertRaises(FormatError) as caught:
             mp4.rebuild(data)
         self.assertEqual(caught.exception.key, key)
+
+
+class MovieTests(VideoTests):
 
     def test_metadata_and_its_tracks_go_and_the_picture_and_sound_stay(self):
         for quicktime in (True, False):
@@ -284,7 +315,7 @@ class MovieTests(unittest.TestCase):
         self.assertRefused(moved[:mdat] + b"free" + moved[mdat + 4:], "damaged")
 
 
-class TableTests(MovieTests):
+class TableTests(VideoTests):
     """A kept track's boxes must be what players read, and agree with each other."""
 
     def test_tables_that_disagree_are_damage(self):
@@ -302,10 +333,32 @@ class TableTests(MovieTests):
             "32- and 64-bit offsets": inserted(data, STBL, full(b"co64", 0, struct.pack(">IQ", 1, 0))),
             "two track headers": inserted(data, TRAK, data[tkhd.start:tkhd.end]),
             "offsets outside the sample table": inserted(data, TRAK + [b"mdia", b"minf"], data[stco.start:stco.end]),
+            "an empty time-to-sample entry": replaced(data, stts,
+                                                      full(b"stts", 0, struct.pack(">5I", 2, 0, 9, 2, 512))),
+            "chunks of no samples": replaced(replaced(replaced(data, stts, full(b"stts", 0, bytes(4))), stsc, full(
+                b"stsc", 0, bytes(4))), full(b"stsz", 0, struct.pack(">4I", 0, 2, 16, 16)), full(b"stsz", 0, bytes(8))),
         }
         for reason, broken in damaged.items():
             with self.subTest(reason):
                 self.assertRefused(broken, "damaged")
+        offset = int.from_bytes(data[stco.content + 8:stco.end], "big")
+        one_a_chunk = replaced(data, stsc, full(b"stsc", 0, struct.pack(">IIII", 1, 1, 1, 1)))
+        refused = {
+            "a chunk used twice": replaced(one_a_chunk, data[stco.start:stco.end],
+                                           full(b"stco", 0, struct.pack(">III", 2, offset, offset + 8))),
+            "an empty chunk": replaced(replaced(one_a_chunk, data[stco.start:stco.end], full(
+                b"stco", 0, struct.pack(">III", 2, offset, offset + 32))), full(b"stsz", 0, struct.pack(
+                    ">4I", 0, 2, 16, 16)), full(b"stsz", 0, struct.pack(">4I", 0, 2, 16, 0))),
+            "flags in stsz": replaced(data, full(b"stsz", 0, struct.pack(">4I", 0, 2, 16, 16)),
+                                      full(b"stsz", 0, struct.pack(">4I", 0, 2, 16, 16), flags=1)),
+            "a second version of stts": replaced(data, stts, full(b"stts", 1, struct.pack(">III", 1, 2, 512))),
+        }
+        for reason, broken in refused.items():
+            with self.subTest(reason):
+                self.assertRefused(broken)
+        # An edit list may repeat, as animations loop.
+        elst = full(b"elst", 0, struct.pack(">IIIII", 1, 1200, 0, 0x10000, 0)[:16])
+        self.assertCleaned(replaced(data, elst, full(b"elst", 0, elst[12:], flags=1)))
 
     def test_tables_claiming_billions_of_samples_are_refused_at_once(self):
         data, billions = plain_video(), 0xFFFFFFFF
@@ -320,49 +373,122 @@ class TableTests(MovieTests):
                            "damaged")
 
     def test_sample_groups_stay_only_when_every_byte_is_checked(self):
-        def groups(kind, description, size, samples=2, index=1, version=1):
-            return (full(b"sgpd", version, kind + struct.pack(">II", size, 1) + description)
-                    + full(b"sbgp", 0, kind + struct.pack(">III", 1, samples, index)))
+        def sgpd(kind, descriptions, size, version=1, default=0):
+            return full(b"sgpd", version, kind + struct.pack(">I", size) + (struct.pack(">I", default) if version == 2
+                                                                             else b"")
+                        + struct.pack(">I", len(descriptions)) + b"".join(descriptions))
 
-        roll = groups(b"roll", struct.pack(">h", -1), 2)
-        data = inserted(plain_video(), STBL, roll + groups(b"prvt", MARKER, 16))
+        def sbgp(kind, samples=2, index=1, parameter=None):
+            return full(b"sbgp", 0 if parameter is None else 1, kind + (b"" if parameter is None else parameter)
+                        + struct.pack(">III", 1, samples, index))
+
+        roll = sgpd(b"roll", [struct.pack(">h", -1), b"MD"], 2) + sbgp(b"roll")
+        data = inserted(plain_video(), STBL, roll + sgpd(b"prvt", [MARKER], 16) + sbgp(b"prvt"))
         rebuilt = self.assertCleaned(data)
-        self.assertIn(roll, rebuilt)
+        self.assertIn(roll.replace(b"MD", bytes(2)), rebuilt)  # a description no sample uses is cleared
         self.assertNotIn(b"prvt", rebuilt)
+        layers = sgpd(b"sync", [b"\x13"], 1)  # one description and no groups, as Apple writes temporal layers
+        self.assertIn(layers, self.assertCleaned(inserted(plain_video(), STBL, layers)))
         refused = {
-            "another size": groups(b"roll", bytes(3), 3),
-            "past the descriptions": groups(b"roll", bytes(2), 2, index=2),
-            "past the samples": groups(b"roll", bytes(2), 2, samples=3),
-            "reserved bits": groups(b"sync", b"\xc1", 1),
+            "another size": sgpd(b"roll", [bytes(3)], 3) + sbgp(b"roll"),
+            "past the descriptions": sgpd(b"roll", [bytes(2)], 2) + sbgp(b"roll", index=2),
+            "past the samples": sgpd(b"roll", [bytes(2)], 2) + sbgp(b"roll", samples=3),
+            "a group of no samples": sgpd(b"roll", [bytes(2)], 2) + sbgp(b"roll", samples=0),
+            "reserved bits": sgpd(b"sync", [b"\xc1"], 1) + sbgp(b"sync"),
+            "a grouping parameter": sgpd(b"roll", [bytes(2)], 2) + sbgp(b"roll", parameter=b"MDPV"),
+            "a default past the descriptions": sgpd(b"roll", [bytes(2)], 2, version=2, default=2) + sbgp(b"roll"),
+            "descriptions without groups": sgpd(b"sync", [b"\x13", b"\x14"], 1),
+            "a reserved dependency": full(b"sdtp", 0, bytes([0x30, 0x10])),
         }
         for reason, boxes in refused.items():
             with self.subTest(reason):
                 self.assertRefused(inserted(plain_video(), STBL, boxes))
+        self.assertCleaned(inserted(plain_video(), STBL, full(b"sdtp", 0, bytes([0x20, 0x10]))))
         self.assertRefused(inserted(plain_video(), STBL, roll + roll), "damaged")
+        for kind in (b"stsh", b"subs", b"padb"):  # seeking and decoding hints no player needs
+            with self.subTest(kind):
+                self.assertCleaned(inserted(plain_video(), STBL, full(kind, 0, struct.pack(">I", 1) + MARKER)))
 
-    def test_quicktime_sound_is_read_by_its_sample_entry(self):
-        # Uncompressed sound whose table counts frames of one time unit, each of
-        # "size 1": players read each chunk as frames times their size in the entry.
-        sowt = box(b"sowt", bytes(6) + struct.pack(">HHH", 1, 0, 0) + b"appl"
-                   + struct.pack(">HHhHI", 2, 16, 0, 0, 48000 << 16))
-        video = (1, b"vide", visual_entry(b"avc1", box(b"avcC", bytes(7))), VIDEO, b"", b"vmhd")
-        frames = [b"PCM_", b"FRAM", b"ES_B", b"YTES"]
-
-        def one_sized(entry):
-            data = movie_file(tracks=[video, (2, b"soun", entry, frames, b"", b"smhd")])
-            data = replaced(data, full(b"stts", 0, struct.pack(">III", 1, 4, 512)),
-                            full(b"stts", 0, struct.pack(">III", 1, 4, 1)))
-            return replaced(data, full(b"stsz", 0, struct.pack(">6I", 0, 4, 4, 4, 4, 4)),
-                            full(b"stsz", 0, struct.pack(">II", 1, 4)))
-
-        data = one_sized(sowt)
+    def test_uncompressed_sound_is_read_by_its_sample_entry(self):
+        # Sound whose table counts frames of one time unit, each of "size 1":
+        # players read each chunk as frames times their size in the entry.
+        frames, one_unit = struct.pack(">II", 1, 4), struct.pack(">III", 1, 4, 1)
+        for sizes in (frames, struct.pack(">II", 4, 4)):
+            with self.subTest(sizes=sizes):
+                data = sound_movie(pcm_entry(), one_unit, sizes)
+                self.assertEqual(self.assertCleaned(data).find(b"PCM_FRAMES_BYTES"), data.find(b"PCM_FRAMES_BYTES"))
+        # ISO's float sound: the bits per sample are in pcmC, whatever the entry says.
+        fpcm = box(b"fpcm", bytes(6) + struct.pack(">H", 1) + bytes(8) + struct.pack(">HHHHI", 1, 16, 0, 0, 48000 << 16)
+                   + full(b"pcmC", 0, bytes([1, 32])))
+        data = sound_movie(fpcm, one_unit, struct.pack(">II", 4, 4))
         self.assertEqual(self.assertCleaned(data).find(b"PCM_FRAMES_BYTES"), data.find(b"PCM_FRAMES_BYTES"))
-        self.assertRefused(one_sized(sound_entry(False)))  # compressed, with no sizes to read chunks by
+        # Sound that players could read in two ways, or by sizes the table does not give.
+        refused = {
+            "compressed, of size 1": sound_movie(sound_entry(False), one_unit, frames),
+            "one-unit frames in two runs": sound_movie(pcm_entry(), struct.pack(">5I", 2, 2, 1, 2, 1), frames),
+            "one-unit frames of listed sizes": sound_movie(pcm_entry(), one_unit, struct.pack(">6I", 0, 4, 1, 1, 1, 1)),
+            "frames of 12 bits": sound_movie(pcm_entry(bits=12), one_unit, frames),
+            "frames of another size": sound_movie(pcm_entry(), struct.pack(">III", 1, 4, 2), struct.pack(">II", 2, 4)),
+        }
+        for reason, data in refused.items():
+            with self.subTest(reason):
+                self.assertRefused(data)
+        data = sound_movie(pcm_entry(), one_unit, frames)
+        stsd = boxes_at(data, STBL + [b"stsd"])[1]  # the sound track's
+        self.assertRefused(data[:stsd.content] + b"\1" + data[stsd.content + 1:])  # FFmpeg reads version 1 by brand
 
-    def test_the_file_type_box_holds_only_known_brands(self):
-        self.assertRefused(movie_file(quicktime=False).replace(b"isommp42", b"isomMDPV"))
+    def test_the_file_type_box_keeps_only_brands_that_say_how_to_read_it(self):
+        nikon = box(b"ftyp", b"qt  \x20\x07\x09\x00qt  niko")
+        self.assertTrue(self.assertCleaned(movie_file(ftyp=nikon)).startswith(nikon.replace(b"niko", bytes(4))))
+        m4v = box(b"ftyp", b"M4V \0\0\0\1M4V M4A isommp42")  # as Apple's exports write it
+        self.assertTrue(self.assertCleaned(movie_file(False, ftyp=m4v)).startswith(m4v))
         padded = box(b"ftyp", b"qt  \x20\x05\x03\x00qt  " + bytes(8))  # as older QuickTime writes it
         self.assertTrue(self.assertCleaned(movie_file(ftyp=padded)).startswith(padded))
+        # A second file type box is no file type box.
+        self.assertCleaned(movie_file(top_extra=box(b"ftyp", b"isom\0\0\0\0" + MARKER)))
+        self.assertCleaned(movie_file(typed=False, top_extra=box(b"ftyp", b"qt  \0\0\0\0" + MARKER)))
+        for ftyp in (box(b"ftyp", b"MDPV\0\0\0\0isom"), box(b"ftyp", b"isom\0\0\0\0" + b"isom" * 64)):
+            with self.subTest(ftyp[8:12]):
+                self.assertRefused(movie_file(False, ftyp=ftyp))
+
+    def test_the_decoder_configuration_holds_nothing_after_it(self):
+        self.assertCleaned(plain_video(box(b"avcC", bytes([1, 100, 0, 30, 0xFF, 0xE1, 0, 2]) + b"SP" + bytes([1, 0, 1])
+                                           + b"P" + bytes([0xFD, 0xF8, 0xF8, 0]))))  # a high profile's extension
+        video = (1, b"vide", visual_entry(b"avc1", box(b"avcC", bytes(7))), VIDEO, b"", b"vmhd")
+        streaminfo = bytes([0x80]) + (34).to_bytes(3, "big") + bytes(34)
+        fields = bytes(6) + struct.pack(">H", 1) + bytes(8) + struct.pack(">HHHHI", 2, 16, 0, 0, 48000 << 16)
+
+        def sound(entry):
+            return movie_file(tracks=[video, (2, b"soun", entry, [AUDIO], b"", b"smhd")])
+
+        self.assertCleaned(sound(box(b"fLaC", fields + full(b"dfLa", 0, streaminfo))))
+        self.assertCleaned(sound(box(b"Opus", fields + box(b"dOps", bytes([0, 2]) + bytes(9)))))
+        comment = bytes([0x84]) + (len(MARKER)).to_bytes(3, "big") + MARKER
+        refused = {
+            "after avcC": plain_video(box(b"avcC", bytes(7) + MARKER)),
+            "after hvcC": plain_video(box(b"hvcC", HVCC + MARKER), b"hvc1"),
+            "after esds": sound(box(b"mp4a", fields + esds() + box(b"udta", MARKER))),
+            "inside esds": sound(box(b"mp4a", fields + box(b"esds", esds()[8:] + MARKER))),
+            "FLAC tags": sound(box(b"fLaC", fields + full(b"dfLa", 0, streaminfo[:1].replace(b"\x80", b"\0")
+                                                            + streaminfo[1:] + comment))),
+            "after dOps": sound(box(b"Opus", fields + box(b"dOps", bytes([0, 2]) + bytes(9) + MARKER))),
+        }
+        for reason, data in refused.items():
+            with self.subTest(reason):
+                self.assertRefused(data)
+
+    def test_fields_no_reader_uses_are_cleared(self):
+        data = plain_video()
+        mvhd, tkhd = boxes_at(data, [b"moov", b"mvhd"])[0], boxes_at(data, TRAK + [b"tkhd"])[0]
+        planted = bytearray(data)
+        planted[mvhd.content + 72:mvhd.content + 88] = MARKER  # QuickTime's poster and current times
+        planted[tkhd.content + 24:tkhd.content + 32] = MARKER[:8]  # reserved
+        entry = boxes_at(data, STBL + [b"stsd"])[0].content + 8
+        planted[entry + 8:entry + 14] = b"SECRET"  # the reserved bytes of the sample entry
+        rebuilt = self.assertCleaned(bytes(planted))
+        self.assertNotIn(MARKER[:8], rebuilt)
+        self.assertNotIn(b"SECRET", rebuilt)
+        self.assertRefused(data.replace(b"alis\0\0\0\1", b"alis\0\0\0\3"))  # flags of no known meaning
 
     def test_what_players_do_not_need_goes(self):
         rebuilt = self.assertCleaned(inserted(plain_video(), [b"moov"], box(b"mvex", full(b"trex", 0, bytes(20)))))
@@ -371,18 +497,29 @@ class TableTests(MovieTests):
         h263 = self.assertCleaned(plain_video(box(b"d263", b"VNDR" + bytes([0, 10, 0])), b"s263"))
         self.assertIn(box(b"d263", bytes(7)[:4] + bytes([0, 10, 0])), h263)  # the codec's maker is cleared
 
-    def test_the_language_stays_when_it_is_one(self):
-        mdia = TRAK + [b"mdia"]
-        language = full(b"elng", 0, b"zh-Hant\0")
-        self.assertIn(language, self.assertCleaned(inserted(plain_video(), mdia, language)))
-        for text in (b"zh Hant\0", b"zh-Hant", b"\0"):
-            with self.subTest(text):
-                self.assertRefused(inserted(plain_video(), mdia, full(b"elng", 0, text)))
+    def test_an_extended_language_goes_with_the_region_it_may_name(self):
+        rebuilt = self.assertCleaned(inserted(plain_video(), TRAK + [b"mdia"], full(b"elng", 0, b"zh-Hans-CN\0")))
+        self.assertNotIn(b"zh-Hans", rebuilt)
 
     def test_boxes_players_need_are_refused_unless_checked(self):
         nclx = b"nclx" + struct.pack(">HHH", 1, 1, 1)
         self.assertCleaned(plain_video(box(b"avcC", bytes(7)) + box(b"colr", nclx + b"\x80")
                                        + box(b"dvvC", DVVC[:4] + b"\x04" + bytes(19))))  # metadata compression
+        # AVFoundation's MP4 exports: the fields and their chroma locations.
+        self.assertCleaned(plain_video(box(b"avcC", bytes(7)) + box(b"fiel", b"\1\0") + box(b"chrm", bytes(2))))
+        video = (1, b"vide", visual_entry(b"avc1", box(b"avcC", bytes(7))), VIDEO, b"", b"vmhd")
+        fields = bytes(6) + struct.pack(">H", 1) + bytes(8) + struct.pack(">HHHHI", 2, 16, 0, 0, 48000 << 16)
+
+        def layout(tag, count, bitmap=0):
+            entry = box(b"mp4a", fields + esds() + full(b"chan", 0, struct.pack(">III", tag, bitmap, count)
+                                                          + bytes(20 * count)))
+            return movie_file(tracks=[video, (2, b"soun", entry, [AUDIO], b"", b"smhd")])
+
+        stereo = 101 << 16 | 2
+        self.assertCleaned(layout(stereo, 0))
+        self.assertCleaned(layout(0, 2))  # descriptions of each channel
+        self.assertRefused(layout(stereo, 1))  # a description the layout does not use
+        self.assertRefused(layout(stereo, 0, bitmap=3))
         refused = {
             "360-degree video": inserted(plain_video(), TRAK, box(b"uuid", mp4.SPHERICAL + b"<rdf:SphericalVideo/>")),
             "unknown color": plain_video(box(b"avcC", bytes(7)) + box(b"colr", b"prvt" + bytes(6))),
@@ -390,6 +527,7 @@ class TableTests(MovieTests):
             "Dolby Vision reserved bits": plain_video(box(b"avcC", bytes(7)) + box(b"dvvC", DVVC[:4] + b"\x01"
                                                                                    + bytes(19))),
             "two pixel aspect ratios": plain_video(box(b"avcC", bytes(7)) + box(b"pasp", bytes(8)) * 2),
+            "a chroma location of no meaning": plain_video(box(b"avcC", bytes(7)) + box(b"chrm", b"\0\x40")),
         }
         for reason, data in refused.items():
             with self.subTest(reason):
@@ -454,6 +592,24 @@ class PipelineTests(unittest.TestCase):
                 core.clean(str(source))
             self.assertEqual(caught.exception.key, "source_changed")
             self.assertEqual(os.listdir(folder), ["clip.mov"])
+
+    @unittest.skipIf(os.name == "nt", "Windows has no owner-only permissions")
+    def test_the_copy_is_the_owners_alone_until_it_gets_the_originals_permissions(self):
+        with tempfile.TemporaryDirectory(prefix="video-") as folder:
+            source = Path(folder, "private.mov")
+            source.write_bytes(movie_file())
+            source.chmod(0o640)
+            seen, clean = {}, mp4.clean
+
+            def cleaning(original, copy):
+                seen.update({path.name: path.stat().st_mode & 0o777 for path in Path(folder).iterdir()})
+                return clean(original, copy)
+
+            with patch.object(mp4, "clean", cleaning):
+                output = core.clean(str(source))
+            unfinished = [name for name in seen if name.startswith("magicdispel-")]
+            self.assertEqual([seen[name] for name in unfinished], [0o600])  # visible, and the owner's alone
+            self.assertEqual(output.stat().st_mode & 0o777, 0o640)
 
     def test_exiftool_is_never_given_a_path_it_would_misread(self):
         with self.assertRaises(exiftool.ExifToolError):

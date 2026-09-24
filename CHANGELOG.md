@@ -15,21 +15,32 @@ way.
 - Removed: location, device, software and dates in user data and metadata boxes; timed
   metadata tracks (GPS and motion, face detection, Live Photo and motion photo data), timecode
   and chapter tracks, with their samples; maker data such as GoPro's serial numbers and
-  Samsung's SEF data; creation times, handler, vendor and compressor names; unused media data
-  and anything after the movie.
-- Refused: fragmented, encrypted and audio-only files, subtitle tracks, 360-degree videos,
-  codecs and sample entry boxes not on the list, file types of unknown brands, and a removed
-  track that another needs to be shown.
+  Samsung's SEF data; creation times, handler, vendor and compressor names; brands naming a
+  camera's maker; the extended language tag, which may name a region; unused media data and
+  anything after the movie.
+- Refused: fragmented, encrypted and audio-only files, subtitle tracks, Google's 360-degree
+  videos, codecs and sample entry boxes not on the list, and a removed track that another
+  needs to be shown.
 - Every kept box has exactly its layout and appears once where the standard allows one, and a
-  kept track's sample tables must agree on its samples, chunks and descriptions. Sample groups
-  other than roll distances, sync and random access points and temporal layers are emptied.
-  Uncompressed QuickTime sound is read by its sample entry, as players do. The codec maker's
-  name in H.263 and AMR configurations is cleared. The gapless playback note (iTunSMPB) goes
-  with the metadata.
-- A video is cleaned in a hidden copy next to the original, never read into memory: a 4.7 GB
-  video takes under five seconds. Closing the terminal or stopping MagicDispel removes an
-  unfinished copy, as Ctrl+C does. ExifTool's second check reads that copy from its path, with
-  the timed metadata in its samples.
+  kept track's sample tables must agree on its samples, chunks and descriptions; no two
+  chunks share bytes. Decoder configurations must end where they say (avcC, hvcC, esds, av1C,
+  vpcC, dOps), and FLAC's may hold no tags. Sample groups other than roll distances, sync and
+  random access points and temporal layers are emptied, and descriptions no sample uses are
+  cleared; so are reserved fields and QuickTime's poster and selection times. Seeking hints no
+  player needs (stsh, subs, padb) are emptied. Uncompressed sound is read by its sample entry,
+  as players read it, and sound they could read in two ways is refused. The codec maker's name
+  in H.263 and AMR configurations is cleared. The gapless playback note (iTunSMPB) goes with the
+  metadata.
+- A video is cleaned in a copy next to the original, never read into memory: a 4.7 GB video
+  takes under five seconds. The copy, `magicdispel-<random>.unfinished.mov` until it is done,
+  is readable only by its owner, and gets the original's permissions once it is clean. Ctrl+C,
+  Ctrl+Break, closing the terminal (unless run with `nohup`) and stopping MagicDispel remove an
+  unfinished copy. ExifTool's second check reads that copy from its path, with the timed
+  metadata in its samples, and gives up after ten minutes.
+- Photos: a HEIF file keeps only the brands that say how to read it (HEIF's, MIAF's, AVIF's);
+  others are cleared, and a second file type box is emptied. Clean copies of photos also get
+  their original's permissions. Names and messages printed never carry a file's control
+  characters to the terminal.
 - A video keeps its extension, .mp4 or .mov, whatever its content: players may read one file
   differently by its extension. `--anonymous` names videos `video_<random>.mov`.
 - Image sequences (HEIF, AVIF) and videos share one cleaner, which also checks that headers and
