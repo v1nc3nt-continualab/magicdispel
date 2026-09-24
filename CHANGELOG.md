@@ -30,6 +30,21 @@ way.
 - The regression harness checks videos with FFmpeg (every decoded frame and stream) and macOS
   AVFoundation (tracks, rotation, HDR, frames).
 
+## 0.1.5 (unreleased)
+
+HDR photos taken with iOS 27 are cleaned: 0.1.4 refused them ("unsupported ICC color tag
+HAGC"). Tested with an iPhone 16 on iOS 27.0; the clean copy renders identically in macOS, in
+SDR and HDR.
+
+- Apple's headroom adaptive gain curve (ICC tag HAGC; SMPTE ST 2094-50 tone-mapping metadata,
+  ICC White Paper 62) is kept byte for byte, once every bit of it is checked: reserved bits
+  zero, numbers within the standard's ranges, at most four alternate images, nothing after
+  the record. It holds only flags, headrooms and curve points, which HDR-aware renderers use
+  to show the photo on screens with less headroom.
+- iOS 27 moved the fields of Apple's older HDR curve (ICC tag hdgm, type gmap) one byte
+  earlier. Both layouts are accepted, for Display P3 and BT.2020 primaries, and the image
+  identifier in it is still cleared.
+
 ## 0.1.4 (2026-09-24)
 
 Tested on 27 photos from 21 current phones and cameras (Samsung, Google Pixel, Xiaomi, Huawei,
