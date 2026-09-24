@@ -6,7 +6,10 @@ Videos: MP4 and QuickTime (MOV) files are cleaned too, without changing a single
 on 64 public sample videos, GoPro, iPhone (Dolby Vision, spatial video), Pixel and Samsung ones
 among them: 47 clean, FFmpeg decodes identical frames from each, and macOS plays each the same;
 the other 17 are refused as designed. Three videos from an iPhone 16 on iOS 27 clean the same
-way.
+way. So do 394 small files made for the tests with FFmpeg, macOS (avconvert, AVAssetWriter,
+ImageIO) and ExifTool, of every codec, container and muxer option they offer: those not
+refused by design (fragmented, audio-only, subtitles, Motion JPEG, MPEG-2, DNxHR, Opus as
+AVFoundation writes it into QuickTime, iLBC) clean with identical frames and sound.
 
 - Kept: video and sound tracks with every sample, decoder configurations, rotation, edit lists,
   color, HDR, Dolby Vision, alpha, Apple's spatial video information and positional audio
@@ -47,8 +50,8 @@ way.
   their number. Clean copies of photos also get
   their original's permissions. Names and messages printed never carry a file's control
   characters to the terminal.
-- A video keeps its extension, .mp4 or .mov, whatever its content: players may read one file
-  differently by its extension. `--anonymous` names videos `video_<random>.mov`.
+- A video keeps its extension (.mp4, .mov, .m4v, .3gp, .f4v...), whatever its content: players
+  may read one file differently by its extension. `--anonymous` names videos `video_<random>.mov`.
 - Image sequences (HEIF, AVIF) and videos share one cleaner, which also checks that headers and
   sample tables have exactly their size, and that nothing in the movie box changed but the
   cleared fields. The 95 test photos clean exactly as before.

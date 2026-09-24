@@ -3,7 +3,9 @@
 
 A corpus is a folder of images plus manifest.json: [{"id", "label", "file",
 "name"}, ...], created from the folder's images on first use. Keep it outside
-the repository; it usually holds personal photos.
+the repository; it usually holds personal photos. An entry may list "known":
+parts of the problems that are a documented limitation, which are then
+reported as notes.
 
     python scripts/regression.py CORPUS
     python scripts/regression.py CORPUS --baseline CORPUS/runs/<run>.json
@@ -45,9 +47,10 @@ MARKER = b"SECRET-40.7128N"
 HELPER = Path(__file__).with_name("native_render.swift")
 VIDEO_HELPER = Path(__file__).with_name("native_video.swift")
 CACHE_VERSION = 5
-VIDEO_SUFFIXES = {".mp4", ".m4v", ".mov", ".qt", ".3gp", ".3g2"}
-# Sample entry atoms whose first bytes name the codec's maker, cleared: H.263 and AMR.
-VENDOR_ATOMS = {"d263", "damr"}
+VIDEO_SUFFIXES = {".mp4", ".m4v", ".mov", ".qt", ".3gp", ".3g2", ".f4v"}
+# Sample entry atoms MagicDispel changes on purpose: the codec maker's name in
+# H.263's and AMR's is cleared, and FFmpeg's glbl, which names a ProRes encoder, emptied.
+CHANGED_ATOMS = {"d263", "damr", "glbl"}
 # ffprobe's properties of a video or sound stream that say how it plays.
 STREAM_FIELDS = ("codec_type", "codec_name", "codec_tag_string", "profile", "width", "height", "pix_fmt",
                  "color_range", "color_space", "color_transfer", "color_primaries", "field_order",
@@ -391,7 +394,8 @@ def complete(native):
 
 
 def input_fingerprints(corpus, samples, renderer, exiftool, workers):
-    """Inputs never change, so their fingerprints are cached by content hash."""
+    """Inputs never change, so their fingerprints are cached by content hash,
+    and by extension, which decides how a file is read (as a video or not)."""
     cache_path = corpus / ".cache" / "inputs.json"
     try:
         cache = json.loads(cache_path.read_text())
@@ -402,8 +406,9 @@ def input_fingerprints(corpus, samples, renderer, exiftool, workers):
         cache = {"key": key, "files": {}}
     paths = {sample["id"]: corpus / sample["file"] for sample in samples}
     hashes = {ident: sha256_file(path) for ident, path in paths.items()}
-    missing = [ident for ident in paths if hashes[ident] not in cache["files"]
-               or not complete(cache["files"][hashes[ident]]["native"])]
+    keys = {ident: hashes[ident] + path.suffix.lower() for ident, path in paths.items()}
+    missing = [ident for ident in paths if keys[ident] not in cache["files"]
+               or not complete(cache["files"][keys[ident]]["native"])]
     if missing:
         with concurrent.futures.ThreadPoolExecutor(workers) as pool:
             pillow = dict(zip(missing, pool.map(lambda i: pillow_fingerprint(paths[i]), missing)))
@@ -411,7 +416,7 @@ def input_fingerprints(corpus, samples, renderer, exiftool, workers):
         native = renderer.fingerprints([paths[ident] for ident in missing])
         tags = exiftool_tags(exiftool, [paths[ident] for ident in missing])
         for ident in missing:
-            cache["files"][hashes[ident]] = {
+            cache["files"][keys[ident]] = {
                 "structure": structure(paths[ident]),
                 "pillow": pillow[ident],
                 "decoded": decoded[ident],
@@ -421,7 +426,7 @@ def input_fingerprints(corpus, samples, renderer, exiftool, workers):
             }
         cache_path.parent.mkdir(exist_ok=True)
         cache_path.write_text(json.dumps(cache))
-    return {ident: dict(cache["files"][hashes[ident]], sha256=hashes[ident]) for ident in paths}
+    return {ident: dict(cache["files"][keys[ident]], sha256=hashes[ident]) for ident in paths}
 
 
 MEDIA_SUFFIXES = {".jpg", ".jpeg", ".jpe", ".png", ".apng", ".heic", ".heif", ".hif", ".avif",
@@ -555,15 +560,17 @@ def native_video_differences(before, after):
 
 
 def comparable(track):
-    """A track as macOS describes it, less the sample entry atoms that start
-    with the name of the codec's maker, which MagicDispel clears."""
+    """A track as macOS describes it, less the sample entry atoms MagicDispel
+    changes on purpose (see CHANGED_ATOMS)."""
     formats = []
     for found in track.get("formats", []):
         extensions = found.get("extensions", {})
         atoms = extensions.get("SampleDescriptionExtensionAtoms")
         if isinstance(atoms, dict):
-            atoms = {kind: value for kind, value in atoms.items() if kind not in VENDOR_ATOMS}
-            found = {**found, "extensions": {**extensions, "SampleDescriptionExtensionAtoms": atoms}}
+            atoms = {kind: value for kind, value in atoms.items() if kind not in CHANGED_ATOMS}
+            extensions = {key: value for key, value in extensions.items() if key != "SampleDescriptionExtensionAtoms"}
+            found = {**found, "extensions": {**extensions, **({"SampleDescriptionExtensionAtoms": atoms} if atoms
+                                                              else {})}}
         formats.append(found)
     return {**track, "formats": formats}
 
@@ -690,14 +697,18 @@ def main():
     records = run(corpus, args.workers, args.keep, args.without_exiftool)
     baseline ={r["id"]: r for r in json.loads(args.baseline.read_text())["records"]} if args.baseline else {}
 
+    known = {sample["id"]: sample.get("known", []) for sample in load_manifest(corpus)}
     failures = 0
     for record in records:
         problems = check_against_input(record)
-        notes = []
+        limits = [line for line in problems if any(part in line for part in known.get(record["id"], []))]
+        problems = [line for line in problems if line not in limits]
+        notes = ["known limitation: " + line for line in limits]
         if args.baseline:
-            more, notes = check_against_baseline(record, baseline.get(record["id"]), args.identical,
-                                                 set(args.expect_change))
+            more, changes = check_against_baseline(record, baseline.get(record["id"]), args.identical,
+                                                   set(args.expect_change))
             problems += more
+            notes += changes
         record["problems"], record["notes"] = problems, notes
         failures += bool(problems)
         state = "FAIL" if problems else "ok  "

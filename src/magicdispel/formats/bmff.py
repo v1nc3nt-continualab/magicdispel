@@ -327,7 +327,9 @@ def read_properties(data, iprp, items):
             ident = int.from_bytes(data[p:p + id_width], "big")
             count = data[p + id_width]
             p += id_width + 1
-            if ident not in items or p + count * index_width > end or ident in associations:
+            if ident not in items:  # HEIF lets groups of images have properties, as Apple's stereo pairs do
+                raise unsupported("properties of an image group")
+            if p + count * index_width > end or ident in associations:
                 raise StructureError("invalid item property association")
             # The top bit of each index marks the property as essential.
             flag = 1 << (index_width * 8 - 1)

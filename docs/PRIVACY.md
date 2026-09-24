@@ -54,7 +54,8 @@ uses; TIFF EXIF and GPS directories, descriptions, private tags and sub-images; 
 private data blocks and data after the end of an image or video.
 
 Removing auxiliary HEIF images limits later portrait, depth-of-field and photographic-style
-edits. Tested HEIC and HDR JPEG files render identically on macOS in SDR and HDR. Removing a
+edits. A HEIC photo's resolution in DPI goes with its EXIF, the only place HEIF has for it:
+readers then assume 72 DPI, which is what iPhones write anyway. Tested HEIC and HDR JPEG files render identically on macOS in SDR and HDR. Removing a
 video's timed metadata likewise ends what only its maker's app draws from it, such as the
 pairing of a Live Photo's video with its photo, or Samsung's slow-motion sections. The gapless
 playback note some encoders put in the metadata (iTunSMPB) goes too: a player that trims the
