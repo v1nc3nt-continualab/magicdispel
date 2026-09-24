@@ -20,18 +20,15 @@ Boxes: top-level boxes other than ftyp, meta, moov and mdat become zero-filled
 `free` boxes, and are dropped entirely at the end of the file; so do boxes in
 meta other than the item tables; bytes in mdat and idat that no remaining item
 or track sample uses are zeroed. Image sequences keep only the boxes that play
-them (SEQUENCE_BOXES), and only picture tracks and their alpha; the rest is
-emptied, since readers skip boxes they do not know. Their creation and
-modification times are cleared and handler and compressor names blanked.
+them, and only picture tracks and their alpha (see SEQUENCE and movie.py).
 
 Media data never moves, so every item and sample offset stays valid.
 """
-import struct
-
 from .. import gainmap, icc, xmp
 from ..errors import FormatError, VerificationError
-from . import bmff
+from . import bmff, movie
 from .bmff import METADATA_ITEMS, StructureError, unsupported
+from .movie import empty, gaps, zeroed
 
 KEPT = {b"ftyp", b"meta", b"moov", b"mdat"}
 # Fragmented sequences keep samples outside moov; they are not supported.
@@ -40,31 +37,26 @@ REFUSED = {b"moof", b"mfra"}
 META_KEPT = {b"hdlr", b"pitm", b"iinf", b"iloc", b"iref", b"iprp", b"idat", b"dinf", b"grpl"}
 EMPTIED = {b"udta", b"meta", b"uuid", b"free", b"skip"}
 CONTAINERS = {b"dinf"}  # boxes in meta whose own boxes are cleaned too
-TIMED = {b"mvhd", b"tkhd", b"mdhd"}
 # What an image sequence keeps, by container: headers, tracks and their
-# references and edits, and the sample tables (ISO/IEC 14496-12). Readers skip
-# boxes they do not know, so any other box cannot be needed and is emptied.
-SEQUENCE_BOXES = {
-    b"moov": {b"mvhd", b"trak", b"mvex"},
-    b"mvex": {b"mehd", b"trex"},
-    b"trak": {b"tkhd", b"tref", b"edts", b"mdia"},
-    b"edts": {b"elst"},
-    b"mdia": {b"mdhd", b"hdlr", b"minf"},
-    b"minf": {b"vmhd", b"nmhd", b"dinf", b"stbl"},
-    b"dinf": {b"dref"},
-    b"stbl": {b"stsd", b"stts", b"ctts", b"cslg", b"stsc", b"stsz", b"stz2", b"stco", b"co64", b"stss",
-              b"stsh", b"sdtp", b"sbgp", b"sgpd", b"subs"},
-}
-# Tracks a sequence is shown from: its pictures, and auxiliary tracks such as alpha.
-DISPLAY_HANDLERS = {b"pict", b"vide", b"auxv"}
-# Boxes in a visual sample entry that say how to decode and show its samples.
-ENTRY_BOXES = {b"av1C", b"hvcC", b"avcC", b"lhvC", b"colr", b"pasp", b"clap", b"btrt", b"ccst", b"auxi",
-               b"mdcv", b"clli", b"cclv", b"amve", b"fiel"}
-HANDLER_NAME = 24             # bytes of a handler box before its name
+# references and edits, and the sample tables (ISO/IEC 14496-12); the tracks
+# it is shown from, its pictures and auxiliary tracks such as alpha; and in
+# their sample entries the boxes that say how to decode and show the samples.
 VISUAL_ENTRIES = {b"av01", b"hvc1", b"hev1", b"avc1", b"avc3"}
-ENTRY_FIELDS = 78             # bytes of a visual sample entry before its child boxes
-COMPRESSOR_NAME = (42, 74)    # within those fields
-PROFILE_CONTAINERS = {b"iprp", b"ipco", b"trak", b"mdia", b"minf", b"stbl"}
+ENTRY_BOXES = dict.fromkeys({b"av1C", b"hvcC", b"avcC", b"lhvC", b"colr", b"pasp", b"clap", b"btrt", b"ccst",
+                             b"auxi", b"mdcv", b"clli", b"cclv", b"amve", b"fiel"})
+SEQUENCE = movie.Policy(
+    boxes={
+        b"moov": {b"mvhd", b"trak", b"mvex"},
+        b"mvex": {b"mehd", b"trex"},
+        b"trak": {b"tkhd", b"tref", b"edts", b"mdia"},
+        b"edts": {b"elst"},
+        b"mdia": {b"mdhd", b"hdlr", b"minf"},
+        b"minf": {b"vmhd", b"nmhd", b"dinf", b"stbl"},
+        b"dinf": {b"dref"},
+        b"stbl": {b"stsd", b"stts", b"ctts", b"cslg", b"stsc", b"stsz", b"stz2", b"stco", b"co64", b"stss",
+                  b"stsh", b"sdtp", b"sbgp", b"sgpd", b"subs"},
+    },
+    entries={handler: (VISUAL_ENTRIES, ENTRY_BOXES) for handler in (b"pict", b"vide", b"auxv")})
 # Coded, derived and tiled images. Metadata items are removed (XMP is reduced);
 # any other item type is refused rather than guessed at.
 IMAGE_ITEMS = {b"hvc1", b"av01", b"grid", b"iden", b"iovl", b"tmap", b"jpeg", b"avc1", b"hvt1",
@@ -146,14 +138,12 @@ def cleaned(data):
     if layout:
         clean_items(data, layout, result)
     for found in top:
-        if found.kind in (b"meta", b"moov"):
-            start = children(found)
-            for a, b in list(profiles(result, start, found.end)):
+        if found.kind == b"meta":
+            for a, b in list(profiles(result, children(found), found.end)):
                 result[a:b] = icc.sanitize(bytes(result[a:b]))
-            if found.kind == b"meta":
-                clean_boxes(result, start, found.end)
-            else:
-                clean_sequence(result, found)
+            clean_boxes(result, children(found), found.end)
+        elif found.kind == b"moov":
+            movie.clean(result, found, SEQUENCE)
         elif found.kind not in KEPT:
             empty(result, found)
     for start, end in unused_media(result):
@@ -441,16 +431,12 @@ def item_profiles(data, layout, ident):
 
 def profiles(data, start, end):
     """(start, end) of the ICC profile in each colr box among item properties,
-    or in the sample entries of sequence tracks, from a meta or moov box's children."""
+    from a meta box's children."""
     for found in bmff.boxes(data, start, end):
         if found.kind == b"colr" and data[found.content:found.content + 4] in (b"prof", b"rICC"):
             yield found.content + 4, found.end
-        elif found.kind in PROFILE_CONTAINERS:
+        elif found.kind in (b"iprp", b"ipco"):
             yield from profiles(data, found.content, found.end)
-        elif found.kind == b"stsd":
-            for entry in bmff.boxes(data, found.content + 8, found.end):
-                if entry.kind in VISUAL_ENTRIES:
-                    yield from profiles(data, entry.content + ENTRY_FIELDS, entry.end)
 
 
 # ----------------------------------------------------------------------- boxes
@@ -468,74 +454,6 @@ def children(found):
     return found.content + (4 if found.kind == b"meta" else 0)
 
 
-def empty(buffer, found):
-    """Turn a box into a zero-filled free box of the same size, in place."""
-    buffer[found.start + 4:found.start + 8] = b"free"
-    buffer[found.content:found.end] = bytes(found.end - found.content)
-
-
-def clean_sequence(buffer, container):
-    """Keep in an image sequence only what SEQUENCE_BOXES lists, and in its
-    sample entries what ENTRY_BOXES lists; empty everything else, and clear
-    times, names and data reference locations."""
-    for found in bmff.boxes(buffer, container.content, container.end):
-        if found.kind not in SEQUENCE_BOXES[container.kind]:
-            empty(buffer, found)
-            continue
-        if found.kind == b"trak" and handler(buffer, found) not in DISPLAY_HANDLERS:
-            raise unsupported("%s track" % handler(buffer, found).decode("latin-1"))
-        if found.kind in SEQUENCE_BOXES:
-            clean_sequence(buffer, found)
-            continue
-        if found.kind == b"stsd":
-            for entry in sample_entries(buffer, found):
-                for child in bmff.boxes(buffer, entry.content + ENTRY_FIELDS, entry.end):
-                    if child.kind not in ENTRY_BOXES:
-                        empty(buffer, child)
-        for a, b in cleared_fields(buffer, found):
-            buffer[a:b] = bytes(b - a)
-
-
-def check_sequence(data, container):
-    """The same, checked on the result on its own."""
-    for found in bmff.boxes(data, container.content, container.end):
-        if found.kind == b"free" and zeroed(data, [(found.content, found.end)]):
-            continue
-        if found.kind not in SEQUENCE_BOXES[container.kind]:
-            fail("sequence box %r kept" % found.kind)
-        if found.kind == b"trak" and handler(data, found) not in DISPLAY_HANDLERS:
-            fail("track other than pictures kept")
-        if not zeroed(data, cleared_fields(data, found)):
-            fail("names or times kept")
-        if found.kind in SEQUENCE_BOXES:
-            check_sequence(data, found)
-        elif found.kind == b"stsd":
-            for entry in sample_entries(data, found):
-                for child in bmff.boxes(data, entry.content + ENTRY_FIELDS, entry.end):
-                    if child.kind not in ENTRY_BOXES and not (child.kind == b"free"
-                                                              and zeroed(data, [(child.content, child.end)])):
-                        fail("sample entry box %r kept" % child.kind)
-
-
-def handler(data, track):
-    """The handler type of a track: pict, vide, auxv, meta..."""
-    for media in bmff.boxes(data, track.content, track.end):
-        if media.kind == b"mdia":
-            for found in bmff.boxes(data, media.content, media.end):
-                if found.kind == b"hdlr" and found.end - found.content >= 12:
-                    return bytes(data[found.content + 8:found.content + 12])
-    raise StructureError("track without a handler")
-
-
-def sample_entries(data, stsd):
-    """A sample description's entries, which must all be visual ones."""
-    entries = list(bmff.boxes(data, stsd.content + 8, stsd.end))
-    for entry in entries:
-        if entry.kind not in VISUAL_ENTRIES or entry.end - entry.content < ENTRY_FIELDS:
-            raise unsupported("sample entry " + listed({entry.kind}))
-    return entries
-
-
 def clean_boxes(buffer, start, end):
     """Empty user data, metadata and uuid boxes, and clear times, names and
     data reference locations, in the boxes from start to end and below."""
@@ -545,49 +463,18 @@ def clean_boxes(buffer, start, end):
         elif found.kind in CONTAINERS:
             clean_boxes(buffer, found.content, found.end)
         else:
-            for a, b in cleared_fields(buffer, found):
-                buffer[a:b] = bytes(b - a)
+            movie.clear(buffer, movie.cleared_fields(buffer, found))
 
 
 def check_boxes(data, start, end):
     for found in bmff.boxes(data, start, end):
         if found.kind in EMPTIED - {b"free"}:
             fail("user data or metadata box kept")
-        if not zeroed(data, cleared_fields(data, found)) or (found.kind == b"free"
-                                                             and not zeroed(data, [(found.content, found.end)])):
+        if not zeroed(data, movie.cleared_fields(data, found)) or (found.kind == b"free"
+                                                                   and not zeroed(data, [(found.content, found.end)])):
             fail("names or times kept")
         if found.kind in CONTAINERS:
             check_boxes(data, found.content, found.end)
-
-
-def cleared_fields(data, found):
-    """The spans of a box that are cleared: creation and modification times,
-    handler and compressor names, data reference locations."""
-    if found.kind in TIMED:
-        size = 16 if data[found.content] == 1 else 8  # version 1 has 64-bit times
-        if found.end - found.content < 4 + size:
-            raise StructureError("truncated movie header")
-        return [(found.content + 4, found.content + 4 + size)]
-    if found.kind == b"hdlr":
-        return [(found.content + HANDLER_NAME, found.end)] if found.end - found.content > HANDLER_NAME else []
-    if found.kind == b"stsd":
-        first, last = COMPRESSOR_NAME
-        return [(entry.content + first, entry.content + last) for entry in bmff.boxes(data, found.content + 8, found.end)
-                if entry.kind in VISUAL_ENTRIES and entry.end - entry.content >= ENTRY_FIELDS]
-    if found.kind == b"dref":
-        return data_references(data, found)
-    return []
-
-
-def data_references(data, dref):
-    """Media must be in this file: each url/urn entry is self-contained. Any
-    location text after an entry's flags is returned for clearing."""
-    spans = []
-    for entry in bmff.boxes(data, dref.content + 8, dref.end):
-        if entry.kind not in (b"url ", b"urn ") or entry.end - entry.content < 4 or not data[entry.content + 3] & 1:
-            raise unsupported("external media reference")
-        spans.append((entry.content + 4, entry.end))
-    return spans
 
 
 def unused_media(data):
@@ -596,8 +483,7 @@ def unused_media(data):
     used = [span for spans in layout.extents.values() for span in spans] if layout else []
     for found in top:
         if found.kind == b"moov":
-            used += [span for table in sample_tables(data, found.content, found.end)
-                     for span in sample_ranges(data, table)]
+            used += movie.movie_ranges(data, found)
     used.sort()
     return [gap for start, end in media_spans(top, layout) for gap in gaps(used, start, end)]
 
@@ -606,57 +492,6 @@ def media_spans(top, layout):
     """Content spans of the boxes holding item and sample data: mdat and idat."""
     spans = [(found.content, found.end) for found in top if found.kind == b"mdat"]
     return spans + [layout.idat] if layout and layout.idat else spans
-
-
-def sample_tables(data, start, end):
-    for found in bmff.boxes(data, start, end):
-        if found.kind == b"stbl":
-            yield found
-        elif found.kind in (b"trak", b"mdia", b"minf"):
-            yield from sample_tables(data, found.content, found.end)
-
-
-def sample_ranges(data, stbl):
-    """(start, end) of each chunk of samples, from stsc, stsz and stco/co64."""
-    parts = {found.kind: found.content for found in bmff.boxes(data, stbl.content, stbl.end)}
-    try:
-        fixed, count = struct.unpack_from(">II", data, parts[b"stsz"] + 4)
-        sizes = [fixed] * count if fixed else list(struct.unpack_from(">%dI" % count, data, parts[b"stsz"] + 12))
-        runs = [struct.unpack_from(">III", data, parts[b"stsc"] + 8 + 12 * n)[:2]
-                for n in range(struct.unpack_from(">I", data, parts[b"stsc"] + 4)[0])]
-        wide = b"co64" in parts
-        table = parts[b"co64" if wide else b"stco"]
-        chunks = struct.unpack_from(">%d%s" % (struct.unpack_from(">I", data, table + 4)[0], "Q" if wide else "I"),
-                                    data, table + 8)
-    except (KeyError, struct.error):
-        raise unsupported("sample table")
-    ranges, sample = [], 0
-    for index, offset in enumerate(chunks, 1):
-        # stsc runs: from chunk `first` on, each chunk holds `samples` samples.
-        per_chunk = next((samples for first, samples in reversed(runs) if first <= index), 0)
-        ranges.append((offset, offset + sum(sizes[sample:sample + per_chunk])))
-        sample += per_chunk
-    if sample != len(sizes):
-        raise StructureError("sample table does not match its samples")
-    return ranges
-
-
-def gaps(used, start, end):
-    """Parts of [start, end) that no used range covers."""
-    position = start
-    for a, b in used:
-        if b <= position or a >= end:
-            continue
-        if a > position:
-            yield position, a
-        position = max(position, b)
-    if position < end:
-        yield position, end
-
-
-def zeroed(data, spans):
-    """Whether every byte in the given (start, end) spans is zero."""
-    return not any(any(data[a:b]) for a, b in spans)
 
 
 def listed(kinds):
@@ -683,11 +518,10 @@ def check(original, rebuilt):
         if found.kind == b"meta":
             check_boxes(rebuilt, children(found), found.end)
         if found.kind == b"moov":
-            check_sequence(rebuilt, found)
-            # The movie box never moves, so its profiles are matched by position.
-            for start, end in profiles(rebuilt, found.content, found.end):
-                if rebuilt[start:end] != icc.sanitize(original[start:end]):
-                    fail("track color profile not sanitized")
+            # The movie box never moves: it is checked against the original's, box by box.
+            movie.check(original, rebuilt, found, SEQUENCE)
+            if not movie.same(original, rebuilt, movie.movie_ranges(rebuilt, found)):
+                fail("sequence samples changed")
 
 
 def check_cleaned_items(original, before, rebuilt, after):
