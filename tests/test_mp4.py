@@ -543,6 +543,41 @@ class TableTests(VideoTests):
         self.assertNotIn(b"Q!", rebuilt)
         self.assertRefused(data.replace(b"alis\0\0\0\1", b"alis\0\0\0\3"))  # flags of no known meaning
 
+    def test_sound_entries_hold_only_their_values(self):
+        video = (1, b"vide", visual_entry(b"avc1", box(b"avcC", bytes(7))), VIDEO, b"", b"vmhd")
+        fields = bytes(6) + struct.pack(">H", 1) + bytes(8) + struct.pack(">HHHHI", 2, 16, 0, 0, 48000 << 16)
+
+        def sound(entry):
+            return movie_file(tracks=[video, (2, b"soun", entry, [AUDIO], b"", b"smhd")])
+
+        def ipcm(chnl):
+            entry = box(b"ipcm", fields + full(b"pcmC", 0, bytes([1, 16])) + full(b"chnl", 0, chnl))
+            return sound_movie(entry, struct.pack(">III", 1, 4, 1), struct.pack(">II", 4, 4))
+
+        self.assertCleaned(ipcm(bytes([1, 0, 1, 2])))  # a speaker position for each of the 2 channels
+        quicktime = (bytes(6) + struct.pack(">HHH", 1, 1, 0) + b"appl" + struct.pack(">HHhHI", 2, 16, -2, 0, 48000 << 16)
+                     + struct.pack(">IIII", 1024, 0, 0, 2))
+        ulaw = box(b"ulaw", bytes(6) + struct.pack(">HHH", 1, 2, 0) + b"appl" + struct.pack(">HHhHI", 3, 16, -2, 0, 1 << 16)
+                   + struct.pack(">IdIIIIII", 72, 48000.0, 4, 0x7F000000, 8, 0, 4, 1))
+        lpcm = box(b"lpcm", ulaw[8:44] + struct.pack(">IIIII", 0x7F000000, 24, 1, 12, 1))  # 4 channels of 24-bit floats
+        refused = {
+            "more speakers than channels": ipcm(bytes([1, 0, 1, 2]) + b"+31.2304+121.4737/"),
+            "channels left out": ipcm(bytes([1, 2]) + MARKER[:8]),
+            "a constant of another value": sound_movie(box(b"ulaw", ulaw[8:24] + b"\0\4" + ulaw[26:]), struct.pack(
+                ">III", 1, 4, 1), struct.pack(">II", 1, 4)),
+            "floats of 24 bits": sound_movie(lpcm, struct.pack(">III", 1, 4, 1), struct.pack(">II", 1, 4)),
+            "a channel described with coordinates it does not use": sound(box(b"mp4a", fields + esds() + full(
+                b"chan", 0, struct.pack(">III", 0, 0, 1) + struct.pack(">II", 1, 0) + MARKER[:12]))),
+            "a channel layout tag of no kind": sound(box(b"mp4a", fields + esds() + full(b"chan", 0, b"MDTM" + bytes(8)))),
+            "another format in QuickTime's sound extension": sound(box(b"mp4a", quicktime + box(b"wave", box(
+                b"frma", b"MDTM") + box(b"mp4a", bytes(4)) + esds() + bytes(8)))),
+            "a byte order of no meaning": sound(box(b"mp4a", quicktime + box(b"wave", box(b"frma", b"mp4a") + box(
+                b"enda", b"MD") + esds() + bytes(8)))),
+        }
+        for reason, data in refused.items():
+            with self.subTest(reason):
+                self.assertRefused(data)
+
     def test_chapter_pictures_go_with_the_chapters(self):
         video = (1, b"vide", visual_entry(b"avc1", box(b"avcC", bytes(7))), VIDEO,
                  box(b"chap", struct.pack(">II", 2, 3)), b"vmhd")

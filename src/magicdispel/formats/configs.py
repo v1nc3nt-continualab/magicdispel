@@ -22,13 +22,20 @@ STREAM_INFO, PADDING, LAST = 0, 1, 0x80  # FLAC metadata blocks
 STREAM_INFO_SIZE = 34
 CHANNELS_STRUCTURED, OBJECTS_STRUCTURED = 1, 2  # chnl's stream structure
 EXPLICIT_POSITION, SPEAKER_POSITIONS, LAYOUTS = 126, 64, 64  # chnl: a speaker given by angles; the codes defined
+ITEMS = 256  # parameter sets, OBUs or metadata blocks in one configuration: real ones hold a few
 
 
 class Reader:
     """A cursor over data[position:end]."""
 
     def __init__(self, data, position, end):
-        self.data, self.position, self.end = data, position, end
+        self.data, self.position, self.end, self.count = data, position, end, 0
+
+    def item(self):
+        """Count one more item of a list, of which a configuration holds only a few."""
+        self.count += 1
+        if self.count > ITEMS:
+            raise unsupported("a decoder configuration of too many parts")
 
     def take(self, count):
         if self.position + count > self.end:
@@ -43,14 +50,16 @@ class Reader:
         """Skip a count (its bits in `mask`), then that many items of a 16-bit
         length and data."""
         for _ in range(self.number(count_size) & mask):
+            self.item()
             self.take(self.number(2))
 
 
-def check(kind, data, start, end):
+def check(kind, data, start, end, channels=None):
     """Refuse a configuration box's payload, data[start:end], that holds more
-    than its configuration."""
+    than its configuration; `channels` are those of the sound it is in."""
     reader = READERS.get(kind)
-    if reader and reader(Reader(data, start, end)) != end:
+    if reader and (channel_layout(Reader(data, start, end), channels) if reader is channel_layout
+                   else reader(Reader(data, start, end))) != end:
         raise unsupported("data after the %s configuration" % kind.decode("latin-1"))
 
 
@@ -69,6 +78,7 @@ def avc(reader):
 def hevc(reader, fields=HEVC_FIELDS):
     reader.take(fields)
     for _ in range(reader.number(1)):  # arrays of parameter sets, each of one type
+        reader.item()
         reader.take(1)
         reader.items(2)
     return reader.position
@@ -77,6 +87,7 @@ def hevc(reader, fields=HEVC_FIELDS):
 def av1(reader):
     reader.take(AV1_FIELDS)
     while reader.position < reader.end:
+        reader.item()
         header = reader.number(1)
         if header & 0x80 or header >> 3 & 0x0F not in AV1_OBUS:
             raise unsupported("an AV1 configuration OBU of another type")
@@ -118,6 +129,7 @@ def flac(reader):
         raise unsupported("the dfLa box is not in its layout")
     first = True
     while True:
+        reader.item()
         header = reader.number(1)
         kind, length = header & 0x7F, reader.number(3)
         block = reader.take(length)
@@ -141,37 +153,34 @@ def eac3(reader):
     return reader.position
 
 
-def channel_layout(reader):
-    """ISO's channel layout (chnl), versions 0 and 1: speaker positions, a
-    defined layout, or objects."""
+def channel_layout(reader, channels):
+    """ISO's channel layout (chnl), versions 0 and 1, of sound of `channels`:
+    a speaker position for each of them, or a defined layout that leaves
+    none out, and objects."""
     version, flags = reader.number(1), reader.number(3)
-    if version not in (0, 1) or flags:
+    if version not in (0, 1) or flags or not channels:
         raise unsupported("the chnl box is not in its layout")
     structure = reader.number(1)
     if version:
-        structure >>= 4  # then the format ordering
-        reader.take(1)  # the base channel count
+        structure, ordering = structure >> 4, structure & 0x0F
+        if ordering > 1 or reader.number(1) != channels:  # the format ordering, the base channel count
+            raise unsupported("the chnl box is not in its layout")
     if structure & ~(CHANNELS_STRUCTURED | OBJECTS_STRUCTURED):
         raise unsupported("the chnl box is not in its layout")
     if structure & CHANNELS_STRUCTURED:
         layout = reader.number(1)
         if layout >= LAYOUTS:
             raise unsupported("a channel layout of no known meaning")
-        if layout == 0 and version:
-            for _ in range(reader.number(1)):
-                speaker(reader)
-        elif layout == 0:  # a speaker for each channel, to the end but for the object count
-            stop = reader.end - (1 if structure & OBJECTS_STRUCTURED else 0)
-            while reader.position < stop:
-                speaker(reader)
-        elif version == 0:
-            reader.take(8)  # the channels left out
-        else:
-            omitted = reader.number(1)  # reserved bits, the channel order, whether channels are left out
-            if omitted & 0xF0:
+        if layout == 0:
+            count = reader.number(1) if version else channels
+            if count != channels and not structure & OBJECTS_STRUCTURED or count > channels:
                 raise unsupported("the chnl box is not in its layout")
-            if omitted & 1:
-                reader.take(8)
+            for _ in range(count):
+                speaker(reader)
+        elif version == 0 and any(reader.take(8)):  # the channels left out: none
+            raise unsupported("a channel layout that leaves channels out")
+        elif version and reader.number(1):  # reserved bits, the channel order, whether channels are left out
+            raise unsupported("a channel layout that leaves channels out")
     if structure & OBJECTS_STRUCTURED and not version:
         reader.take(1)  # the object count
     return reader.position

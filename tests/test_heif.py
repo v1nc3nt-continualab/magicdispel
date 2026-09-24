@@ -19,6 +19,7 @@ DEPTH = b"urn:mpeg:hevc:2015:auxid:2"
 ALPHA = b"urn:mpeg:hevc:2015:auxid:1"
 GAIN_MAP = b"urn:com:apple:photo:2020:aux:hdrgainmap"
 PRIMARY = (1, b"hvc1", b"PRIMARY_PIXELS")
+GROUP = 1000  # an image group's ID, which no item has
 DEPTH_IMAGE = (2, b"hvc1", b"DEPTH_PIXELS")
 
 
@@ -62,7 +63,7 @@ def heif_file(items, refs=(), auxiliary=None, names=None, properties=(), associa
               + box(b"iprp", box(b"ipco", b"".join(props)) + box(b"ipma", ipma))
               + (full(b"iref", 0, b"".join(box(kind, struct.pack(">HH%dH" % len(targets), origin, len(targets), *targets))
                                            for kind, origin, targets in refs)) if refs else b""))
-    grpl = box(b"grpl", full(b"altr", 0, struct.pack(">II%dI" % len(group), 1, len(group), *group))) if group else b""
+    grpl = box(b"grpl", full(b"altr", 0, struct.pack(">II%dI" % len(group), GROUP, len(group), *group))) if group else b""
     data = b"".join(payload for _, _, payload, *_ in items) + gap
     ftyp = box(b"ftyp", b"heic\0\0\0\0mif1heic")
     extras = b"".join(before_mdat)
@@ -213,11 +214,29 @@ class ItemTests(HeifTests):
     def test_fixed_size_properties_may_not_carry_extra_bytes(self):
         self.assertRefused(heif_file([PRIMARY], properties=[box(b"irot", b"\0" + MARKER)], associations={1: [1, 2]}),
                            "unsupported_part")
+        # Nor may properties whose layout their standards fix.
+        for prop in (full(b"tols", 0, bytes(2) + MARKER), box(b"colr", b"MDTM" + MARKER), box(b"irot", b"M"),
+                     box(b"a1lx", bytes(7) + MARKER), box(b"cclv", b"\x20" + bytes(24) + MARKER),
+                     box(b"auxC", bytes(4) + b"urn:mpeg:mpegB:cicp:systems:auxiliary:alpha\0" + MARKER)):
+            with self.subTest(prop[4:8]):
+                self.assertRefused(heif_file([PRIMARY], properties=[prop], associations={1: [1, 2]}),
+                                   "unsupported_part")
+        # HEVC's alpha may be followed by its SEI message of alpha channel information, as Apple writes it.
+        alpha = box(b"auxC", bytes(4) + b"urn:mpeg:hevc:2015:auxid:1\0"
+                    + bytes.fromhex("0000000c000000084e01a5040001fe40"))
+        self.assertRebuilt(heif_file([PRIMARY], properties=[alpha], associations={1: [1, 2]}))
         # Nor may a decoder configuration, after its end.
         hvcc = bytes(22) + b"\0"  # the fields, and no arrays of parameter sets
         self.assertRebuilt(heif_file([PRIMARY], properties=[box(b"hvcC", hvcc)], associations={1: [1, 2]}))
         self.assertRefused(heif_file([PRIMARY], properties=[box(b"hvcC", hvcc + MARKER)], associations={1: [1, 2]}),
                            "unsupported_part")
+
+    def test_metadata_in_a_jpeg_image_and_made_up_groups_are_refused(self):
+        exif = b"\xff\xd8" + b"\xff\xe1" + struct.pack(">H", 2 + len(MARKER)) + MARKER + b"\xff\xda\0\2PIXELS"
+        self.assertRefused(heif_file([(1, b"jpeg", exif)]), "unsupported_part")
+        plain = heif_file([(1, b"jpeg", b"\xff\xd8\xff\xda\0\2PIXELS")])
+        heif.verify(plain, heif.rebuild(plain))
+        self.assertRefused(heif_file([PRIMARY], group=[1, 0x4D445F54]), "damaged")  # a member that is no item
 
     def test_profiles_are_sanitized(self):
         data = heif_file([PRIMARY], properties=[box(b"colr", b"prof" + PROFILE)], associations={1: [1, 2]})
@@ -316,6 +335,13 @@ class SequenceTests(unittest.TestCase):
         self.assertEqual(spans, [(0, 10), (30, 40)])
         self.assertTrue(movie.overlaps(movie.merged([(0, 10), (20, 20)]), 5, 30))
         self.assertFalse(movie.overlaps(spans, 10, 30))
+
+    def test_a_sequence_names_its_tracks_only_in_known_ways(self):
+        with self.assertRaises(FormatError):
+            heif.rebuild(sequence(track_box=box(b"tref", box(b"MD_T", struct.pack(">I", 0)))))
+        # A track claiming to be the thumbnail of one there is not: no sequence of it is left to show.
+        with self.assertRaises(FormatError):
+            heif.rebuild(sequence(track_box=box(b"tref", box(b"thmb", struct.pack(">I", 9)))))
 
     def test_a_thumbnail_track_goes_as_thumbnail_images_do(self):
         # A second track of the same pictures, a thumbnail of the first, which

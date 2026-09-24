@@ -36,6 +36,8 @@ VISUAL_FIELDS = 78         # bytes of a visual sample entry before its boxes
 SOUND_FIELDS = 28          # of a sound sample entry; QuickTime's versions 1 and 2 add more
 SAMPLE_FIELDS = 8          # of any other: reserved bytes and a data reference index
 QUICKTIME_SOUND = {1: 16, 2: 36}
+# QuickTime's sound entry of version 2: the fields that hold constants, and the size of its fields.
+V2_CONSTANTS, V2_MARK = struct.pack(">HHhHII", 3, 16, -2, 0, 0x10000, 72), struct.pack(">I", 0x7F000000)
 VISUAL_HANDLERS = {b"pict", b"vide", b"auxv"}
 VENDOR = (12, 16)          # within a visual or sound entry: QuickTime's vendor code
 DATA_SIZE = (36, 40)       # within a visual entry: reserved, or QuickTime's data size, always 0
@@ -94,13 +96,21 @@ FULL_BOXES = {b"stri", b"hero", b"blin", b"dadj", b"prji", b"pkin", b"srat", b"p
 IPOD = bytes.fromhex("6b6840f25f244fc5ba39a51bcf0323f3")
 KNOWN_PAYLOADS = {b"almo": {bytes.fromhex("00000100"), bytes.fromhex("00000102")},
                   b"logs": {b"com.apple.rec2020.apple-log"},
-                  b"uuid": {IPOD + bytes(4), IPOD + (1).to_bytes(4, "big")}}
+                  b"uuid": {IPOD + bytes(4), IPOD + (1).to_bytes(4, "big")},
+                  # in QuickTime's sound extension: byte order, and the AAC marker
+                  b"enda": {bytes(2), (1).to_bytes(2, "big")}, b"mp4a": {bytes(4)}}
+# Kinds a spatial video box names after its version and flags: projections, packings.
+KINDS = {b"prji": {b"rect", b"equi", b"hequ", b"fish"}, b"pkin": {b"side", b"over"}}
+# (offset, reserved bits) of the byte after the version and flags: pcmC's
+# format flags but little-endian, stri's reserved bits before its eyes.
+RESERVED = {b"pcmC": (4, 0xFE), b"stri": (4, 0xF0)}
 CHROMA_LOCATIONS = 6  # the largest chroma location code
 CODING_RESERVED = 0x03FFFFFF  # ccst: the bits after its intra-coding flags and reference count
 ALPHA = {b"urn:mpeg:mpegB:cicp:systems:auxiliary:alpha", b"urn:mpeg:hevc:2015:auxid:1"}  # auxi types kept
 # A QuickTime channel layout (chan): its tags that use a channel bitmap, or
 # descriptions of the channels, and the most channels described.
 USE_DESCRIPTIONS, USE_BITMAP, CHANNELS = 0, 0x10000, 24
+USE_COORDINATES, COORDINATE_FLAGS = 100, {1, 2, 5, 6}  # a channel placed by coordinates, and how they are given
 COLOR_SIZES = {b"nclx": (11, 10), b"nclc": (10,)}  # some Android phones leave out nclx's range byte
 PROFILE_COLORS = {b"prof", b"rICC"}  # ICC profiles, sanitized
 DOLBY_VISION = {b"dvcC", b"dvvC", b"dvwC"}
@@ -115,6 +125,7 @@ PCM_BITS = {b"in24": 24, b"in32": 32, b"fl32": 32, b"fl64": 64, b"ulaw": 8, b"al
 ENTRY_BITS = {b"twos": {8, 16, 24, 32}, b"sowt": {8, 16, 24, 32}, b"raw ": {8, 16}}
 ISO_PCM = {b"ipcm", b"fpcm"}  # ISO's uncompressed sound, whose bits per sample are in its pcmC box
 LPCM = b"lpcm"  # QuickTime's, described by a version 2 entry
+LPCM_FLOAT, LPCM_SIGNED = 1, 4  # its format flags
 SAMPLE_BITS = {8, 16, 24, 32, 64}
 PCM = set(PCM_BITS) | set(ENTRY_BITS) | ISO_PCM | {LPCM}
 # Compressed sound that FFmpeg and AVFoundation read in packets of their own,
@@ -238,9 +249,14 @@ def removed_tracks(data, found, policy):
     others = {ident for track in found for kind, idents in track.references if kind != b"chap" for ident in idents}
     removed = {track.ident for track in found
                if (track.handler in policy.removed or policy.chapters and track.ident in chapters and (
-                   track.handler == b"text" or chapter_images(data, track, others))
-                   or policy.thumbnails and any(kind == b"thmb" for kind, _ in track.references))
+                   track.handler == b"text" or chapter_images(data, track, others)))
                and not (policy.rendering and policy.rendering(data, track))}
+    if policy.thumbnails:  # a thumbnail of tracks that stay
+        staying = {track.ident for track in found} - removed
+        removed |= {track.ident for track in found
+                    if any(kind == b"thmb" for kind, _ in track.references)
+                    and all(idents and set(idents) <= staying - {track.ident}
+                            for kind, idents in track.references if kind == b"thmb")}
     for track in found:
         if track.ident not in removed and track.handler not in policy.entries:
             raise unsupported("%s track" % track.handler.decode("latin-1"))
@@ -345,7 +361,7 @@ def clean_entries(buffer, stsd, track_handler, policy):
         check_entry_repeats(buffer, children, kept)
         for child in children:
             if child.kind in kept:
-                check_entry_box(buffer, child, kept[child.kind], kept)
+                check_entry_box(buffer, child, kept[child.kind], kept, entry)
                 clear(buffer, entry_box_fields(buffer, child, kept[child.kind]))
             elif child.kind == b"free" and zeroed(buffer, [(child.content, child.end)]):
                 continue  # holds nothing: as this module leaves an emptied box, cleaned again
@@ -383,10 +399,26 @@ def sample_entries(data, stsd, track_handler, policy):
             fields += QUICKTIME_SOUND.get(entry_version, 0)
         if entry.end - entry.content < fields:
             raise StructureError("truncated sample entry")
+        if fields >= SOUND_FIELDS and track_handler == b"soun":
+            check_sound_constants(data, entry, fields)
         found.append((entry, fields))
     if len(found) != int.from_bytes(data[stsd.content + 4:stsd.content + 8], "big"):
         raise StructureError("invalid sample entry count")
     return found
+
+
+def check_sound_constants(data, entry, fields):
+    """A sound entry's fields of fixed values must hold them: QuickTime's
+    compression ID and packet size (ISO's pre_defined and reserved) and,
+    in version 2, its constants and the size of its fields."""
+    compression, packet = struct.unpack_from(">hH", data, entry.content + 20)
+    if fields == SOUND_FIELDS + QUICKTIME_SOUND[2]:
+        good = data[entry.content + 16:entry.content + 32] == V2_CONSTANTS and \
+            data[entry.content + 44:entry.content + 48] == V2_MARK
+    else:
+        good = compression in (0, -1, -2) and not packet
+    if not good:
+        raise unsupported("values of no known meaning in a sound sample entry")
 
 
 def entry_boxes(data, entry, fields):
@@ -435,10 +467,10 @@ def check_entry_repeats(data, children, kept):
         raise unsupported("a repeated box in a sample entry")
 
 
-def check_entry_box(data, found, children, siblings):
-    """A box in a sample entry must have exactly its type's layout, and a box
-    of boxes (children not None) only the boxes listed, at any depth, each once
-    and a terminator last. `siblings` are the boxes its container may hold."""
+def check_entry_box(data, found, children, siblings, entry):
+    """A box in the sample `entry` must have exactly its type's layout, and a
+    box of boxes (children not None) only the boxes listed, at any depth, each
+    once and a terminator last. `siblings` are the boxes its container may hold."""
     size = found.end - found.content
     if found.kind == b"colr":
         kind = bytes(data[found.content:found.content + 4])
@@ -460,10 +492,14 @@ def check_entry_box(data, found, children, siblings):
         sizes = (ENTRY_SIZES.get(found.kind, size),)
     if size not in sizes or found.kind in FULL_BOXES and any(data[found.content:found.content + 4]):
         raise unsupported("the %s box in a sample entry is not in its layout" % found.kind.decode("latin-1"))
-    configs.check(found.kind, data, found.content, found.end)
+    configs.check(found.kind, data, found.content, found.end, sound_fields(data, entry)[1])
+    offset, reserved = RESERVED.get(found.kind, (0, 0))
     if found.kind == b"chrm" and max(data[found.content:found.end]) > CHROMA_LOCATIONS or \
-            found.kind == b"ccst" and int.from_bytes(data[found.content + 4:found.end], "big") & CODING_RESERVED:
-        raise unsupported("reserved values in the %s box" % found.kind.decode("latin-1"))
+            found.kind == b"ccst" and int.from_bytes(data[found.content + 4:found.end], "big") & CODING_RESERVED or \
+            reserved and data[found.content + offset] & reserved or \
+            found.kind in KINDS and bytes(data[found.content + 4:found.end]) not in KINDS[found.kind] or \
+            found.kind == b"frma" and data[found.content:found.end] != entry.kind:  # the format the entry is
+        raise unsupported("values of no known meaning in the %s box" % found.kind.decode("latin-1"))
     if found.kind in DOLBY_VISION and (data[found.content + 4] & 0x03 or any(data[found.content + 5:found.end])):
         # after the compatibility ID and the metadata compression, reserved bits
         raise unsupported("reserved bits set in the Dolby Vision configuration")
@@ -476,19 +512,30 @@ def check_entry_box(data, found, children, siblings):
         for index, child in enumerate(inner):
             if child.kind not in children or (child.kind == b"\0\0\0\0" and index != len(inner) - 1):
                 raise unsupported("%s box in %s" % (child.kind.decode("latin-1"), found.kind.decode("latin-1")))
-            check_entry_box(data, child, children[child.kind], children)
+            check_entry_box(data, child, children[child.kind], children, entry)
 
 
 def channel_layout(data, found):
     """Whether a QuickTime channel layout (chan) holds only what its tag uses:
-    a bitmap only with the bitmap tag, and descriptions of the channels, 20
-    bytes each, only with the descriptions tag."""
+    a tag of a known kind, a bitmap only with the bitmap tag, and only with
+    the descriptions tag descriptions of the channels, 20 bytes each: a label
+    of a known kind, and coordinates only for a channel placed by them."""
     size = found.end - found.content
     if size < 16:
         return False
     tag, bitmap, count = struct.unpack_from(">III", data, found.content + 4)
-    return (size == 16 + 20 * count and (not bitmap or tag == USE_BITMAP)
-            and (not count or tag == USE_DESCRIPTIONS and count <= CHANNELS))
+    if not (size == 16 + 20 * count and (not bitmap or tag == USE_BITMAP)
+            and (not count or tag == USE_DESCRIPTIONS and count <= CHANNELS)
+            and (tag in (USE_DESCRIPTIONS, USE_BITMAP) or 100 <= tag >> 16 <= 255)):
+        return False
+    for position in range(found.content + 16, found.end, 20):
+        label, flags = struct.unpack_from(">II", data, position)
+        if not (label <= 255 or label == 0xFFFFFFFF or 1 <= label >> 16 <= 2):  # named, discrete or ambisonic
+            return False
+        if (flags not in COORDINATE_FLAGS or label != USE_COORDINATES) and (flags or any(
+                data[position + 8:position + 20])):
+            return False
+    return True
 
 
 def profiles_in(data, entry, fields):
@@ -846,7 +893,15 @@ def frame_size(data, entry):
         bits = bits if bits in ENTRY_BITS[entry.kind] else None
     elif entry.kind != LPCM or version != 2:
         return None
+    elif flags(data, entry) & LPCM_FLOAT and bits not in (32, 64) or bits == 64 and not flags(data, entry) & (
+            LPCM_FLOAT | LPCM_SIGNED):
+        return None  # sizes of float and unsigned numbers FFmpeg reads as no sound at all
     return channels * bits // 8 if bits in SAMPLE_BITS else None
+
+
+def flags(data, entry):
+    """The format flags of a version 2 sound entry."""
+    return int.from_bytes(data[entry.content + 52:entry.content + 56], "big")
 
 
 def sound_fields(data, entry):
@@ -1030,7 +1085,7 @@ def check_entries(original, rebuilt, stsd, policy, track_handler):
                 continue
             if child.kind not in kept:
                 fail("sample entry box %r kept" % child.kind)
-            check_entry_box(rebuilt, child, kept[child.kind], kept)
+            check_entry_box(rebuilt, child, kept[child.kind], kept, entry)
             profile = sanitized.get(child.content + 4)
             if profile:
                 expected = bytes(original[child.start:child.content + 4]) + icc.sanitize(

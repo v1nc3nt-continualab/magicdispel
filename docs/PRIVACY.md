@@ -148,10 +148,11 @@ inside video and sound samples, such as the SEI messages some encoders write int
 HEVC frames: the frames of an iPhone's Live Photo video, for one, carry an 8-byte value of
 unknown meaning that other videos lack. Decoder configurations (such as hvcC and avcC) are
 copied whole too, as the samples are, up to their end; those of other codecs (VVC, APV, AC-4,
-MPEG-H, DTS and more) are not read at all. So are fields that players read and whose values a
+MPEG-H, DTS, ALAC, MLP, IAMF and more, and HEIF's uncompressed and JPEG 2000 images) are not read
+at all. So are fields that players read and whose values a
 made-up file could choose freely: track IDs, display sizes and resolutions, the graphics mode,
-the composition offsets of cslg, roll distances, and QuickTime's quality and revision fields in
-sample entries, which macOS reads. Apple's positional audio configuration (dapa) is copied
+the composition offsets of cslg, roll distances, QuickTime's quality and revision fields in
+sample entries, which macOS reads, and a version 1 sound entry's bytes per packet and sample. Apple's positional audio configuration (dapa) is copied
 whole. Detecting such steganography is beyond this tool.
 
 If MagicDispel is killed, or the drive a video is on goes away while it is being cleaned, the

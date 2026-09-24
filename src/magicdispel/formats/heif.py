@@ -56,6 +56,8 @@ SEQUENCE = movie.Policy(
                   b"sbgp", b"sgpd"},
     },
     entries={handler: (VISUAL_ENTRIES, ENTRY_BOXES) for handler in (b"pict", b"vide", b"auxv")},
+    # Between kept tracks: auxiliary (alpha), dependent, parallax, base and premultiplied layers.
+    references=frozenset({b"auxl", b"vdep", b"vplx", b"sbas", b"prem"}),
     thumbnails=True)
 # Coded, derived and tiled images. Metadata items are removed (XMP is reduced);
 # any other item type is refused rather than guessed at.
@@ -88,7 +90,15 @@ DISPLAY_PROPERTIES = {
 DESCRIPTIVE_PROPERTIES = {b"udes", b"crtt", b"mdft", b"altt", b"cmin", b"cmex", b"taic", b"itai"}
 # Payload sizes of fixed-size properties, which then cannot carry extra bytes.
 PROPERTY_SIZES = {b"ispe": 12, b"irot": 1, b"imir": 1, b"pasp": 8, b"clap": 32, b"clli": 4, b"mdcv": 24,
-                  b"a1op": 1, b"lsel": 2}
+                  b"a1op": 1, b"lsel": 2, b"tols": 6, b"iscl": 12, b"rloc": 12, b"amve": 8}
+FULL_PROPERTIES = {b"ispe", b"pixi", b"tols", b"iscl", b"rloc"}  # of version 0 and no flags
+RESERVED_BITS = {b"irot": 0xFC, b"imir": 0xFE, b"a1lx": 0xFE, b"cclv": 0xC3}  # of the first byte
+COLORS = {b"nclx", b"prof", b"rICC"}  # coded primaries and transfer, or an ICC profile
+HEVC_ALPHA = b"urn:mpeg:hevc:2015:auxid:1"
+ALPHA_INFORMATION = 165  # the SEI message that may follow HEVC's alpha type in auxC
+# JPEG segments an image item may hold before its scan: tables and frames,
+# JFIF's without a thumbnail and Adobe's (color transform) application segments.
+JFIF, ADOBE = b"JFIF\0", b"Adobe"
 # Reference types that may point to or from a removed item.
 REMOVABLE_REFERENCES = {b"dimg", b"cdsc", b"auxl", b"thmb"}
 MAX_XMP = 16 * 1024 * 1024
@@ -137,6 +147,8 @@ def cleaned(data):
     top = top_boxes(data)
     if {found.kind for found in top} & REFUSED:
         raise unsupported("fragmented sequence")
+    if sum(found.kind == b"moov" for found in top) > 1 or sum(found.kind == b"meta" for found in top) > 1:
+        raise StructureError("more than one movie or meta box")
     result = bytearray(data)
     movie.clear(result, file_type_brands(data, top[0]))
     kept = kept_boxes(top)
@@ -149,8 +161,8 @@ def cleaned(data):
             for a, b in list(profiles(result, children(found), found.end)):
                 result[a:b] = icc.sanitize(bytes(result[a:b]))
             clean_boxes(result, children(found), found.end)
-        elif found.kind == b"moov":
-            movie.clean(result, found, SEQUENCE)
+        elif found.kind == b"moov" and not movie.clean(result, found, SEQUENCE) and not layout:
+            raise unsupported("a sequence with no picture track")
         elif found not in kept:
             empty(result, found)
     for start, end in unused_media(result):
@@ -224,6 +236,12 @@ def check_items(data, layout):
            for spans in layout.extents.values() for start, end in spans):
         raise unsupported("item data outside mdat and idat")
     check_tone_maps(data, layout)
+    for ident, item in layout.items.items():
+        if item.kind in (b"jpeg", b"j2k1"):
+            payload = b"".join(data[start:end] for start, end in layout.extents[ident])
+            if item.kind == b"jpeg" and not jpeg_segments(payload, 0, len(payload), whole=True) or \
+                    item.kind == b"j2k1" and codestream_comments(payload, 0, len(payload)):
+                raise unsupported("an image item holding metadata segments")
     return auxiliary
 
 
@@ -307,7 +325,7 @@ def rewrite_tables(data, layout, deleted, live, result):
         replacements[layout.prop_box.start] = item_properties(data, layout, live, kept_properties(data, layout, live))
     for child in layout.children:
         if child.kind == b"grpl":
-            check_groups(data, child, deleted)
+            check_groups(data, child, deleted, set(layout.items))
         elif child.kind not in META_KEPT:
             replacements[child.start] = blank(child)
     # idat must not move: construction-method-1 extents are relative to it.
@@ -375,14 +393,86 @@ def check_size(data, prop):
     configuration end where it says (see configs.py)."""
     configs.check(prop.kind, data, prop.content, prop.end)
     size = prop.end - prop.content
+    first = data[prop.content] if size else 0
     if prop.kind == b"pixi":  # a version and flags, the channel count, a depth per channel
         expected = 5 + data[prop.content + 4] if size > 4 else 0
-    elif prop.kind == b"colr" and data[prop.content:prop.content + 4] == b"nclx":
-        expected = 11  # primaries, transfer, matrix and range
+    elif prop.kind == b"colr":
+        kind = bytes(data[prop.content:prop.content + 4])
+        if kind not in COLORS or kind == b"nclx" and size == 11 and data[prop.content + 10] & 0x7F:
+            raise unsupported("item property colr of type " + kind.decode("latin-1"))
+        expected = 11 if kind == b"nclx" else size  # primaries, transfer, matrix and range
+    elif prop.kind == b"a1lx":  # three layer sizes, of 16 bits or, when large, 32
+        expected = 13 if first & 1 else 7
+    elif prop.kind == b"cclv":  # the primaries, and the luminances its flags say are present
+        expected = 1 + (24 if first & 0x20 else 0) + 4 * bin(first & 0x1C).count("1")
+    elif prop.kind == b"auxC":
+        expected = size if alpha_information(data, prop) else None
+    elif prop.kind in (b"jpgC",):
+        expected = size if jpeg_segments(data, prop.content, prop.end, whole=False) else None
     else:
         expected = PROPERTY_SIZES.get(prop.kind, size)
-    if size != expected:
+    if size != expected or prop.kind in FULL_PROPERTIES and any(data[prop.content:prop.content + 4]) or \
+            first & RESERVED_BITS.get(prop.kind, 0):
         raise unsupported("extra data in item property " + listed([prop.kind]))
+
+
+def alpha_information(data, prop):
+    """Whether an auxC holds its type and nothing after it but, for HEVC's
+    alpha, SEI messages of alpha channel information: their total size, then
+    NAL units each with its size."""
+    terminator = data.find(b"\0", prop.content + 4, prop.end)
+    if terminator < 0 or terminator + 1 == prop.end:
+        return terminator >= 0
+    if bytes(data[prop.content + 4:terminator]) != HEVC_ALPHA:
+        return False
+    position = terminator + 1
+    total = int.from_bytes(data[position:position + 4], "big")
+    position += 4
+    if position + total != prop.end:
+        return False
+    while position < prop.end:
+        size = int.from_bytes(data[position:position + 4], "big")
+        nal = data[position + 4:position + 4 + size]
+        if size < 3 or len(nal) != size or nal[0] >> 1 & 0x3F != 39 or nal[2] != ALPHA_INFORMATION:  # prefix SEI
+            return False
+        position += 4 + size
+    return True
+
+
+def jpeg_segments(data, start, end, whole):
+    """Whether a JPEG stream (whole) or its header (jpgC) holds no segment of
+    metadata: no comment, and no application segment but JFIF's, without a
+    thumbnail, and Adobe's."""
+    position = start
+    if whole:
+        if data[start:start + 2] != b"\xff\xd8":
+            return False
+        position += 2
+    while position + 4 <= end and data[position] == 0xFF:
+        marker = data[position + 1]
+        if marker == 0xDA:  # the scan: image data to the end
+            return True
+        length = int.from_bytes(data[position + 2:position + 4], "big")
+        body = bytes(data[position + 4:position + 2 + length])
+        if marker == 0xFE or 0xE0 <= marker <= 0xEF and not (
+                marker == 0xE0 and body[:5] == JFIF and len(body) == 14 and body[12:14] == bytes(2)
+                or marker == 0xEE and body[:5] == ADOBE and len(body) == 10):
+            return False
+        position += 2 + length
+    return not whole and position == end
+
+
+def codestream_comments(data, start, end):
+    """Whether a JPEG 2000 codestream's main header holds a comment (COM)."""
+    position = start + 2  # after SOC
+    while position + 4 <= end and data[position] == 0xFF:
+        marker = data[position + 1]
+        if marker == 0x90:  # the first tile
+            return False
+        if marker == 0x64:
+            return True
+        position += 2 + int.from_bytes(data[position + 2:position + 4], "big")
+    return False
 
 
 def item_properties(data, layout, live, kept):
@@ -412,13 +502,18 @@ def item_properties(data, layout, live, kept):
     return bmff.box(b"iprp", b"".join(parts))
 
 
-def check_groups(data, grpl, deleted):
-    """An alternative-image group may not lose a member: it could be shown instead."""
+def check_groups(data, grpl, deleted, items):
+    """An alternative-image group names items, each once, and may not lose
+    one: it could be shown instead. Its own ID is no item's."""
     for group in bmff.boxes(data, grpl.content, grpl.end):
         if group.kind != b"altr" or data[group.content:group.content + 4] != bytes(4) or group.end - group.content < 12:
             raise unsupported("image group")
         count = int.from_bytes(data[group.content + 8:group.content + 12], "big")
         if group.content + 12 + 4 * count != group.end:
+            raise StructureError("invalid image group")
+        members = [int.from_bytes(data[p:p + 4], "big") for p in range(group.content + 12, group.end, 4)]
+        if int.from_bytes(data[group.content + 4:group.content + 8], "big") in items or \
+                not set(members) <= items or len(set(members)) != len(members):
             raise StructureError("invalid image group")
         if any(int.from_bytes(data[p:p + 4], "big") in deleted for p in range(group.content + 12, group.end, 4)):
             raise unsupported("a removed image is an alternative display image")
