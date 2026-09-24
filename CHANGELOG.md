@@ -9,9 +9,9 @@ the other 17 are refused as designed. Three videos from an iPhone 16 on iOS 27 c
 way.
 
 - Kept: video and sound tracks with every sample, decoder configurations, rotation, edit lists,
-  color, HDR, Dolby Vision, Apple's spatial video information, and Apple's per-frame scene
-  illuminance, which iPhones mark as used to show their HDR video. It is kept only in its exact
-  layout; any other track another is shown with is refused.
+  color, HDR, Dolby Vision, alpha, Apple's spatial video information and positional audio
+  (APAC), and Apple's per-frame scene illuminance, which iPhones mark as used to show their HDR
+  video. It is kept only in its exact layout; any other track another is shown with is refused.
 - Removed: location, device, software and dates in user data and metadata boxes; timed
   metadata tracks (GPS and motion, face detection, Live Photo and motion photo data), timecode
   and chapter tracks, with their samples; maker data such as GoPro's serial numbers and
@@ -29,16 +29,20 @@ way.
   cleared; so are reserved fields and QuickTime's poster and selection times. Seeking hints no
   player needs (stsh, subs, padb) are emptied. Uncompressed sound is read by its sample entry,
   as players read it, and sound they could read in two ways is refused. The codec maker's name
-  in H.263 and AMR configurations is cleared. The gapless playback note (iTunSMPB) goes with the
-  metadata.
+  in H.263 and AMR configurations is cleared, and FFmpeg's copy of a ProRes encoder's
+  description (glbl), compressor name included, is emptied. The gapless playback note (iTunSMPB)
+  goes with the metadata.
 - A video is cleaned in a copy next to the original, never read into memory: a 4.7 GB video
   takes under five seconds. The copy, `magicdispel-<random>.unfinished.mov` until it is done,
   is readable only by its owner, and gets the original's permissions once it is clean. Ctrl+C,
   Ctrl+Break, closing the terminal (unless run with `nohup`) and stopping MagicDispel remove an
   unfinished copy. ExifTool's second check reads that copy from its path, with the timed
   metadata in its samples, and gives up after ten minutes.
-- Photos: a HEIF file keeps only the brands that say how to read it (HEIF's, MIAF's, AVIF's);
-  others are cleared, and a second file type box is emptied. Clean copies of photos also get
+- Photos: a HEIF file keeps only the brands that say how to read it (HEIF's, MIAF's, AVIF's,
+  and those of the other image codecs); others are cleared, and a second file type box is
+  emptied. An image's decoder configuration must end where it says, as in videos. Checking which
+  removed items share data with kept ones no longer takes time that grows with the square of
+  their number. Clean copies of photos also get
   their original's permissions. Names and messages printed never carry a file's control
   characters to the terminal.
 - A video keeps its extension, .mp4 or .mov, whatever its content: players may read one file

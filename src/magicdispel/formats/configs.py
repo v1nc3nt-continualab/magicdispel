@@ -2,15 +2,16 @@
 
 A decoder configuration is copied whole, as the samples are (see movie.py),
 but only up to its declared end: the parameter sets of avcC, hvcC and lhvC,
-the descriptors of esds, the configuration OBUs of av1C, the fields of vpcC
-and dOps. A box holding anything after that, which no decoder reads, is
+the descriptors of esds, the configuration OBUs of av1C, the fields of vpcC,
+dOps and dec3. A box holding anything after that, which no decoder reads, is
 refused. FLAC's configuration (dfLa) may hold only its stream information
 and zero padding: its other blocks are tags and pictures. Other
-configurations (VVC, APV, AC-4, MPEG-H, DTS...) are copied whole.
+configurations (VVC, APV, AC-4, MPEG-H, DTS...) are copied whole. The
+channel layout of ISO sound (chnl) is read the same way, its values checked.
 """
 from .bmff import unsupported
 
-HIGH_PROFILES = {100, 110, 122, 144}  # H.264 profiles whose avcC may give chroma and bit depths
+BASE_PROFILES = {66, 77, 88}  # H.264 profiles whose avcC gives no chroma format and bit depths
 HEVC_FIELDS = 22   # bytes of hvcC before its arrays of parameter sets
 LHEVC_FIELDS = 5   # of lhvC
 AV1_FIELDS = 4     # of av1C before its configuration OBUs
@@ -18,6 +19,9 @@ AV1_OBUS = {1, 5}  # the OBU types it may hold: a sequence header, metadata
 ES, DECODER, DECODER_INFO, SYNC_LAYER = 3, 4, 5, 6  # MPEG-4 descriptor tags in esds
 URL_FLAG, DEPENDS_FLAG, CLOCK_FLAG = 0x40, 0x80, 0x20
 STREAM_INFO, PADDING, LAST = 0, 1, 0x80  # FLAC metadata blocks
+STREAM_INFO_SIZE = 34
+CHANNELS_STRUCTURED, OBJECTS_STRUCTURED = 1, 2  # chnl's stream structure
+EXPLICIT_POSITION, SPEAKER_POSITIONS, LAYOUTS = 126, 64, 64  # chnl: a speaker given by angles; the codes defined
 
 
 class Reader:
@@ -56,7 +60,7 @@ def avc(reader):
     reader.take(3)  # compatibility, level, length size
     reader.items(1, 0x1F)  # sequence parameter sets, counted in the low 5 bits
     reader.items(1)  # picture parameter sets
-    if reader.position < reader.end and profile in HIGH_PROFILES:
+    if reader.position < reader.end and profile not in BASE_PROFILES:  # as FFmpeg and 14496-15 write it
         reader.take(3)  # chroma format and bit depths
         reader.items(1)  # sequence parameter set extensions
     return reader.position
@@ -92,8 +96,10 @@ def av1(reader):
 
 
 def vp(reader):
-    version = reader.number(1)
-    reader.take(3 + (6 if version else 4))  # flags, then profile, level, bit depth, color...
+    version, flags = reader.number(1), reader.number(3)
+    if version not in (0, 1) or flags:
+        raise unsupported("the vpcC box is not in its layout")
+    reader.take(6 if version else 4)  # profile, level, bit depth, color...
     reader.take(reader.number(2))  # codec initialization data
     return reader.position
 
@@ -115,11 +121,72 @@ def flac(reader):
         header = reader.number(1)
         kind, length = header & 0x7F, reader.number(3)
         block = reader.take(length)
-        if kind != (STREAM_INFO if first else PADDING) or kind == PADDING and any(block):
+        if kind != (STREAM_INFO if first else PADDING) or first and length != STREAM_INFO_SIZE or \
+                kind == PADDING and any(block):
             raise unsupported("FLAC metadata other than the stream information")
         first = False
         if header & LAST:
             return reader.position
+
+
+def eac3(reader):
+    reader.take(1)
+    streams = (reader.number(1) & 0x07) + 1  # after the data rate: independent substreams
+    for _ in range(streams):
+        reader.take(2)
+        if reader.number(1) >> 1 & 0x0F:  # dependent substreams: then their channel locations
+            reader.take(1)
+    if reader.end - reader.position == 2:  # Dolby Atmos: the extension type A flag and its complexity
+        reader.take(2)
+    return reader.position
+
+
+def channel_layout(reader):
+    """ISO's channel layout (chnl), versions 0 and 1: speaker positions, a
+    defined layout, or objects."""
+    version, flags = reader.number(1), reader.number(3)
+    if version not in (0, 1) or flags:
+        raise unsupported("the chnl box is not in its layout")
+    structure = reader.number(1)
+    if version:
+        structure >>= 4  # then the format ordering
+        reader.take(1)  # the base channel count
+    if structure & ~(CHANNELS_STRUCTURED | OBJECTS_STRUCTURED):
+        raise unsupported("the chnl box is not in its layout")
+    if structure & CHANNELS_STRUCTURED:
+        layout = reader.number(1)
+        if layout >= LAYOUTS:
+            raise unsupported("a channel layout of no known meaning")
+        if layout == 0 and version:
+            for _ in range(reader.number(1)):
+                speaker(reader)
+        elif layout == 0:  # a speaker for each channel, to the end but for the object count
+            stop = reader.end - (1 if structure & OBJECTS_STRUCTURED else 0)
+            while reader.position < stop:
+                speaker(reader)
+        elif version == 0:
+            reader.take(8)  # the channels left out
+        else:
+            omitted = reader.number(1)  # reserved bits, the channel order, whether channels are left out
+            if omitted & 0xF0:
+                raise unsupported("the chnl box is not in its layout")
+            if omitted & 1:
+                reader.take(8)
+    if structure & OBJECTS_STRUCTURED and not version:
+        reader.take(1)  # the object count
+    return reader.position
+
+
+def speaker(reader):
+    """A speaker position: a code, or angles."""
+    position = reader.number(1)
+    if position == EXPLICIT_POSITION:
+        azimuth = int.from_bytes(reader.take(2), "big", signed=True)
+        elevation = int.from_bytes(reader.take(1), "big", signed=True)
+        if not (-180 <= azimuth <= 180 and -90 <= elevation <= 90):
+            raise unsupported("a speaker position of no meaning")
+    elif position >= SPEAKER_POSITIONS:
+        raise unsupported("a speaker position of no meaning")
 
 
 def mpeg4(reader):
@@ -165,4 +232,4 @@ def finished(reader):
 
 
 READERS = {b"avcC": avc, b"hvcC": hevc, b"lhvC": lambda reader: hevc(reader, LHEVC_FIELDS), b"av1C": av1,
-           b"vpcC": vp, b"dOps": opus, b"dfLa": flac, b"esds": mpeg4}
+           b"vpcC": vp, b"dOps": opus, b"dfLa": flac, b"esds": mpeg4, b"dec3": eac3, b"chnl": channel_layout}

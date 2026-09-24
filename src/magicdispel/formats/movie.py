@@ -49,7 +49,9 @@ SAMPLE_RESERVED = 6         # the reserved bytes every sample entry starts with,
 # the payload, by version 0 and 1.
 UNUSED = {b"mvhd": ([(26, 36), (72, 96)], [(38, 48), (84, 108)]),
           b"tkhd": ([(16, 20), (24, 32), (38, 40)], [(24, 28), (36, 44), (50, 52)]),
-          b"smhd": ([(6, 8)], [(6, 8)])}
+          b"mdhd": ([(22, 24)], [(34, 36)]),  # ISO's pre_defined, QuickTime's quality
+          b"smhd": ([(6, 8)], [(6, 8)]),
+          b"gmin": ([(14, 16)], [(14, 16)])}
 # Payload sizes of fixed-size boxes, by version where they have versions 0 and 1.
 FIXED_SIZES = {b"mvhd": (100, 112), b"tkhd": (84, 96), b"mdhd": (24, 36), b"cslg": (24, 44), b"mehd": (8, 12),
                b"vmhd": 12, b"smhd": 8, b"nmhd": 4, b"gmin": 16, b"trex": 24, b"clef": 12, b"prof": 12, b"enof": 12}
@@ -78,14 +80,18 @@ GROUPINGS = {b"roll": (2, 0), b"prol": (2, 0), b"sync": (1, 0xC0), b"rap ": (1, 
 # nclc, or an ICC profile.
 ENTRY_SIZES = {b"pasp": 8, b"clap": 32, b"fiel": 2, b"clli": 4, b"mdcv": 24, b"amve": 8, b"btrt": 12,
                b"gama": 4, b"dvcC": 24, b"dvvC": 24, b"dvwC": 24, b"hfov": 4, b"frma": 4, b"enda": 2,
-               b"mp4a": 4, b"\0\0\0\0": 0, b"dac3": 3, b"damr": 9, b"d263": 7, b"pcmC": 6, b"srat": 8,
+               b"mp4a": 4, b"\0\0\0\0": 0, b"dac3": 3, b"damr": 9, b"samr": 9, b"d263": 7, b"pcmC": 6, b"srat": 8,
                b"SmDm": 28, b"CoLL": 8,  # VP9's mastering display and light levels
                b"chrm": 2, b"ccst": 8,  # the chroma location of each field; coding constraints
                # spatial video: stereo views, hero eye, baseline, disparity, projection, packing
                b"stri": 5, b"hero": 5, b"blin": 8, b"dadj": 8, b"prji": 8, b"pkin": 8}
 # Sample entry boxes that are full boxes of version 0 and no flags.
 FULL_BOXES = {b"stri", b"hero", b"blin", b"dadj", b"prji", b"pkin", b"srat", b"pcmC", b"SmDm", b"CoLL", b"ccst",
-              b"auxi", b"chan", b"must"}
+              b"chan", b"must"}
+# Apple's alpha channel modes (almo), as AVFoundation writes them, and the
+# fixed marker box FFmpeg's iPod muxer writes into H.264 entries.
+ALPHA_MODES = {bytes.fromhex("00000100"), bytes.fromhex("00000102")}
+IPOD = bytes.fromhex("6b6840f25f244fc5ba39a51bcf0323f3") + bytes(4)
 CHROMA_LOCATIONS = 6  # the largest chroma location code
 CODING_RESERVED = 0x03FFFFFF  # ccst: the bits after its intra-coding flags and reference count
 ALPHA = {b"urn:mpeg:mpegB:cicp:systems:auxiliary:alpha", b"urn:mpeg:hevc:2015:auxid:1"}  # auxi types kept
@@ -96,16 +102,18 @@ COLOR_SIZES = {b"nclx": (11, 10), b"nclc": (10,)}  # some Android phones leave o
 PROFILE_COLORS = {b"prof", b"rICC"}  # ICC profiles, sanitized
 DOLBY_VISION = {b"dvcC", b"dvvC", b"dvwC"}
 # Leading bytes of 3GPP decoder boxes that name the codec's maker, cleared.
-ENTRY_VENDORS = {b"d263": 4, b"damr": 4}
+ENTRY_VENDORS = {b"d263": 4, b"damr": 4, b"samr": 4}  # samr: AMR's configuration in QuickTime's wave
 # Data references that mean "in this file" when their flag 1 is set.
 SELF_REFERENCES = {b"url ", b"urn ", b"alis"}
-# Uncompressed QuickTime sound: bits per sample, or None to take the sample
-# entry's own, which must be one of ENTRY_BITS (FFmpeg reads any other as 16).
-PCM_BITS = {b"twos": None, b"sowt": None, b"raw ": None, b"in24": 24, b"in32": 32, b"fl32": 32, b"fl64": 64,
-            b"ulaw": 8, b"alaw": 8}
-ENTRY_BITS = {8, 16, 24, 32, 64}
+# Uncompressed QuickTime sound: the bits per sample of its type, or those
+# the sample entry may give, where FFmpeg reads them as AVFoundation does
+# (FFmpeg reads 'raw ' of any other size as 8 bits, twos and sowt as 16).
+PCM_BITS = {b"in24": 24, b"in32": 32, b"fl32": 32, b"fl64": 64, b"ulaw": 8, b"alaw": 8}
+ENTRY_BITS = {b"twos": {8, 16, 24, 32}, b"sowt": {8, 16, 24, 32}, b"raw ": {8, 16}}
 ISO_PCM = {b"ipcm", b"fpcm"}  # ISO's uncompressed sound, whose bits per sample are in its pcmC box
-PCM = set(PCM_BITS) | ISO_PCM | {b"lpcm"}  # lpcm: QuickTime's, described by a version 2 entry
+LPCM = b"lpcm"  # QuickTime's, described by a version 2 entry
+SAMPLE_BITS = {8, 16, 24, 32, 64}
+PCM = set(PCM_BITS) | set(ENTRY_BITS) | ISO_PCM | {LPCM}
 CHUNK = 1 << 20
 BLOCK = 1 << 16  # table entries read at a time
 
@@ -127,6 +135,8 @@ class Policy:
         tracks they point to.
     strict: refuse sample entries holding boxes the policy does not list,
         rather than emptying those boxes.
+    emptied: {sample entry type: types of boxes in it that are emptied even
+        so, as no player needs them and they hold what none should see}.
     rendering: a function (data, track) telling whether a track of a removed
         handler type is one that another track is shown with ('rndr'), and
         that the policy recognizes exactly; such a track is kept. A removed
@@ -139,6 +149,7 @@ class Policy:
     references: frozenset = None
     dangling: frozenset = frozenset()
     strict: bool = False
+    emptied: dict = None
     rendering: object = None
 
 
@@ -312,6 +323,8 @@ def clean_entries(buffer, stsd, track_handler, policy):
             if child.kind in kept:
                 check_entry_box(buffer, child, kept[child.kind], kept)
                 clear(buffer, entry_box_fields(child))
+            elif child.kind in (policy.emptied or {}).get(entry.kind, ()):
+                empty(buffer, child)
             elif policy.strict:
                 raise unsupported("%s box in a %s sample entry" % (child.kind.decode("latin-1"),
                                                                   entry.kind.decode("latin-1")))
@@ -403,9 +416,12 @@ def check_entry_box(data, found, children, siblings):
         sizes = COLOR_SIZES.get(kind, (size,))
     elif found.kind == b"chan":
         sizes = (size,) if channel_layout(data, found) else ()
-    elif found.kind == b"auxi":  # the kind of auxiliary image: only alpha is kept
-        sizes = (size,) if size > 4 and data[found.end - 1] == 0 and \
-            bytes(data[found.content + 4:found.end - 1]) in ALPHA else ()
+    elif found.kind == b"auxi":  # the kind of auxiliary image, in a full box or, as Apple writes it, not: only alpha
+        urn = bytes(data[found.content + (0 if any(data[found.content:found.content + 4]) else 4):found.end])
+        sizes = (size,) if urn[-1:] == b"\0" and urn[:-1] in ALPHA else ()
+    elif found.kind in (b"almo", b"uuid"):
+        sizes = (size,) if bytes(data[found.content:found.end]) in (ALPHA_MODES if found.kind == b"almo" else {IPOD}) \
+            else ()
     elif found.kind == b"must":  # the box types a reader must understand, all of them listed ones
         listed = {bytes(data[p:p + 4]) for p in range(found.content + 4, found.end, 4)}
         sizes = (size,) if size >= 4 and size % 4 == 0 and not any(data[found.content:found.content + 4]) and \
@@ -566,8 +582,12 @@ def track_table(data, trak):
     for found in [box for boxes in parts.values() for box in boxes]:
         check_layout(data, found)
     (stsd,), (stts,), (stsc,), (stsz,) = (parts[kind] for kind in (b"stsd", b"stts", b"stsc", b"stsz"))
-    entries = int.from_bytes(data[stsd.content + 4:stsd.content + 8], "big") if stsd.end - stsd.content >= 8 else 0
+    if stsd.end - stsd.content < 8:
+        raise StructureError("truncated sample description")
+    entries = int.from_bytes(data[stsd.content + 4:stsd.content + 8], "big")
     count = int.from_bytes(data[stsz.content + 8:stsz.content + 12], "big")
+    if count and not entries:
+        raise StructureError("samples without a description")
     for kind in (b"stts", b"ctts"):
         if kind in parts:
             total = 0
@@ -602,6 +622,8 @@ def track_table(data, trak):
         per_chunk = runs[run][1] if run >= 0 else 0
         if sample + per_chunk > count:
             raise StructureError("sample table does not match its samples")
+        if unit and per_chunk % unit[1]:
+            raise unsupported("sound chunks of part of a packet")
         length = (per_chunk * unit[0] // unit[1] if unit else per_chunk * fixed if fixed
                   else sum(itertools.islice(sizes, per_chunk)))
         if offset + length > len(data):
@@ -733,13 +755,15 @@ def group_descriptions(data, sgpd, used=None):
 
 
 def sound_unit(data, trak, stsd, stts, stsz):
-    """(bytes, frames) that a sound track's chunks hold, from its sample entry,
-    or None where players read them by stsz. Players read uncompressed sound
-    by its entry, and FFmpeg reads any sound whose table counts frames of one
-    time unit each (one stts entry of delta 1) by its entry too, chunk by
-    chunk. Sound that players could read in two ways is refused: several or
-    version 1 sample descriptions (which FFmpeg reads by the file's brands),
-    sizes that disagree with the entry, or none to read chunks by."""
+    """(bytes, frames) that a sound track's chunks hold, or None where players
+    read them sample by sample, by stsz. FFmpeg reads sound whose table
+    counts frames of one time unit each (one stts entry of delta 1) chunk by
+    chunk: packets of several frames by the entry's packet size, else frames
+    by their channels and bits, or by stsz's size if it is compressed.
+    AVFoundation reads it by the entry. So all of these must agree, and chunks
+    hold whole packets (see track_table); sound the players could read in two
+    ways is refused, and so are several or version 1 sample descriptions,
+    which FFmpeg reads by the file's brands."""
     if handler(data, trak) != b"soun":
         return None
     fixed = int.from_bytes(data[stsz.content + 4:stsz.content + 8], "big")
@@ -751,55 +775,83 @@ def sound_unit(data, trak, stsd, stts, stsz):
         return None
     if data[stsd.content] or len(entries) != 1:
         raise unsupported("sound whose samples could be read in two ways")
-    unit = entry_unit(data, entries[0])
-    if unit and not all(unit) or pcm and not unit:
+    frame, packet = frame_size(data, entries[0]), packet_size(data, entries[0])
+    if pcm and not frame:
         raise unsupported("sound whose sample sizes are not given")
-    if chunked and unit:
-        if not fixed:  # a table of sizes, which players do not read
+    if packet and packet[1] > 1:
+        if not (chunked and packet[0]):
             raise unsupported("sound whose samples could be read in two ways")
-        return unit
-    if chunked:  # compressed sound in an entry of version 0, read by stsz's size
-        if fixed in (0, 1):
+        return packet
+    size = frame or fixed
+    if packet and packet[0] != size or entries[0].kind in ISO_PCM and fixed != frame:  # FFmpeg reads ISO's by stsz
+        raise unsupported("sound whose samples could be read in two ways")
+    if chunked:
+        if fixed in (0, 1) and not frame or frame and fixed not in (1, frame):
             raise unsupported("sound whose sample sizes are not given")
-        return None
-    if unit[1] != 1 or fixed != unit[0]:  # uncompressed, read sample by sample: by stsz, but no less than a frame
+        return size, 1
+    if fixed != frame:  # uncompressed, read sample by sample: by stsz, but no less than a frame
         raise unsupported("sound whose samples could be read in two ways")
     return None
 
 
-def entry_unit(data, entry):
-    """(bytes, frames) of a packet of QuickTime sound of version 1 or 2, or of
-    a frame of uncompressed sound of version 0, by its channels and bits per
-    sample; None for any other entry."""
+def frame_size(data, entry):
+    """The bytes of a frame of uncompressed sound, by its channels and bits
+    per sample as FFmpeg reads them; None for any other entry, and for bits
+    that FFmpeg and AVFoundation read differently."""
     fields = entry.content
     version = int.from_bytes(data[fields + 8:fields + 10], "big")
-    if version == 1 and entry.end - fields >= 44:    # samples per packet, then bytes per frame
-        samples, _, frame = struct.unpack_from(">III", data, fields + 28)
-        return frame, samples
-    if version == 2 and entry.end - fields >= 64:    # bytes and frames per packet
-        return struct.unpack_from(">II", data, fields + 56)
-    if version == 0 and entry.kind in ISO_PCM:
+    channels = int.from_bytes(data[fields + 16:fields + 18], "big")
+    if entry.kind == LPCM and version == 2 and entry.end - fields >= 64:
+        channels = int.from_bytes(data[fields + 40:fields + 44], "big")
+        bits = int.from_bytes(data[fields + 48:fields + 52], "big")  # constant bits per channel
+    elif entry.kind in ISO_PCM and version == 0:
         bits = next((data[found.content + 5] for found in entry_boxes(data, entry, SOUND_FIELDS)
                      if found.kind == b"pcmC" and found.end - found.content == ENTRY_SIZES[b"pcmC"]), None)
-    elif version == 0 and entry.kind in PCM_BITS:
-        bits = PCM_BITS[entry.kind] or int.from_bytes(data[fields + 18:fields + 20], "big")
+    elif entry.kind in PCM_BITS and version in (0, 1):
+        bits = PCM_BITS[entry.kind]
+    elif entry.kind in ENTRY_BITS and version in (0, 1):
+        bits = int.from_bytes(data[fields + 18:fields + 20], "big")
+        bits = bits if bits in ENTRY_BITS[entry.kind] else None
     else:
         return None
-    return (int.from_bytes(data[fields + 16:fields + 18], "big") * bits // 8, 1) if bits in ENTRY_BITS else None
+    return channels * bits // 8 if bits in SAMPLE_BITS else None
+
+
+def packet_size(data, entry):
+    """(bytes, frames) of a packet of QuickTime sound of version 1 or 2; None for other entries."""
+    fields = entry.content
+    version = int.from_bytes(data[fields + 8:fields + 10], "big")
+    if version == 1 and entry.end - fields >= 44:  # samples per packet, then bytes per frame
+        samples, _, frame = struct.unpack_from(">III", data, fields + 28)
+        return frame, samples
+    if version == 2 and entry.end - fields >= 64:  # bytes and frames per packet
+        return struct.unpack_from(">II", data, fields + 56)
+    return None
 
 
 def movie_ranges(data, moov):
     """(start, end) of the media the tracks of a movie use: their chunks,
     sorted, and merged where they meet or overlap, so that checking them costs
     no more than the media."""
-    merged = []
-    for start, end in sorted(span for trak in bmff.boxes(data, moov.content, moov.end) if trak.kind == b"trak"
-                             for span in track_table(data, trak).ranges):
-        if merged and start <= merged[-1][1]:
-            merged[-1] = merged[-1][0], max(merged[-1][1], end)
+    return merged(span for trak in bmff.boxes(data, moov.content, moov.end) if trak.kind == b"trak"
+                  for span in track_table(data, trak).ranges)
+
+
+def merged(spans):
+    """(start, end) spans sorted, and merged where they meet or overlap."""
+    result = []
+    for start, end in sorted(spans):
+        if result and start <= result[-1][1]:
+            result[-1] = result[-1][0], max(result[-1][1], end)
         else:
-            merged.append((start, end))
-    return merged
+            result.append((start, end))
+    return result
+
+
+def overlaps(spans, start, end):
+    """Whether [start, end) shares a byte with the merged, sorted spans."""
+    index = bisect.bisect_left(spans, (end,)) - 1  # the last span starting before end
+    return start < end and index >= 0 and spans[index][1] > start and spans[index][0] < spans[index][1]
 
 
 # ------------------------------------------------------------------------ media
@@ -925,7 +977,9 @@ def check_entries(original, rebuilt, stsd, policy, track_handler):
         check_entry_repeats(rebuilt, children, kept)
         sanitized = dict(profiles_in(original, entry, fields))
         for child in children:
-            if child.kind == b"free" and zeroed(rebuilt, [(child.content, child.end)]) and not policy.strict:
+            if child.kind == b"free" and zeroed(rebuilt, [(child.content, child.end)]) and (
+                    not policy.strict or bytes(original[child.start + 4:child.content]) in (policy.emptied or {}).get(
+                        entry.kind, ())):
                 continue
             if child.kind not in kept:
                 fail("sample entry box %r kept" % child.kind)

@@ -197,10 +197,13 @@ def sound_movie(entry, durations, sizes):
     return replaced(data, full(b"stsz", 0, struct.pack(">6I", 0, 4, 4, 4, 4, 4)), full(b"stsz", 0, sizes))
 
 
-def pcm_entry(kind=b"sowt", channels=2, bits=16):
-    """An uncompressed QuickTime sound entry of version 0."""
-    return box(kind, bytes(6) + struct.pack(">HHH", 1, 0, 0) + b"appl"
-               + struct.pack(">HHhHI", channels, bits, 0, 0, 48000 << 16))
+def pcm_entry(kind=b"sowt", channels=2, bits=16, packet=None):
+    """An uncompressed QuickTime sound entry: of version 0, or of version 1
+    with `packet`, (frames, bytes of a frame) a packet."""
+    fields = struct.pack(">HHhHI", channels, bits, 0, 0, 48000 << 16)
+    if packet:
+        fields += struct.pack(">IIII", packet[0], packet[1] * packet[0], packet[1], 2)
+    return box(kind, bytes(6) + struct.pack(">HHH", 1, 1 if packet else 0, 0) + b"appl" + fields)
 
 
 class VideoTests(unittest.TestCase):
@@ -422,8 +425,18 @@ class TableTests(VideoTests):
                    + full(b"pcmC", 0, bytes([1, 32])))
         data = sound_movie(fpcm, one_unit, struct.pack(">II", 4, 4))
         self.assertEqual(self.assertCleaned(data).find(b"PCM_FRAMES_BYTES"), data.find(b"PCM_FRAMES_BYTES"))
+        # Packets of several frames are read whole, and frames by their channels and bits.
+        whole = sound_movie(pcm_entry(channels=1, packet=(2, 8)), one_unit, frames)
+        self.assertEqual(self.assertCleaned(whole).find(b"PCM_FRAMES_BYTES"), whole.find(b"PCM_FRAMES_BYTES"))
         # Sound that players could read in two ways, or by sizes the table does not give.
+        ipcm = box(b"ipcm", bytes(6) + struct.pack(">H", 1) + bytes(8) + struct.pack(">HHHHI", 1, 16, 0, 0, 48000 << 16)
+                   + full(b"pcmC", 0, bytes([1, 16])))
         refused = {
+            "packets of another size than a frame": sound_movie(pcm_entry(channels=1, packet=(1, 8)), one_unit, frames),
+            "chunks of part of a packet": sound_movie(pcm_entry(channels=1, packet=(3, 2)), one_unit, frames),
+            "ISO's, which FFmpeg reads by stsz": sound_movie(ipcm, one_unit, struct.pack(">II", 4, 4)),
+            "raw of 24 bits, which FFmpeg reads as 8": sound_movie(pcm_entry(b"raw ", 1, 24), one_unit, frames),
+            "twos of 64 bits, which FFmpeg reads as 16": sound_movie(pcm_entry(b"twos", 1, 64), one_unit, frames),
             "compressed, of size 1": sound_movie(sound_entry(False), one_unit, frames),
             "one-unit frames in two runs": sound_movie(pcm_entry(), struct.pack(">5I", 2, 2, 1, 2, 1), frames),
             "one-unit frames of listed sizes": sound_movie(pcm_entry(), one_unit, struct.pack(">6I", 0, 4, 1, 1, 1, 1)),
@@ -436,6 +449,7 @@ class TableTests(VideoTests):
         data = sound_movie(pcm_entry(), one_unit, frames)
         stsd = boxes_at(data, STBL + [b"stsd"])[1]  # the sound track's
         self.assertRefused(data[:stsd.content] + b"\1" + data[stsd.content + 1:])  # FFmpeg reads version 1 by brand
+        self.assertRefused(replaced(data, data[stsd.start:stsd.end], full(b"stsd", 0, bytes(4))), "damaged")
 
     def test_the_file_type_box_keeps_only_brands_that_say_how_to_read_it(self):
         nikon = box(b"ftyp", b"qt  \x20\x07\x09\x00qt  niko")
@@ -463,6 +477,22 @@ class TableTests(VideoTests):
 
         self.assertCleaned(sound(box(b"fLaC", fields + full(b"dfLa", 0, streaminfo))))
         self.assertCleaned(sound(box(b"Opus", fields + box(b"dOps", bytes([0, 2]) + bytes(9)))))
+        # x264's lossless and 4:4:4 profile, whose avcC gives the chroma format and bit depths too.
+        self.assertCleaned(plain_video(box(b"avcC", bytes([1, 244, 0, 30, 0xFF, 0xE1, 0, 2]) + b"SP" + bytes([1, 0, 1])
+                                           + b"P" + bytes([0xFF, 0xF8, 0xF8, 0]))))
+        # QuickTime's sound extension, holding Dolby's and FLAC's configurations.
+        quicktime = (bytes(6) + struct.pack(">HHH", 1, 1, 0) + b"appl" + struct.pack(">HHhHI", 2, 16, -2, 0, 48000 << 16)
+                     + struct.pack(">IIII", 1536, 0, 0, 2))
+        for kind, configuration in ((b"ac-3", box(b"dac3", bytes.fromhex("1008c0"))),
+                                    (b"ec-3", box(b"dec3", bytes.fromhex("0300200200"))),
+                                    (b"flac", full(b"dfLa", 0, streaminfo))):
+            with self.subTest(kind):
+                self.assertCleaned(sound(box(kind, quicktime + box(b"wave", box(b"frma", kind) + configuration
+                                                                  + bytes(8)))))
+        # ISO sound's channel layout, and Apple's positional audio, whose configuration is copied whole.
+        ipcm = box(b"ipcm", fields + full(b"pcmC", 0, bytes([1, 16])) + full(b"chnl", 0, bytes([1, 2]) + bytes(8)))
+        self.assertCleaned(sound_movie(ipcm, struct.pack(">III", 1, 4, 1), struct.pack(">II", 4, 4)))
+        self.assertCleaned(sound(box(b"apac", fields + full(b"dapa", 0, bytes(8)))))
         comment = bytes([0x84]) + (len(MARKER)).to_bytes(3, "big") + MARKER
         refused = {
             "after avcC": plain_video(box(b"avcC", bytes(7) + MARKER)),
@@ -472,6 +502,12 @@ class TableTests(VideoTests):
             "FLAC tags": sound(box(b"fLaC", fields + full(b"dfLa", 0, streaminfo[:1].replace(b"\x80", b"\0")
                                                             + streaminfo[1:] + comment))),
             "after dOps": sound(box(b"Opus", fields + box(b"dOps", bytes([0, 2]) + bytes(9) + MARKER))),
+            "a longer stream information": sound(box(b"fLaC", fields + full(b"dfLa", 0, bytes([0x80]) + (
+                34 + len(MARKER)).to_bytes(3, "big") + bytes(34) + MARKER))),
+            "flags in vpcC": plain_video(box(b"vpcC", b"\1XYZ" + bytes(8)), b"vp09"),
+            "a speaker of no known position": sound_movie(box(b"ipcm", fields + full(b"pcmC", 0, bytes([1, 16]))
+                                                               + full(b"chnl", 0, bytes([1, 0, 0x41, 0x41]))),
+                                                           struct.pack(">III", 1, 4, 1), struct.pack(">II", 4, 4)),
         }
         for reason, data in refused.items():
             with self.subTest(reason):
@@ -485,9 +521,12 @@ class TableTests(VideoTests):
         planted[tkhd.content + 24:tkhd.content + 32] = MARKER[:8]  # reserved
         entry = boxes_at(data, STBL + [b"stsd"])[0].content + 8
         planted[entry + 8:entry + 14] = b"SECRET"  # the reserved bytes of the sample entry
+        mdhd = boxes_at(data, TRAK + [b"mdia", b"mdhd"])[0]
+        planted[mdhd.end - 2:mdhd.end] = b"Q!"  # ISO's pre_defined, QuickTime's quality
         rebuilt = self.assertCleaned(bytes(planted))
         self.assertNotIn(MARKER[:8], rebuilt)
         self.assertNotIn(b"SECRET", rebuilt)
+        self.assertNotIn(b"Q!", rebuilt)
         self.assertRefused(data.replace(b"alis\0\0\0\1", b"alis\0\0\0\3"))  # flags of no known meaning
 
     def test_what_players_do_not_need_goes(self):
@@ -505,8 +544,13 @@ class TableTests(VideoTests):
         nclx = b"nclx" + struct.pack(">HHH", 1, 1, 1)
         self.assertCleaned(plain_video(box(b"avcC", bytes(7)) + box(b"colr", nclx + b"\x80")
                                        + box(b"dvvC", DVVC[:4] + b"\x04" + bytes(19))))  # metadata compression
-        # AVFoundation's MP4 exports: the fields and their chroma locations.
+        # AVFoundation's MP4 exports: the fields and their chroma locations, and the alpha mode.
         self.assertCleaned(plain_video(box(b"avcC", bytes(7)) + box(b"fiel", b"\1\0") + box(b"chrm", bytes(2))))
+        self.assertCleaned(plain_video(box(b"hvcC", HVCC) + box(b"almo", bytes.fromhex("00000100")), b"hvc1"))
+        # FFmpeg's iPod marker; and its copy of a ProRes encoder's description, which is emptied.
+        ipod = box(b"uuid", bytes.fromhex("6b6840f25f244fc5ba39a51bcf0323f3") + bytes(4))
+        self.assertIn(ipod, self.assertCleaned(plain_video(box(b"avcC", bytes(7)) + ipod)))
+        self.assertNotIn(b"Apple ProRes", self.assertCleaned(plain_video(box(b"glbl", b"Apple ProRes 422"), b"apcn")))
         video = (1, b"vide", visual_entry(b"avc1", box(b"avcC", bytes(7))), VIDEO, b"", b"vmhd")
         fields = bytes(6) + struct.pack(">H", 1) + bytes(8) + struct.pack(">HHHHI", 2, 16, 0, 0, 48000 << 16)
 
@@ -528,6 +572,9 @@ class TableTests(VideoTests):
                                                                                    + bytes(19))),
             "two pixel aspect ratios": plain_video(box(b"avcC", bytes(7)) + box(b"pasp", bytes(8)) * 2),
             "a chroma location of no meaning": plain_video(box(b"avcC", bytes(7)) + box(b"chrm", b"\0\x40")),
+            "an alpha mode of no known meaning": plain_video(box(b"hvcC", HVCC) + box(b"almo", b"MDPV"), b"hvc1"),
+            "a uuid box other than the iPod's": plain_video(box(b"avcC", bytes(7)) + box(b"uuid", bytes(16) + MARKER)),
+            "an encoder's description elsewhere": plain_video(box(b"avcC", bytes(7)) + box(b"glbl", MARKER)),
         }
         for reason, data in refused.items():
             with self.subTest(reason):

@@ -18,7 +18,7 @@ from pathlib import Path
 
 from . import xmp
 from .errors import UserError, VerificationError
-from .formats import mp4
+from .formats import heif, mp4
 
 # Display fields a clean file may hold, as ExifTool names them. TIFF keeps its
 # decoding tags in the same EXIF group.
@@ -52,7 +52,7 @@ UNKNOWN_TAG = re.compile(r"^Unknown|_0x[0-9a-f]{4}$", re.IGNORECASE)
 # formats/heif.py and formats/mp4.py verify these boxes themselves.
 BMFF_STRUCTURE = ({"Unknown_" + name for name in ("edts", "av1C", "hvcC", "colr", "ccst", "pasp",
                                                    "btrt", "free", "altr", "idat")}
-                  | {"Unknown_" + kind.decode("latin-1") for kind in mp4.STRUCTURE})
+                  | {"Unknown_" + kind.decode("latin-1") for kind in mp4.STRUCTURE | set(heif.ENTRY_BOXES)})
 # A second check that takes longer than this, or a problem longer than this to
 # describe, comes from a file made to exhaust it.
 TIMEOUT = 600  # seconds

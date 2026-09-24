@@ -102,7 +102,8 @@ silence at the start of the sound.
   tag, which may name a region. Uncompressed sound is read by its sample entry, as players
   read it; sound they could read in two ways is refused. The check compares every box of the
   result with the original's and every kept sample byte for byte. A video is cleaned in a copy
-  next to the original, and neither is read into memory. Until it is clean, the copy is named
+  next to the original, and neither is read into memory. FFmpeg's copy of a ProRes encoder's
+  description (glbl) is emptied, as its compressor name would be. Until it is clean, the copy is named
   `magicdispel-<random>.unfinished` and readable only by its owner; it then gets the original's
   permissions.
 - **HEIF and videos in place.** HEIF files and videos are cleaned without moving any image or
@@ -147,8 +148,9 @@ unknown meaning that other videos lack. Decoder configurations (such as hvcC and
 copied whole too, as the samples are, up to their end; those of other codecs (VVC, APV, AC-4,
 MPEG-H, DTS and more) are not read at all. So are fields that players read and whose values a
 made-up file could choose freely: track IDs, display sizes and resolutions, the graphics mode,
-the composition offsets of cslg, roll distances. Detecting such steganography is beyond this
-tool.
+the composition offsets of cslg, roll distances, and QuickTime's quality and revision fields in
+sample entries, which macOS reads. Apple's positional audio configuration (dapa) is copied
+whole. Detecting such steganography is beyond this tool.
 
 If MagicDispel is killed, or the drive a video is on goes away while it is being cleaned, the
 unfinished copy may stay next to it, named `magicdispel-<random>.unfinished`: it may still hold

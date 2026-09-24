@@ -213,6 +213,11 @@ class ItemTests(HeifTests):
     def test_fixed_size_properties_may_not_carry_extra_bytes(self):
         self.assertRefused(heif_file([PRIMARY], properties=[box(b"irot", b"\0" + MARKER)], associations={1: [1, 2]}),
                            "unsupported_part")
+        # Nor may a decoder configuration, after its end.
+        hvcc = bytes(22) + b"\0"  # the fields, and no arrays of parameter sets
+        self.assertRebuilt(heif_file([PRIMARY], properties=[box(b"hvcC", hvcc)], associations={1: [1, 2]}))
+        self.assertRefused(heif_file([PRIMARY], properties=[box(b"hvcC", hvcc + MARKER)], associations={1: [1, 2]}),
+                           "unsupported_part")
 
     def test_profiles_are_sanitized(self):
         data = heif_file([PRIMARY], properties=[box(b"colr", b"prof" + PROFILE)], associations={1: [1, 2]})
@@ -299,6 +304,11 @@ class SequenceTests(unittest.TestCase):
         alpha = (full(b"auxi", 0, b"urn:mpeg:mpegB:cicp:systems:auxiliary:alpha\0")
                  + full(b"ccst", 0, b"\x7c" + bytes(3)))
         self.assertIn(alpha, heif.rebuild(sequence(entry_box=alpha)))
+        apple = box(b"auxi", b"urn:mpeg:hevc:2015:auxid:1\0")  # as ImageIO writes it, in no full box
+        self.assertIn(apple, heif.rebuild(sequence(entry_box=apple)))
+        # A still image of another codec, as its brand says.
+        avci = sequence().replace(b"avis\0\0\0\0avisavifmsf1", b"avci\0\0\0\0avisavifmsf1")
+        self.assertTrue(heif.rebuild(avci).startswith(avci[:24]))
 
     def test_media_stored_elsewhere_is_refused(self):
         with self.assertRaises(FormatError) as caught:

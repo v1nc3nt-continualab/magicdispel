@@ -44,25 +44,32 @@ BRANDS = {b"isom", b"iso2", b"iso3", b"iso4", b"iso5", b"iso6", b"iso7", b"iso8"
 MAKER_BRANDS = {b"XAVC", b"MSNV", b"CAEP", b"niko", b"pana", b"caqv", b"KDDI", b"mmp4", b"mqt ", b"f4v ", b"F4V "}
 VIDEO_ENTRIES = {b"avc1", b"avc3", b"hvc1", b"hev1", b"dvh1", b"dvhe", b"dvav", b"dva1", b"dav1", b"av01",
                  b"vp08", b"vp09", b"mp4v", b"s263", b"h263", b"vvc1", b"vvi1", b"apv1",
-                 b"apch", b"apcn", b"apcs", b"apco", b"ap4h", b"ap4x"}  # the last six: ProRes
+                 b"apch", b"apcn", b"apcs", b"apco", b"ap4h", b"ap4x"}  # the last six: ProRes (see PRORES)
 # Apple's spatial video: which views there are, their cameras, comfort and projection.
 SPATIAL = {b"eyes": {b"stri": None, b"hero": None, b"cams": {b"blin": None}, b"cmfy": {b"dadj": None}},
            b"proj": {b"prji": None}, b"pack": {b"pkin": None}, b"must": None}
 # Boxes of a video sample entry that say how to decode and show its samples:
 # decoder configurations (Dolby Vision's among them), color and HDR, pixel
-# shape and cropping, bit rates, and spatial video.
+# shape and cropping, bit rates, alpha, and spatial video; and FFmpeg's fixed
+# iPod marker (uuid).
 VIDEO_BOXES = dict.fromkeys({b"avcC", b"hvcC", b"lhvC", b"av1C", b"vpcC", b"vvcC", b"apvC", b"d263", b"esds",
                              b"dvcC", b"dvvC", b"dvwC", b"colr", b"pasp", b"clap", b"fiel", b"chrm", b"gama",
-                             b"btrt", b"mdcv", b"clli", b"amve", b"SmDm", b"CoLL", b"hfov"}) | {b"vexu": SPATIAL}
-SOUND_ENTRIES = {b"mp4a", b"alac", b"Opus", b"fLaC", b"ac-3", b"ec-3", b"ac-4", b"lpcm", b"ipcm", b"fpcm",
-                 b"sowt", b"twos", b"in24", b"in32", b"fl32", b"fl64", b"raw ", b"ulaw", b"alaw", b"samr",
+                             b"btrt", b"mdcv", b"clli", b"amve", b"SmDm", b"CoLL", b"hfov", b"almo",
+                             b"uuid"}) | {b"vexu": SPATIAL}
+PRORES = {b"apch", b"apcn", b"apcs", b"apco", b"ap4h", b"ap4x"}
+# Sound: AAC and the rest of MPEG, Apple's lossless and positional audio
+# (APAC), Opus, FLAC (QuickTime's 'flac' too), Dolby, DTS, AMR, IAMF, and
+# uncompressed sound.
+SOUND_ENTRIES = {b"mp4a", b"alac", b"apac", b"Opus", b"fLaC", b"flac", b"ac-3", b"ec-3", b"ac-4", b"lpcm", b"ipcm",
+                 b"fpcm", b"sowt", b"twos", b"in24", b"in32", b"fl32", b"fl64", b"raw ", b"ulaw", b"alaw", b"samr",
                  b"sawb", b"mha1", b"mhm1", b"iamf", b"dtsc", b"dtse", b"dtsh", b"dtsl", b"dtsx", b"mlpa",
                  b".mp3"}
 # QuickTime's sound extension: the format, its configuration, byte order, and a terminator.
-WAVE = dict.fromkeys({b"frma", b"mp4a", b"esds", b"alac", b"enda", b"chan", b"\0\0\0\0"})
-SOUND_BOXES = dict.fromkeys({b"esds", b"chan", b"srat", b"dac3", b"dec3", b"dac4", b"dOps", b"alac",
-                             b"dfLa", b"pcmC", b"damr", b"mhaC", b"mhaP", b"iacb", b"ddts", b"udts", b"dmlp",
-                             b"btrt"}) | {b"wave": WAVE}
+WAVE = dict.fromkeys({b"frma", b"mp4a", b"esds", b"alac", b"dac3", b"dec3", b"samr", b"dfLa", b"enda", b"chan",
+                      b"\0\0\0\0"})
+SOUND_BOXES = dict.fromkeys({b"esds", b"chan", b"chnl", b"srat", b"dac3", b"dec3", b"dac4", b"dOps", b"alac",
+                             b"dapa", b"dfLa", b"pcmC", b"damr", b"mhaC", b"mhaP", b"iacb", b"ddts", b"udts",
+                             b"dmlp", b"btrt"}) | {b"wave": WAVE}
 # Google's 360-degree video, version 1: a uuid box in the video track, which
 # players need to show it. It is refused, as version 2's boxes are.
 SPHERICAL = bytes.fromhex("ffcc8263f8554a938814587a02521fdd")
@@ -117,6 +124,9 @@ MOVIE = movie.Policy(
     references=frozenset({b"sync", b"hind", b"vdep", b"vplx", b"auxl", b"sbas", b"scal", b"fall", b"rndr"}),
     dangling=frozenset({b"tmcd", b"chap", b"cdsc", b"hint"}),
     strict=True,
+    # FFmpeg's copy of a ProRes encoder's own description, compressor name
+    # included, which the ProRes decoder does not read.
+    emptied=dict.fromkeys(PRORES, {b"glbl"}),
     rendering=scene_illuminance)
 
 

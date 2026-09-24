@@ -26,7 +26,7 @@ Media data never moves, so every item and sample offset stays valid.
 """
 from .. import gainmap, icc, xmp
 from ..errors import FormatError, VerificationError
-from . import bmff, movie
+from . import bmff, configs, movie
 from .bmff import METADATA_ITEMS, StructureError, unsupported
 from .movie import empty, gaps, zeroed
 
@@ -97,7 +97,9 @@ HEIF_BRANDS = {b"heic", b"heix", b"heim", b"heis", b"hevc", b"hevx", b"hevm", b"
 # profiles, AVIF's profiles, gain maps, ISO. Other compatible brands are
 # cleared (see bmff.unknown_brands).
 KNOWN_BRANDS = AVIF_BRANDS | HEIF_BRANDS | {b"miaf", b"MiHA", b"MiHB", b"MiHE", b"MiAn", b"MiPr", b"MiCm",
-                                            b"MA1A", b"MA1B", b"avio", b"tmap", b"mif2", b"iso8", b"unif"}
+                                            b"MA1A", b"MA1B", b"avio", b"tmap", b"mif2", b"iso8", b"unif",
+                                            # images and sequences of the other codecs of IMAGE_ITEMS
+                                            b"avci", b"avcs", b"jpeg", b"jpgs", b"vvic", b"vvis", b"j2ki", b"j2is"}
 
 
 def brand_format(data):
@@ -177,10 +179,10 @@ def clean_items(data, layout, result):
              | {ident for ident, item in layout.items.items() if item.xmp and without_hdr_fields(data, layout, ident)})
     deleted = removed_items(layout, seeds)
     live = set(layout.items) - deleted
-    retained = [span for ident in live for span in layout.extents[ident]]
+    retained = movie.merged(span for ident in live for span in layout.extents[ident])
     for ident in deleted:
         for start, end in layout.extents[ident]:
-            if start < end and any(start < b and a < end for a, b in retained):
+            if movie.overlaps(retained, start, end):
                 raise unsupported("removed item shares data with a retained one")
             result[start:end] = bytes(end - start)
     for ident in live:
@@ -366,7 +368,9 @@ def kept_properties(data, layout, live):
 
 
 def check_size(data, prop):
-    """A fixed-size property must have exactly its size."""
+    """A fixed-size property must have exactly its size, and a decoder
+    configuration end where it says (see configs.py)."""
+    configs.check(prop.kind, data, prop.content, prop.end)
     size = prop.end - prop.content
     if prop.kind == b"pixi":  # a version and flags, the channel count, a depth per channel
         expected = 5 + data[prop.content + 4] if size > 4 else 0
