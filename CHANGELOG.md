@@ -12,6 +12,8 @@ them clean, render identically in macOS (SDR, HDR, gain maps, DPI), and keep non
   JPEG is an Ultra HDR photo, and so how many images it shows, from how that XMP is written.
   Multi-picture JPEGs are now compared picture by picture, each as a JPEG of its own, so how
   a decoder shows the whole no longer matters; this also decodes and compares every gain map.
+- The regression harness no longer flags JPEG photos whose preview was dropped, such as those
+  from Canon, Panasonic and Sony cameras; other formats must still keep every frame.
 
 ## 0.1.3 (2026-09-24)
 

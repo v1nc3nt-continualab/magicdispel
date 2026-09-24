@@ -10,7 +10,8 @@ the repository; it usually holds personal photos.
     python scripts/regression.py CORPUS --baseline <run>.json --identical
 
 Every run compares each cleaned output with its own input. Pillow must decode
-the same frames; on macOS, ImageIO/ColorSync must render the same pixels, HDR,
+the same frames (a JPEG may leave out pictures after its first, such as
+previews); on macOS, ImageIO/ColorSync must render the same pixels, HDR,
 gain maps, orientation and DPI; the source must be untouched; and no probe
 marker (see make_probes.py) may survive. With --baseline, every sample must
 also keep its outcome, and outputs must not gain metadata tags the baseline
@@ -40,7 +41,7 @@ from magicdispel.exiftool import find as find_exiftool, usable, version
 
 MARKER = b"SECRET-40.7128N"
 HELPER = Path(__file__).with_name("native_render.swift")
-CACHE_VERSION = 3
+CACHE_VERSION = 4
 # Display fields an output may newly keep, provided the value is the input's own.
 DISPLAY_TAGS = re.compile(
     r"^(Orientation|[XY]Resolution|ResolutionUnit|PixelsPerUnit[XY]|PixelUnits|SRGBRendering|"
@@ -67,16 +68,17 @@ def sha256_file(path):
 
 
 def pillow_fingerprint(path):
-    """Hash every decoded frame with its timing, or None if Pillow can't decode it."""
+    """A hash of each decoded frame with its timing, or None if Pillow can't decode it."""
     try:
         with Image.open(path) as image:
-            digest = hashlib.sha256()
+            frames = []
             for index in range(getattr(image, "n_frames", 1)):
                 image.seek(index)
                 frame = image.convert("RGBA")
-                digest.update(repr((frame.size, image.info.get("duration"))).encode())
+                digest = hashlib.sha256(repr((frame.size, image.info.get("duration"))).encode())
                 digest.update(frame.tobytes())
-            return digest.hexdigest()
+                frames.append(digest.hexdigest())
+            return frames
     except (OSError, ValueError):
         return None
 
@@ -451,7 +453,8 @@ def check_against_input(record):
     source, output = record["input"], record["output"]
     if output["marker"]:
         problems.append("LEAK: probe marker survived cleaning")
-    if source["pillow"] and output["pillow"] != source["pillow"]:
+    jpeg = output["suffix"].lower() in {".jpg", ".jpeg", ".jpe"}
+    if source["pillow"] and not same_frames(source["pillow"], output["pillow"], jpeg):
         problems.append("Pillow decodes different pixels or timing")
     before, after = source["native"], output["native"]
     if (before is None) != (after is None):
@@ -461,6 +464,17 @@ def check_against_input(record):
         converted = record["input_suffix"].lower() == ".bmp"
         problems.extend(native_differences(before, after, converted))
     return problems
+
+
+def same_frames(before, after, jpeg):
+    """Whether Pillow decodes the same frames from an output as from its input.
+    A JPEG's output may leave out pictures after the first: previews are dropped,
+    and Pillow shows an Ultra HDR photo with or without its gain map, depending
+    on how its XMP is written. The macOS check compares the gain maps."""
+    if not jpeg or not after:
+        return after == before
+    remaining = iter(before[1:])
+    return after[0] == before[0] and all(frame in remaining for frame in after[1:])
 
 
 def native_differences(before, after, converted):
