@@ -46,7 +46,7 @@ COLOR_TYPES = {
     b"view": {b"view"}, b"meas": {b"meas"}, b"tech": {b"sig "},
     b"gamt": {b"mft1", b"mft2", b"mAB ", b"mBA "},
     b"rig0": {b"sig "}, b"rig2": {b"sig "}, b"ciis": {b"sig "},
-    b"hdgm": {b"gmap"},
+    b"hdgm": {b"gmap"}, b"HAGC": {b"hagc"},
     # Apple's per-channel parametric curves in macOS display profiles.
     b"aarg": {b"para"}, b"aagg": {b"para"}, b"aabg": {b"para"},
 }
@@ -62,10 +62,23 @@ PARAMETRIC_FUNCTIONS = {0: 1, 1: 3, 2: 4, 3: 5, 4: 7}
 # Types of a fixed size: the type signature, 4 reserved bytes, then data up to here.
 FIXED_SIZES = {b"XYZ ": 20, b"sf32": 44, b"cicp": 12, b"sig ": 12, b"view": 36, b"meas": 36}
 MATRIX = 48  # the 3x3 matrix and offsets of a lutAToB or lutBToA transform
-# Apple's legacy HDR "gmap" curve stores the identifier of the image it came
-# from here, then seven numbers, then from CURVE_DATA on the curve itself.
-GMAP_IDENTIFIER = slice(106, 122)
-CURVE_DATA = 150
+# Apple's legacy HDR "gmap" curve: after the type and size, the offsets of its
+# fields, the first of them a header. Then the identifier of the image it came
+# from (cleared), seven numbers, and the curve itself. The fields start at 98
+# in the tags written up to iOS 26, one zero byte earlier from iOS 27; only
+# those two verified layouts are accepted. The header's fourth byte seems to
+# name the primaries as H.273 does: 12, Display P3, in iPhone photos, and 9,
+# BT.2020, in Apple's own profiles.
+GMAP_FIELDS = (98, 97)
+GMAP_HEADERS = {b"\x01\x00\x08" + bytes([primaries]) + bytes(4) for primaries in (12, 9)}
+IDENTIFIER = 8     # bytes from the fields to the identifier,
+CURVE = 52         # and to the curve
+# Apple's Headroom Adaptive Gain Curve (tag HAGC, type hagc; ICC White Paper
+# 62): the type, 4 reserved bytes, a byte count, then from GAIN_CURVE_DATA
+# SMPTE ST 2094-50 tone-mapping metadata in its binary form (Annex C): flags,
+# headrooms and the points of up to four gain curves, nothing else.
+GAIN_CURVE_DATA = 12
+ALTERNATE_IMAGES = 4
 
 
 def sanitize(profile):
@@ -108,6 +121,9 @@ def color_signature(profile):
             validate_parametric_curve(value)
         if tag == b"hdgm":
             kept[tag] = sanitize_adaptive_curve(value)
+        elif tag == b"HAGC":
+            check_gain_curve(value)
+            kept[tag] = value
         else:
             check_layout(value)
             kept[tag] = value
@@ -224,16 +240,20 @@ def entries(profile):
 
 def sanitize_adaptive_curve(value):
     """Clear the image identifier in Apple's legacy "gmap" HDR curve, keeping the
-    curve. Only the layout this was verified on is accepted; no offsets are guessed."""
-    if (len(value) < CURVE_DATA + 8 or value[:12] != b"gmap" + b"\0" * 8
-            or struct.unpack_from(">I", value, 12)[0] != len(value)
-            or struct.unpack_from(">5I", value, 16) != (98, 106, 106, 106, 0)
-            or value[60:64] != b"A2B0" or any(value[64:98])
-            or value[98:106] != b"\x01\x00\x08\x0c\0\0\0\0"):
+    curve. Only the layouts this was verified on are accepted; no offsets are guessed."""
+    for start in GMAP_FIELDS:
+        identifier = start + IDENTIFIER
+        if (len(value) >= start + CURVE + 8 and value[:12] == b"gmap" + bytes(8)
+                and struct.unpack_from(">I", value, 12)[0] == len(value)
+                and struct.unpack_from(">5I", value, 16) == (start, identifier, identifier, identifier, 0)
+                and value[60:64] == b"A2B0" and not any(value[64:start])
+                and value[start:identifier] in GMAP_HEADERS):
+            break
+    else:
         raise ProfileError("Unsupported HDR adaptive curve metadata layout")
     # The channels' curves, usually one shared by all three: each a zero
     # field, a point count and 12 bytes per point, together filling the rest.
-    position = CURVE_DATA
+    position = start + CURVE
     for start, length in sorted({struct.unpack_from(">II", value, offset) for offset in (36, 44, 52)}):
         if (start != position or start + 8 > len(value) or any(value[start:start + 4])
                 or length != 8 + 12 * struct.unpack_from(">I", value, start + 4)[0]):
@@ -241,7 +261,87 @@ def sanitize_adaptive_curve(value):
         position = start + length
     if position != len(value):
         raise ProfileError("Invalid HDR adaptive curve data range")
-    return value[:GMAP_IDENTIFIER.start] + bytes(16) + value[GMAP_IDENTIFIER.stop:]
+    return value[:identifier] + bytes(16) + value[identifier + 16:]
+
+
+def check_gain_curve(value):
+    """Refuse an HAGC tag holding anything but one version 0 ST 2094-50 record:
+    every reserved bit zero, every number within its range, at most four
+    alternate images, and only zero padding after it. Its byte count reaches
+    at least to the record's last byte but one, as iOS 27 writes it, and at
+    most to the end of the tag, padding included."""
+    if len(value) <= GAIN_CURVE_DATA or value[:8] != b"hagc" + bytes(4):
+        raise ProfileError("Unsupported HDR gain curve metadata layout")
+    try:
+        end = gain_curve_end(value)
+    except IndexError:
+        raise ProfileError("Truncated HDR gain curve metadata")
+    count, = struct.unpack_from(">I", value, 8)
+    if any(value[end:]) or not end - 1 <= GAIN_CURVE_DATA + count <= len(value):
+        raise ProfileError("HDR gain curve metadata holds data outside its layout")
+
+
+class Bits:
+    """The big-endian bit fields of ST 2094-50 metadata, read in order."""
+
+    def __init__(self, data, start):
+        self.data, self.position = data, 8 * start
+
+    def read(self, bits):
+        value = 0
+        for _ in range(bits):
+            value = value << 1 | self.data[self.position >> 3] >> (7 - self.position % 8) & 1
+            self.position += 1
+        return value
+
+    def reserved(self, bits):
+        if self.read(bits):
+            raise ProfileError("HDR gain curve metadata sets a reserved bit")
+
+    def numbers(self, count, low, high):
+        """`count` 16-bit numbers, each from low to high."""
+        values = [self.read(16) for _ in range(count)]
+        if not all(low <= number <= high for number in values):
+            raise ProfileError("HDR gain curve metadata holds a number out of range")
+        return values
+
+
+def gain_curve_end(value):
+    """Where the ST 2094-50 record of an HAGC tag ends, following Tables C.1 to
+    C.5 of its Annex C, with the ranges of clause C.3. Every group of flags
+    fills a byte, so the record ends on one."""
+    bits = Bits(value, GAIN_CURVE_DATA)
+    if bits.read(3) or bits.read(3):  # the version and the minimum a reader needs: 0 is the only one
+        raise ProfileError("Unsupported HDR gain curve metadata version")
+    bits.reserved(2)
+    custom_white, tone_map = bits.read(1), bits.read(1)
+    bits.reserved(6)
+    bits.numbers(custom_white, 1, 50000)                     # HDR reference white
+    if not tone_map:
+        return bits.position // 8
+    bits.numbers(1, 0, 60000)                                # baseline HDR headroom
+    if bits.read(1):                                         # reference white tone mapping: no curves
+        bits.reserved(7)
+        return bits.position // 8
+    images, primaries, common_mix, common_curve = bits.read(3), bits.read(2), bits.read(1), bits.read(1)
+    if images > ALTERNATE_IMAGES:
+        raise ProfileError("HDR gain curve metadata has more than four alternate images")
+    bits.numbers(8 * (primaries == 3), 0, 50000)             # the gain application space's chromaticities
+    for index in range(images):
+        bits.numbers(1, 0, 60000)                            # the alternate image's headroom
+        if index == 0 or not common_mix:
+            if bits.read(2) == 3:                            # a mix of six optional coefficients
+                bits.numbers(sum(bits.read(1) for _ in range(6)), 0, 50000)
+            else:
+                bits.reserved(6)
+        if index == 0 or not common_curve:
+            points, derived_slopes = bits.read(5) + 1, bits.read(1)
+            bits.reserved(2)
+            bits.numbers(points, 0, 64000)                   # each control point's x
+        bits.numbers(points, 0, 60000)                       # its y
+        if not derived_slopes:
+            bits.numbers(points, 1, 35999)                   # and its slope angle
+    return bits.position // 8
 
 
 def validate_parametric_curve(value):

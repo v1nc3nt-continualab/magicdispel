@@ -96,6 +96,40 @@ def transform(inputs=3, outputs=3, kind=b"mAB ", gap=b""):
     return kind + bytes(4) + bytes([inputs, outputs, 0, 0]) + struct.pack(">5I", *offsets) + body
 
 
+def spread(count, low, high):
+    """`count` 16-bit numbers rising from low towards high."""
+    return struct.pack(">%dH" % count, *(low + (high - low) * n // count for n in range(count)))
+
+
+def gain_curve(images=((5000, 4),), common=False, primaries=0, mix=2, white=None, reference_white_tone_map=False,
+               count_short=True, **replaced):
+    """An HAGC tag: SMPTE ST 2094-50 metadata (Annex C) after the tag type and
+    count, written independently of the code under test. `images` are
+    (headroom, control points) of each alternate image; with `common`, all
+    share the first one's mix and curve. The count is one short of the record,
+    as iOS 27 writes it. `replaced` sets bytes of the record: {"at_3": 0xff}."""
+    record = bytearray([0, 0x40 | (0x80 if white is not None else 0)])
+    record += struct.pack(">H", white) if white is not None else b""
+    record += struct.pack(">H", 18000)  # baseline headroom
+    if reference_white_tone_map:
+        record.append(0x80)
+    else:
+        record.append(len(images) << 4 | primaries << 2 | common << 1 | common)
+        record += struct.pack(">8H", *range(1000, 9000, 1000)) if primaries == 3 else b""
+        for index, (headroom, points) in enumerate(images):
+            record += struct.pack(">H", headroom)
+            if index == 0 or not common:
+                record += bytes([mix << 6 | (0b101000 if mix == 3 else 0)])
+                record += struct.pack(">HH", 30000, 20000) if mix == 3 else b""
+                record += bytes([(points - 1) << 3])
+                record += spread(points, 0, 64000)  # x of each control point
+            count = images[0][1] if common else points
+            record += spread(count, 1000, 60000) + spread(count, 1, 35999)  # y, slope angle
+    for key, value in replaced.items():
+        record[int(key[3:])] = value
+    return b"hagc" + bytes(4) + struct.pack(">I", len(record) - count_short) + bytes(record)
+
+
 def display_profile(**replaced):
     """Shaped like the profile a macOS screenshot embeds: v2 matrix/TRC colors,
     Apple para curves, and display identity and setup tags that carry MARKER."""
@@ -199,27 +233,69 @@ class SanitizeTests(unittest.TestCase):
 
     def test_hdr_curve_loses_its_image_identifier_only(self):
         # Laid out like the gmap tags of iPhone HEIC gain maps: one curve of six
-        # points shared by the three channels, filling the tag from byte 150.
-        value = bytearray(230)
-        value[:4] = b"gmap"
-        struct.pack_into(">6I", value, 12, 230, 98, 106, 106, 106, 0)
-        for offset in (36, 44, 52):
-            struct.pack_into(">II", value, offset, 150, 80)
-        value[60:64] = b"A2B0"
-        value[98:106] = b"\x01\x00\x08\x0c\0\0\0\0"
-        value[106:122] = b"TESTGUID01234567"
-        value[122:150] = s15(*range(7))
-        struct.pack_into(">I", value, 154, 6)
-        value[158:230] = s15(*range(18))
-        cleaned = icc.sanitize_adaptive_curve(bytes(value))
-        self.assertEqual(cleaned[:106] + cleaned[122:], value[:106] + value[122:])
-        self.assertEqual(cleaned[106:122], bytes(16))
-        # A header field, the count, and a curve that leaves room for more.
-        for offset, replacement in ((20, b"\0\0\0\1"), (154, struct.pack(">I", 5)), (40, struct.pack(">I", 72))):
-            broken = bytearray(value)
-            broken[offset:offset + 4] = replacement
-            with self.subTest(offset=offset), self.assertRaises(icc.ProfileError):
-                icc.sanitize_adaptive_curve(bytes(broken))
+        # points shared by the three channels, filling the tag. Up to iOS 26
+        # the fields start at byte 98; from iOS 27 at 97.
+        for start, primaries in ((98, 12), (97, 12), (97, 9)):
+            size, identifier, curve = start + 132, start + 8, start + 52
+            value = bytearray(size)
+            value[:4] = b"gmap"
+            struct.pack_into(">6I", value, 12, size, start, identifier, identifier, identifier, 0)
+            for offset in (36, 44, 52):
+                struct.pack_into(">II", value, offset, curve, 80)
+            value[60:64] = b"A2B0"
+            value[start:identifier] = b"\x01\x00\x08" + bytes([primaries]) + bytes(4)
+            value[identifier:identifier + 16] = b"TESTGUID01234567"
+            value[identifier + 16:curve] = s15(*range(7))
+            struct.pack_into(">I", value, curve + 4, 6)
+            value[curve + 8:] = s15(*range(18))
+            with self.subTest(start=start, primaries=primaries):
+                cleaned = icc.sanitize_adaptive_curve(bytes(value))
+                self.assertEqual(cleaned[:identifier] + cleaned[identifier + 16:],
+                                 value[:identifier] + value[identifier + 16:])
+                self.assertEqual(cleaned[identifier:identifier + 16], bytes(16))
+            # A header field, the count, a curve that leaves room for more, a
+            # layout between the two known ones, and other primaries.
+            for offset, replacement in ((20, b"\0\0\0\1"), (curve + 4, struct.pack(">I", 5)),
+                                        (40, struct.pack(">I", 72)), (16, struct.pack(">I", start - 2)),
+                                        (start, b"\x01\x00\x08\x01")):
+                broken = bytearray(value)
+                broken[offset:offset + 4] = replacement
+                with self.subTest(start=start, primaries=primaries, offset=offset), \
+                        self.assertRaises(icc.ProfileError):
+                    icc.sanitize_adaptive_curve(bytes(broken))
+
+    def test_gain_curves_are_kept_when_every_bit_is_accounted_for(self):
+        # iOS 27 puts an HAGC tag in the profile of an HDR photo's alternate image.
+        exact = [gain_curve(), gain_curve(count_short=False), gain_curve(white=20000), gain_curve(primaries=3),
+                 gain_curve(mix=3), gain_curve(reference_white_tone_map=True),
+                 gain_curve(images=((0, 32), (30000, 2), (50000, 1), (60000, 7))),
+                 gain_curve(images=((0, 3), (40000, 3)), common=True)]
+        for value in exact:
+            with self.subTest(size=len(value)):
+                icc.check_gain_curve(value)
+                icc.check_gain_curve(value + bytes(3))  # zero padding carries nothing,
+                padded = value[:8] + struct.pack(">I", len(value) - 9) + value[12:] + bytes(3)
+                icc.check_gain_curve(padded)  # and the count may cover it
+        tags = {**tag_table(SRGB), b"HAGC": gain_curve()}
+        self.assertEqual(tag_table(icc.sanitize(bytes(assemble(SRGB, tags))))[b"HAGC"], gain_curve())
+
+    def test_gain_curves_holding_anything_else_are_refused(self):
+        valid = gain_curve()
+        refused = {
+            "version": gain_curve(at_0=0x20), "minimum version": gain_curve(at_0=0x04),
+            "reserved flags": gain_curve(at_0=0x01), "reserved tone map flags": gain_curve(at_1=0x41),
+            "reserved mix bits": gain_curve(at_7=0x81), "reserved curve bits": gain_curve(at_8=0x19),
+            "five alternate images": gain_curve(at_4=0x50),
+            "headroom out of range": gain_curve(at_2=0xea, at_3=0x61),     # 60001
+            "x out of range": gain_curve(at_15=0xfa, at_16=0x01),         # 64001
+            "slope angle out of range": gain_curve(at_25=0, at_26=0),     # 0
+            "count": valid[:8] + struct.pack(">I", len(valid) - 14) + valid[12:],
+            "count past the tag": valid[:8] + struct.pack(">I", len(valid) - 11) + valid[12:],
+            "data after the record": valid + b"\1", "truncated": valid[:-1], "type": b"HAGC" + valid[4:],
+        }
+        for reason, value in refused.items():
+            with self.subTest(reason), self.assertRaises(icc.ProfileError):
+                icc.check_gain_curve(value)
 
     def test_color_tags_hold_nothing_but_their_layout(self):
         tags = tag_table(SRGB)

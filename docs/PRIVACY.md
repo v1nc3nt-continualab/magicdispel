@@ -11,8 +11,9 @@ anonymization.
 - **Image data.** Compressed pixels are copied byte for byte. BMP is the only format that is
   re-encoded, losslessly, as PNG.
 - **Color.** ICC profiles keep their color conversion data: matrices, curves, lookup tables,
-  Apple's parametric curves in screenshot profiles, and HDR adaptive curves (with their
-  image-specific identifier cleared). Every profile is rebuilt with the fixed date
+  Apple's parametric curves in screenshot profiles, HDR adaptive curves (with their
+  image-specific identifier cleared), and the headroom adaptive gain curves of HDR photos
+  (SMPTE ST 2094-50 tone-mapping data, which holds no identifier). Every profile is rebuilt with the fixed date
   `2000-01-01 00:00:00` and description `Clean`; creator, maker, model, CMM, platform and profile
   ID are cleared, and display calibration data is removed. Color declarations of the formats
   themselves are kept: PNG sRGB, gAMA, cHRM, cICP and HDR chunks, HEIF color boxes.
@@ -57,7 +58,9 @@ edits. Tested HEIC and HDR JPEG files render identically on macOS in SDR and HDR
   properties are kept only if they say how to decode and show an image. JPEG multi-picture
   indexes are written fresh. Every kept ICC color tag and Apple HDR curve must match its type's
   layout: a byte outside it that is not zero, after a curve, in a reserved field or between
-  the parts of a lookup table, gets the file refused. ISO 21496-1 gain-map metadata keeps only
+  the parts of a lookup table, gets the file refused. A headroom adaptive gain curve is read
+  bit by bit: a reserved bit that is set, a number outside its range or anything after it gets
+  the file refused. ISO 21496-1 gain-map metadata keeps only
   the fields its standard defines, which are all a decoder reads: in JPEG anything after them
   is dropped, and in HEIF, where an item cannot be shortened in place, it gets the file refused.
 - **Image sequences.** Animated AVIF and HEIF files keep only the boxes on a fixed list:
