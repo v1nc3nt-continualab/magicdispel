@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+Tested on 27 photos from 21 current phones and cameras (Samsung, Google Pixel, Xiaomi, Huawei,
+Honor, vivo, OnePlus, OPPO, Canon, Nikon, Sony, Fujifilm, Panasonic, OM System, Leica): all of
+them clean, render identically in macOS (SDR, HDR, gain maps, DPI), and keep none of the 5 to
+90 private fields each one carried.
+
+- Photos from some Pixel phones, such as the Pixel 9 Pro, were refused ("would not look
+  identical"). Their XMP declares the gain map as an element, and Pillow decides whether a
+  JPEG is an Ultra HDR photo, and so how many images it shows, from how that XMP is written.
+  Multi-picture JPEGs are now compared picture by picture, each as a JPEG of its own, so how
+  a decoder shows the whole no longer matters; this also decodes and compares every gain map.
+
 ## 0.1.3 (2026-09-24)
 
 Android's Ultra HDR photos clean again: 0.1.2 refused them. Tested with Google's own Ultra

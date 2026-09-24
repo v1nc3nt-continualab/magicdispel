@@ -26,15 +26,18 @@ def xmp_packet(attributes, content=b"", namespaces=b""):
             + b'</rdf:Description></rdf:RDF></x:xmpmeta>')
 
 
-# The primary image of an Ultra HDR photo as Android writes it: it declares
-# hdrgm:Version and lists the gain map in a GContainer directory.
-ULTRA_HDR_XMP = xmp_packet(
-    b'hdrgm:Version="1.0"',
-    b'<Container:Directory><rdf:Seq><rdf:li rdf:parseType="Resource"><Container:Item Item:Semantic="Primary" '
-    b'Item:Mime="image/jpeg"/></rdf:li><rdf:li rdf:parseType="Resource"><Container:Item Item:Semantic="GainMap" '
-    b'Item:Mime="image/jpeg" Item:Length="1234"/></rdf:li></rdf:Seq></Container:Directory>',
-    b'xmlns:hdrgm="http://ns.adobe.com/hdr-gain-map/1.0/" xmlns:Container="http://ns.google.com/photos/1.0/container/"'
-    b' xmlns:Item="http://ns.google.com/photos/1.0/container/item/"')
+def ultra_hdr_xmp(element=False):
+    """The primary image's XMP in an Ultra HDR photo as Android writes it: it
+    declares hdrgm:Version, as an attribute or, as Pixel phones do, an element,
+    and lists the gain map in a GContainer directory."""
+    version = b"<hdrgm:Version>1.0</hdrgm:Version>" if element else b""
+    return xmp_packet(
+        b"" if element else b'hdrgm:Version="1.0"',
+        version + b'<Container:Directory><rdf:Seq><rdf:li rdf:parseType="Resource"><Container:Item '
+        b'Item:Semantic="Primary" Item:Mime="image/jpeg"/></rdf:li><rdf:li rdf:parseType="Resource"><Container:Item '
+        b'Item:Semantic="GainMap" Item:Mime="image/jpeg" Item:Length="1234"/></rdf:li></rdf:Seq></Container:Directory>',
+        b'xmlns:hdrgm="http://ns.adobe.com/hdr-gain-map/1.0/" xmlns:Container="http://ns.google.com/photos/1.0/container/"'
+        b' xmlns:Item="http://ns.google.com/photos/1.0/container/item/"')
 
 
 def encode(image, **options):
@@ -365,24 +368,26 @@ class MultiPictureTests(unittest.TestCase):
                     self.assertEqual(output, decoded(primary) + (decoded(gain_map) if len(frames) == 3 else []))
 
     def test_ultra_hdr_photos_as_android_writes_them(self):
-        # Pillow shows such a photo as its primary image alone, not with the gain map,
-        # and phones set reserved flag bits in the gain map's ISO 21496-1 metadata.
+        # Pillow shows such a photo as its primary image alone or with its gain map,
+        # depending on how the primary image's XMP is written, and phones set
+        # reserved flag bits in the gain map's ISO 21496-1 metadata.
         metadata = iso_metadata()[:4] + bytes([iso_metadata()[4] | 0x33]) + iso_metadata()[5:]
-        primary = with_segments(encode(gradient()), app(0xE1, exif_block()), app(0xE1, XMP_ID + ULTRA_HDR_XMP),
-                                app(0xE2, ISO_NAMESPACE + bytes(4)))
         gain_map = with_segments(encode(gradient("L", (12, 8))), app(0xE1, XMP_ID + HDR_XMP),
                                  app(0xE2, ISO_NAMESPACE + metadata))
-        with tempfile.TemporaryDirectory(prefix="jpeg-") as folder:
-            path = Path(folder, "PXL_20260924_151959123.jpg")
-            path.write_bytes(mpf([primary, gain_map]))
-            output = core.clean(str(path)).read_bytes()
-        entries, frames = jpeg.images(output, strict=True)
-        self.assertEqual([jpeg.coding_hash(frame) for frame in frames],
-                         [jpeg.coding_hash(primary), jpeg.coding_hash(gain_map)])
-        self.assertIn(b'hdrgm:Version="1.0"', frames[0])
-        self.assertIn(ISO_NAMESPACE + metadata, frames[1])
-        self.assertNotIn(MARKER, output)
-        self.assertNotIn(b"Container:Directory", output)
+        for element in (False, True):
+            primary = with_segments(encode(gradient()), app(0xE1, exif_block()),
+                                    app(0xE1, XMP_ID + ultra_hdr_xmp(element)), app(0xE2, ISO_NAMESPACE + bytes(4)))
+            with self.subTest(element=element), tempfile.TemporaryDirectory(prefix="jpeg-") as folder:
+                path = Path(folder, "PXL_20260924_151959123.jpg")
+                path.write_bytes(mpf([primary, gain_map]))
+                output = core.clean(str(path)).read_bytes()
+                entries, frames = jpeg.images(output, strict=True)
+                self.assertEqual([jpeg.coding_hash(frame) for frame in frames],
+                                 [jpeg.coding_hash(primary), jpeg.coding_hash(gain_map)])
+                self.assertIn(b'hdrgm:Version="1.0"', frames[0])
+                self.assertIn(ISO_NAMESPACE + metadata, frames[1])
+                self.assertNotIn(MARKER, output)
+                self.assertNotIn(b"Container:Directory", output)
 
     def test_other_extra_images_are_refused(self):
         primary, gain_map = self.frames()

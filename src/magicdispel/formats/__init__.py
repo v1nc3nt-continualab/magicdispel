@@ -5,8 +5,9 @@ Each format module provides:
                                 raises FormatError if that cannot be done safely
     verify(original, rebuilt)   an independent check of the result; raises
                                 VerificationError if anything is off
-and, if the result may leave out some of the frames a decoder sees:
-    kept_frames(data) -> [int]  the indices of the frames the result keeps
+and, for a file of several pictures that decoders show in different ways:
+    pictures(data) -> [bytes]   the pictures a clean copy keeps, each as a file
+                                of its own, to compare one by one
 """
 from . import bmp, gif, heif, jpeg, png, tiff, webp
 

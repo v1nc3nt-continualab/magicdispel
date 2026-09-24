@@ -99,12 +99,20 @@ index, is not recognized: it sits after the end of the image and is removed as t
 so such a photo keeps its SDR look but loses its HDR one. Ultra HDR photos from Android carry a
 multi-picture index and keep their gain maps.
 
+Some phones and cameras append their own data after the image, which is removed the same way:
+Huawei's HDR Vivid image and editing history, OnePlus and OPPO's local HDR masks, Honor's
+extended information, and previews that no index lists, from cameras such as Leica and OM
+System. Other apps do not read this data, so the photos look the same in them; the maker's own
+gallery app may no longer show its HDR effect.
+
 ## File-system information
 
 Outputs are new files containing only the verified bytes. Extended attributes, macOS resource
 forks and Windows alternate data streams of the original are not copied; macOS output
-attributes are cleared, as are Linux `user.` attributes where supported. Normal permissions and
-creation/modification times of the new file are set by the system.
+attributes are cleared, as are Linux `user.` attributes where supported. macOS may then add its
+own bookkeeping attributes, such as `com.apple.provenance` and `com.apple.macl`, which record
+which programs created or opened the file and hold nothing about the photo. Normal permissions
+and creation/modification times of the new file are set by the system.
 
 ## What this cannot prevent
 
@@ -125,10 +133,19 @@ gain maps, orientation and DPI), and 11 synthetic leak probes come out clean. Fi
 independent review to hide data where 0.1.1 did not look (a preview in a multi-picture JPEG,
 bytes after an ICC curve, in ISO gain-map metadata and in an image-sequence box) are cleaned or
 refused since 0.1.2, and 634 ICC profiles from macOS and the corpus sanitize exactly as
-before. On macOS,
-Windows and Linux, CI runs the unit tests with Python 3.10 and 3.13, with and without ExifTool,
-and installs MagicDispel with the install scripts. Windows and Linux are validated by those
-synthetic tests, not by a corpus of real photos.
+before.
+
+Since 0.1.4 the corpus also holds 27 photos straight from, or exported from, 21 current phones
+and cameras, taken from Wikimedia Commons: Samsung Galaxy S25 Ultra and S24, Google Pixel 8a
+and 9 Pro, Xiaomi 14T Pro and 15 Ultra, Huawei Mate 60 Pro and Pura 70 Ultra, Honor Magic6 Pro,
+vivo X200 Pro, OnePlus 13, OPPO Find X3 Pro, Canon EOS R5 and R6 Mark II, Nikon Z 6II and Z 8,
+Sony α7 IV, Fujifilm X100V, Panasonic S5II, OM System OM-1 and Leica Q2. It also holds Google's
+Ultra HDR samples from libultrahdr and Skia. All of them clean and render identically in macOS,
+in SDR and HDR, and no private field survives of the 5 to 90 each photo carried.
+
+On macOS, Windows and Linux, CI runs the unit tests with Python 3.10 and 3.13, with and without
+ExifTool, and installs MagicDispel with the install scripts. On Windows and Linux, MagicDispel
+is validated by those synthetic tests, not by a corpus of real photos.
 
 References: [ExifTool FAQ](https://exiftool.org/faq.html#Q32),
 [Apple location metadata guidance](https://support.apple.com/guide/personal-safety/ips0d7a5df82/web).

@@ -372,9 +372,13 @@ def image_end(data):
     return next(end for marker, _, end, _ in segments(data) if marker == EOI)
 
 
-def kept_frames(data):
-    """The images of `data` a clean copy keeps, numbered as decoders count them."""
-    return kept_images(*images(data))
+def pictures(data):
+    """The images a clean copy of `data` keeps (see kept_images), each as a JPEG
+    of its own. Decoders show a multi-picture file in different ways (Pillow
+    shows an Ultra HDR photo as its primary image alone, depending on how its
+    XMP is written), but each of its images alike."""
+    entries, frames = images(data)
+    return [frames[index] for index in kept_images(entries, frames)]
 
 
 def kept_images(entries, frames):
