@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.3 (2026-09-24)
 
 Android's Ultra HDR photos clean again: 0.1.2 refused them. Tested with Google's own Ultra
 HDR samples (libultrahdr and Skia): every one now cleans, and renders identically in macOS,
