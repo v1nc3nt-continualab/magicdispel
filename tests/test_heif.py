@@ -310,6 +310,13 @@ class SequenceTests(unittest.TestCase):
         avci = sequence().replace(b"avis\0\0\0\0avisavifmsf1", b"avci\0\0\0\0avisavifmsf1")
         self.assertTrue(heif.rebuild(avci).startswith(avci[:24]))
 
+    def test_sharing_is_found_whatever_empty_extents_there_are(self):
+        from magicdispel.formats import movie
+        spans = movie.merged([(0, 10), (20, 20), (30, 40)])
+        self.assertEqual(spans, [(0, 10), (30, 40)])
+        self.assertTrue(movie.overlaps(movie.merged([(0, 10), (20, 20)]), 5, 30))
+        self.assertFalse(movie.overlaps(spans, 10, 30))
+
     def test_a_thumbnail_track_goes_as_thumbnail_images_do(self):
         # A second track of the same pictures, a thumbnail of the first, which
         # goes into the movie box before mdat: every chunk offset grows by its size.

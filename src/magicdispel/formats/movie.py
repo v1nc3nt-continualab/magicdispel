@@ -88,10 +88,13 @@ ENTRY_SIZES = {b"pasp": 8, b"clap": 32, b"fiel": 2, b"clli": 4, b"mdcv": 24, b"a
 # Sample entry boxes that are full boxes of version 0 and no flags.
 FULL_BOXES = {b"stri", b"hero", b"blin", b"dadj", b"prji", b"pkin", b"srat", b"pcmC", b"SmDm", b"CoLL", b"ccst",
               b"chan", b"must"}
-# Apple's alpha channel modes (almo), as AVFoundation writes them, and the
-# fixed marker box FFmpeg's iPod muxer writes into H.264 entries.
-ALPHA_MODES = {bytes.fromhex("00000100"), bytes.fromhex("00000102")}
-IPOD = bytes.fromhex("6b6840f25f244fc5ba39a51bcf0323f3") + bytes(4)
+# Sample entry boxes kept only with a payload their writers are known to give
+# them: Apple's alpha channel modes and log encoding, and the iPod marker
+# box that FFmpeg (0) and mp4v2 (1) write into H.264 entries.
+IPOD = bytes.fromhex("6b6840f25f244fc5ba39a51bcf0323f3")
+KNOWN_PAYLOADS = {b"almo": {bytes.fromhex("00000100"), bytes.fromhex("00000102")},
+                  b"logs": {b"com.apple.rec2020.apple-log"},
+                  b"uuid": {IPOD + bytes(4), IPOD + (1).to_bytes(4, "big")}}
 CHROMA_LOCATIONS = 6  # the largest chroma location code
 CODING_RESERVED = 0x03FFFFFF  # ccst: the bits after its intra-coding flags and reference count
 ALPHA = {b"urn:mpeg:mpegB:cicp:systems:auxiliary:alpha", b"urn:mpeg:hevc:2015:auxid:1"}  # auxi types kept
@@ -114,7 +117,9 @@ ISO_PCM = {b"ipcm", b"fpcm"}  # ISO's uncompressed sound, whose bits per sample 
 LPCM = b"lpcm"  # QuickTime's, described by a version 2 entry
 SAMPLE_BITS = {8, 16, 24, 32, 64}
 PCM = set(PCM_BITS) | set(ENTRY_BITS) | ISO_PCM | {LPCM}
-PACKED = {b"ima4"}  # compressed sound FFmpeg reads in packets of its own when a version 0 entry gives none
+# Compressed sound that FFmpeg and AVFoundation read in packets of their own,
+# whatever the entry says: (bytes a channel, frames) of IMA ADPCM's.
+PACKED = {b"ima4": (34, 64)}
 CHUNK = 1 << 20
 BLOCK = 1 << 16  # table entries read at a time
 
@@ -219,13 +224,21 @@ def track_references(data, trak):
     return references
 
 
+def chapter_images(data, track, others):
+    """Whether a track that a kept track names as its chapters is their
+    pictures: a disabled video track nothing else refers to."""
+    tkhd = next(found for found in bmff.boxes(data, track.box.content, track.box.end) if found.kind == b"tkhd")
+    return track.handler == b"vide" and track.ident not in others and not data[tkhd.content + 3] & 1  # enabled
+
+
 def removed_tracks(data, found, policy):
     """The IDs of the tracks that go. Any other track the policy does not keep
     is refused, and so is a reference that removing them would break."""
     chapters = {ident for track in found for kind, idents in track.references if kind == b"chap" for ident in idents}
+    others = {ident for track in found for kind, idents in track.references if kind != b"chap" for ident in idents}
     removed = {track.ident for track in found
-               if (track.handler in policy.removed or (policy.chapters and track.handler == b"text"
-                                                       and track.ident in chapters)
+               if (track.handler in policy.removed or policy.chapters and track.ident in chapters and (
+                   track.handler == b"text" or chapter_images(data, track, others))
                    or policy.thumbnails and any(kind == b"thmb" for kind, _ in track.references))
                and not (policy.rendering and policy.rendering(data, track))}
     for track in found:
@@ -333,7 +346,9 @@ def clean_entries(buffer, stsd, track_handler, policy):
         for child in children:
             if child.kind in kept:
                 check_entry_box(buffer, child, kept[child.kind], kept)
-                clear(buffer, entry_box_fields(child))
+                clear(buffer, entry_box_fields(buffer, child, kept[child.kind]))
+            elif child.kind == b"free" and zeroed(buffer, [(child.content, child.end)]):
+                continue  # holds nothing: as this module leaves an emptied box, cleaned again
             elif child.kind in (policy.emptied or {}).get(entry.kind, ()):
                 empty(buffer, child)
             elif policy.strict:
@@ -402,9 +417,14 @@ def entry_fields(entry, track_handler):
     return spans
 
 
-def entry_box_fields(found):
-    """The fields of a sample entry box that are cleared: a codec maker's name."""
-    return [(found.content, found.content + ENTRY_VENDORS[found.kind])] if found.kind in ENTRY_VENDORS else []
+def entry_box_fields(data, found, children):
+    """The fields of a kept sample entry box that are cleared, at any depth
+    (`children` as for check_entry_box): a codec maker's name."""
+    spans = [(found.content, found.content + ENTRY_VENDORS[found.kind])] if found.kind in ENTRY_VENDORS else []
+    if children is not None:
+        for child in bmff.boxes(data, found.content, found.end):
+            spans += entry_box_fields(data, child, children.get(child.kind))
+    return spans
 
 
 def check_entry_repeats(data, children, kept):
@@ -430,9 +450,8 @@ def check_entry_box(data, found, children, siblings):
     elif found.kind == b"auxi":  # the kind of auxiliary image, in a full box or, as Apple writes it, not: only alpha
         urn = bytes(data[found.content + (0 if any(data[found.content:found.content + 4]) else 4):found.end])
         sizes = (size,) if urn[-1:] == b"\0" and urn[:-1] in ALPHA else ()
-    elif found.kind in (b"almo", b"uuid"):
-        sizes = (size,) if bytes(data[found.content:found.end]) in (ALPHA_MODES if found.kind == b"almo" else {IPOD}) \
-            else ()
+    elif found.kind in KNOWN_PAYLOADS:
+        sizes = (size,) if bytes(data[found.content:found.end]) in KNOWN_PAYLOADS[found.kind] else ()
     elif found.kind == b"must":  # the box types a reader must understand, all of them listed ones
         listed = {bytes(data[p:p + 4]) for p in range(found.content + 4, found.end, 4)}
         sizes = (size,) if size >= 4 and size % 4 == 0 and not any(data[found.content:found.content + 4]) and \
@@ -787,10 +806,16 @@ def sound_unit(data, trak, stsd, stts, stsz):
     if data[stsd.content] or len(entries) != 1:
         raise unsupported("sound whose samples could be read in two ways")
     frame, packet = frame_size(data, entries[0]), packet_size(data, entries[0])
-    if pcm and not frame or chunked and entries[0].kind in PACKED and not packet:
+    if pcm and not frame:
         raise unsupported("sound whose sample sizes are not given")
-    if packet and packet[1] > 1:
-        if not (chunked and packet[0]):
+    if entries[0].kind in PACKED:
+        per_channel, frames = PACKED[entries[0].kind]
+        unit = per_channel * sound_fields(data, entries[0])[1], frames
+        if packet and packet != unit or not unit[0]:
+            raise unsupported("sound whose samples could be read in two ways")
+        packet = unit
+    if packet and packet[1] > 1:  # AVFoundation reads uncompressed sound by its frames
+        if not (chunked and packet[0]) or frame and packet[0] != packet[1] * frame:
             raise unsupported("sound whose samples could be read in two ways")
         return packet
     size = frame or fixed
@@ -809,13 +834,8 @@ def frame_size(data, entry):
     """The bytes of a frame of uncompressed sound, by its channels and bits
     per sample as FFmpeg reads them; None for any other entry, and for bits
     that FFmpeg and AVFoundation read differently."""
-    fields = entry.content
-    version = int.from_bytes(data[fields + 8:fields + 10], "big")
-    if version == 2 and entry.end - fields >= 64:  # channels, then constant bits per channel
-        channels, bits = (int.from_bytes(data[fields + start:fields + start + 4], "big") for start in (40, 48))
-    elif version in (0, 1):
-        channels, bits = (int.from_bytes(data[fields + start:fields + start + 2], "big") for start in (16, 18))
-    else:
+    version, channels, bits = sound_fields(data, entry)
+    if version is None:
         return None
     if entry.kind in ISO_PCM and version == 0:
         bits = next((data[found.content + 5] for found in entry_boxes(data, entry, SOUND_FIELDS)
@@ -827,6 +847,18 @@ def frame_size(data, entry):
     elif entry.kind != LPCM or version != 2:
         return None
     return channels * bits // 8 if bits in SAMPLE_BITS else None
+
+
+def sound_fields(data, entry):
+    """(version, channels, bits per sample) of a sound sample entry; the
+    version is None for one of no known layout."""
+    fields = entry.content
+    version = int.from_bytes(data[fields + 8:fields + 10], "big")
+    if version == 2 and entry.end - fields >= 64:  # channels, then constant bits per channel
+        return (version, *(int.from_bytes(data[fields + start:fields + start + 4], "big") for start in (40, 48)))
+    if version in (0, 1):
+        return (version, *(int.from_bytes(data[fields + start:fields + start + 2], "big") for start in (16, 18)))
+    return None, 0, 0
 
 
 def packet_size(data, entry):
@@ -850,9 +882,12 @@ def movie_ranges(data, moov):
 
 
 def merged(spans):
-    """(start, end) spans sorted, and merged where they meet or overlap."""
+    """(start, end) spans sorted, and merged where they meet or overlap; empty
+    ones, which hold no byte, are left out."""
     result = []
     for start, end in sorted(spans):
+        if start == end:
+            continue
         if result and start <= result[-1][1]:
             result[-1] = result[-1][0], max(result[-1][1], end)
         else:
@@ -863,7 +898,7 @@ def merged(spans):
 def overlaps(spans, start, end):
     """Whether [start, end) shares a byte with the merged, sorted spans."""
     index = bisect.bisect_left(spans, (end,)) - 1  # the last span starting before end
-    return start < end and index >= 0 and spans[index][1] > start and spans[index][0] < spans[index][1]
+    return start < end and index >= 0 and spans[index][1] > start
 
 
 # ------------------------------------------------------------------------ media
@@ -990,8 +1025,8 @@ def check_entries(original, rebuilt, stsd, policy, track_handler):
         sanitized = dict(profiles_in(original, entry, fields))
         for child in children:
             if child.kind == b"free" and zeroed(rebuilt, [(child.content, child.end)]) and (
-                    not policy.strict or bytes(original[child.start + 4:child.content]) in (policy.emptied or {}).get(
-                        entry.kind, ())):
+                    not policy.strict or bytes(original[child.start + 4:child.content]) in {b"free"} | set(
+                        (policy.emptied or {}).get(entry.kind, ()))):
                 continue
             if child.kind not in kept:
                 fail("sample entry box %r kept" % child.kind)
@@ -1002,7 +1037,7 @@ def check_entries(original, rebuilt, stsd, policy, track_handler):
                     bytes(original[child.content + 4:profile]))
                 if rebuilt[child.start:child.end] != expected:
                     fail("color profile not sanitized")
-            elif not matches(original, rebuilt, child, entry_box_fields(child)):
+            elif not matches(original, rebuilt, child, entry_box_fields(rebuilt, child, kept[child.kind])):
                 fail("sample entry box %r changed" % child.kind)
 
 

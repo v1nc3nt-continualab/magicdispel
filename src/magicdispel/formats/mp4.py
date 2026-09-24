@@ -50,11 +50,11 @@ SPATIAL = {b"eyes": {b"stri": None, b"hero": None, b"cams": {b"blin": None}, b"c
            b"proj": {b"prji": None}, b"pack": {b"pkin": None}, b"must": None}
 # Boxes of a video sample entry that say how to decode and show its samples:
 # decoder configurations (Dolby Vision's among them), color and HDR, pixel
-# shape and cropping, bit rates, alpha, and spatial video; and FFmpeg's fixed
-# iPod marker (uuid).
+# shape and cropping, bit rates, alpha, Apple Log, and spatial video; and
+# the iPod marker (uuid).
 VIDEO_BOXES = dict.fromkeys({b"avcC", b"hvcC", b"lhvC", b"av1C", b"vpcC", b"vvcC", b"apvC", b"d263", b"esds",
                              b"dvcC", b"dvvC", b"dvwC", b"colr", b"pasp", b"clap", b"fiel", b"chrm", b"gama",
-                             b"btrt", b"mdcv", b"clli", b"amve", b"SmDm", b"CoLL", b"hfov", b"almo",
+                             b"btrt", b"mdcv", b"clli", b"amve", b"SmDm", b"CoLL", b"hfov", b"almo", b"logs",
                              b"uuid"}) | {b"vexu": SPATIAL}
 PRORES = {b"apch", b"apcn", b"apcs", b"apco", b"ap4h", b"ap4x"}
 # Sound: AAC and the rest of MPEG, Apple's lossless and positional audio
@@ -184,6 +184,8 @@ def cleaned(data, buffer):
     movies = [found for found in top if found.kind == b"moov"]
     if len(movies) != 1:
         raise StructureError("no single movie box")
+    if any(found.kind == b"cmov" for found in bmff.boxes(data, movies[0].content, movies[0].end)):
+        raise unsupported("a compressed movie header")
     check_spherical(data, movies[0])
     kept = movie.clean(buffer, movies[0], MOVIE)
     boxes = kept_boxes(top)

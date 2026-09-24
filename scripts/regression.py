@@ -11,7 +11,8 @@ reported as notes.
     python scripts/regression.py CORPUS --baseline CORPUS/runs/<run>.json
     python scripts/regression.py CORPUS --baseline <run>.json --identical
 
-Every run compares each cleaned output with its own input. Pillow must decode
+Every run compares each cleaned output with its own input, and cleans it
+again: a clean copy must clean to itself. Pillow must decode
 the same frames (a JPEG may leave out pictures after its first, such as
 previews); on macOS, ImageIO/ColorSync must render the same pixels, HDR,
 gain maps, orientation and DPI; a video must keep its video and sound tracks
@@ -376,6 +377,15 @@ def clean_sample(exiftool, corpus, sample, workdir):
     else:
         record.update(status="cleaned", output=str(output))
     record["seconds"] = round(time.perf_counter() - started, 2)
+    if record["status"] == "cleaned":
+        # A clean copy must clean to itself.
+        try:
+            again = core.clean(str(output), exiftool)
+        except (OSError, ValueError) as error:
+            record["again"] = "refused: " + str(error)
+        else:
+            record["again"] = "same" if sha256_file(again) == sha256_file(output) else "changed"
+            again.unlink()
     record["source_unchanged"] = sha256_file(source) == sha256_file(corpus / sample["file"])
     record["leftovers"] = sorted(path.name for path in folder.iterdir()
                                  if path != source and str(path) != record.get("output"))
@@ -499,6 +509,8 @@ def check_against_input(record):
         problems.append("left files behind: " + ", ".join(record["leftovers"]))
     if record["status"] != "cleaned":
         return problems
+    if record.get("again", "same") != "same":
+        problems.append("cleaning the clean copy again: " + record["again"])
     source, output = record["input"], record["output"]
     if output["marker"]:
         problems.append("LEAK: probe marker survived cleaning")

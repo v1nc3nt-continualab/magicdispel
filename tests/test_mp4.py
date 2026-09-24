@@ -198,11 +198,11 @@ def sound_movie(entry, durations, sizes):
 
 
 def pcm_entry(kind=b"sowt", channels=2, bits=16, packet=None):
-    """An uncompressed QuickTime sound entry: of version 0, or of version 1
-    with `packet`, (frames, bytes of a frame) a packet."""
+    """A QuickTime sound entry: of version 0, or of version 1 with `packet`,
+    its (frames, bytes)."""
     fields = struct.pack(">HHhHI", channels, bits, 0, 0, 48000 << 16)
-    if packet:
-        fields += struct.pack(">IIII", packet[0], packet[1] * packet[0], packet[1], 2)
+    if packet:  # samples a packet, bytes a packet of one channel, of all of them, bytes a sample
+        fields += struct.pack(">IIII", packet[0], packet[1] // channels, packet[1], 2)
     return box(kind, bytes(6) + struct.pack(">HHH", 1, 1 if packet else 0, 0) + b"appl" + fields)
 
 
@@ -431,18 +431,22 @@ class TableTests(VideoTests):
         data = sound_movie(ulaw, one_unit, frames)
         self.assertEqual(self.assertCleaned(data).find(b"PCM_FRAMES_BYTES"), data.find(b"PCM_FRAMES_BYTES"))
         # Packets of several frames are read whole, and frames by their channels and bits.
-        whole = sound_movie(pcm_entry(channels=1, packet=(2, 8)), one_unit, frames)
+        whole = sound_movie(pcm_entry(channels=2, packet=(2, 8)), one_unit, frames)
         self.assertEqual(self.assertCleaned(whole).find(b"PCM_FRAMES_BYTES"), whole.find(b"PCM_FRAMES_BYTES"))
         # Sound that players could read in two ways, or by sizes the table does not give.
         ipcm = box(b"ipcm", bytes(6) + struct.pack(">H", 1) + bytes(8) + struct.pack(">HHHHI", 1, 16, 0, 0, 48000 << 16)
                    + full(b"pcmC", 0, bytes([1, 16])))
         refused = {
             "packets of another size than a frame": sound_movie(pcm_entry(channels=1, packet=(1, 8)), one_unit, frames),
-            "chunks of part of a packet": sound_movie(pcm_entry(channels=1, packet=(3, 2)), one_unit, frames),
+            "chunks of part of a packet": sound_movie(pcm_entry(channels=1, packet=(3, 6)), one_unit, frames),
+            "packets of other frames than the entry's": sound_movie(pcm_entry(channels=1, packet=(2, 8)), one_unit,
+                                                                    frames),
+            "IMA ADPCM of other packets than its own": sound_movie(pcm_entry(b"ima4", 2, 16, packet=(64, 34)),
+                                                                   one_unit, frames),
             "ISO's, which FFmpeg reads by stsz": sound_movie(ipcm, one_unit, struct.pack(">II", 4, 4)),
             "raw of 24 bits, which FFmpeg reads as 8": sound_movie(pcm_entry(b"raw ", 1, 24), one_unit, frames),
             "twos of 64 bits, which FFmpeg reads as 16": sound_movie(pcm_entry(b"twos", 1, 64), one_unit, frames),
-            "IMA ADPCM of no given packets": sound_movie(pcm_entry(b"ima4", 1, 16), one_unit, frames),
+            "IMA ADPCM of part of a packet": sound_movie(pcm_entry(b"ima4", 1, 16), one_unit, frames),
             "compressed, of size 1": sound_movie(sound_entry(False), one_unit, frames),
             "one-unit frames in two runs": sound_movie(pcm_entry(), struct.pack(">5I", 2, 2, 1, 2, 1), frames),
             "one-unit frames of listed sizes": sound_movie(pcm_entry(), one_unit, struct.pack(">6I", 0, 4, 1, 1, 1, 1)),
@@ -495,6 +499,10 @@ class TableTests(VideoTests):
             with self.subTest(kind):
                 self.assertCleaned(sound(box(kind, quicktime + box(b"wave", box(b"frma", kind) + configuration
                                                                   + bytes(8)))))
+        # AMR's configuration in QuickTime's wave: the codec maker's name is cleared there too.
+        amr = sound(box(b"samr", quicktime + box(b"wave", box(b"frma", b"samr") + box(b"samr", b"VNDR" + bytes(5))
+                                                  + bytes(8))))
+        self.assertNotIn(b"VNDR", self.assertCleaned(amr))
         # ISO sound's channel layout, and Apple's positional audio, whose configuration is copied whole.
         ipcm = box(b"ipcm", fields + full(b"pcmC", 0, bytes([1, 16])) + full(b"chnl", 0, bytes([1, 2]) + bytes(8)))
         self.assertCleaned(sound_movie(ipcm, struct.pack(">III", 1, 4, 1), struct.pack(">II", 4, 4)))
@@ -535,6 +543,23 @@ class TableTests(VideoTests):
         self.assertNotIn(b"Q!", rebuilt)
         self.assertRefused(data.replace(b"alis\0\0\0\1", b"alis\0\0\0\3"))  # flags of no known meaning
 
+    def test_chapter_pictures_go_with_the_chapters(self):
+        video = (1, b"vide", visual_entry(b"avc1", box(b"avcC", bytes(7))), VIDEO,
+                 box(b"chap", struct.pack(">II", 2, 3)), b"vmhd")
+        text = (2, b"text", box(b"text", bytes(8) + MARKER), [b"CHAPTER " + MARKER], b"", b"gmhd")
+        pictures = (3, b"vide", visual_entry(b"jpeg", b""), [b"JPEG " + MARKER], b"", b"vmhd")
+        data = movie_file(tracks=[video, text, pictures])
+        tkhd = boxes_at(data, TRAK + [b"tkhd"])[2]
+        disabled = data[:tkhd.content + 3] + b"\0" + data[tkhd.content + 4:]  # the track is not enabled
+        self.assertEqual(len(boxes_at(self.assertCleaned(disabled), TRAK)), 1)
+        self.assertRefused(data)  # an enabled track of pictures is a video of a codec not on the list
+
+    def test_a_compressed_movie_header_is_refused_as_such(self):
+        data = inserted(plain_video(), [b"moov"], box(b"cmov", box(b"dcom", b"zlib")))
+        with self.assertRaises(FormatError) as caught:
+            mp4.rebuild(data)
+        self.assertIn("compressed movie header", str(caught.exception))
+
     def test_what_players_do_not_need_goes(self):
         rebuilt = self.assertCleaned(inserted(plain_video(), [b"moov"], box(b"mvex", full(b"trex", 0, bytes(20)))))
         self.assertNotIn(b"trex", rebuilt)
@@ -556,7 +581,12 @@ class TableTests(VideoTests):
         # FFmpeg's iPod marker; and its copy of a ProRes encoder's description, which is emptied.
         ipod = box(b"uuid", bytes.fromhex("6b6840f25f244fc5ba39a51bcf0323f3") + bytes(4))
         self.assertIn(ipod, self.assertCleaned(plain_video(box(b"avcC", bytes(7)) + ipod)))
-        self.assertNotIn(b"Apple ProRes", self.assertCleaned(plain_video(box(b"glbl", b"Apple ProRes 422"), b"apcn")))
+        prores = self.assertCleaned(plain_video(box(b"glbl", b"Apple ProRes 422"), b"apcn"))
+        self.assertNotIn(b"Apple ProRes", prores)
+        self.assertEqual(mp4.rebuild(prores), prores)  # a clean copy cleans to itself
+        self.assertCleaned(plain_video(box(b"avcC", bytes(7)) + ipod[:-1] + b"\1"))  # mp4v2's marker
+        # Apple Log, as iPhones record it.
+        self.assertCleaned(plain_video(box(b"hvcC", HVCC) + box(b"logs", b"com.apple.rec2020.apple-log"), b"hvc1"))
         video = (1, b"vide", visual_entry(b"avc1", box(b"avcC", bytes(7))), VIDEO, b"", b"vmhd")
         fields = bytes(6) + struct.pack(">H", 1) + bytes(8) + struct.pack(">HHHHI", 2, 16, 0, 0, 48000 << 16)
 
@@ -581,6 +611,7 @@ class TableTests(VideoTests):
             "an alpha mode of no known meaning": plain_video(box(b"hvcC", HVCC) + box(b"almo", b"MDPV"), b"hvc1"),
             "a uuid box other than the iPod's": plain_video(box(b"avcC", bytes(7)) + box(b"uuid", bytes(16) + MARKER)),
             "an encoder's description elsewhere": plain_video(box(b"avcC", bytes(7)) + box(b"glbl", MARKER)),
+            "a log encoding of no known name": plain_video(box(b"hvcC", HVCC) + box(b"logs", MARKER), b"hvc1"),
         }
         for reason, data in refused.items():
             with self.subTest(reason):

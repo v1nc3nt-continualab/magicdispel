@@ -12,12 +12,12 @@ refused by design (fragmented, audio-only, subtitles, Motion JPEG, MPEG-2, DNxHR
 AVFoundation writes it into QuickTime, iLBC) clean with identical frames and sound.
 
 - Kept: video and sound tracks with every sample, decoder configurations, rotation, edit lists,
-  color, HDR, Dolby Vision, alpha, Apple's spatial video information and positional audio
-  (APAC), and Apple's per-frame scene illuminance, which iPhones mark as used to show their HDR
+  color, HDR, Dolby Vision, Apple Log, alpha, Apple's spatial video information and positional
+  audio (APAC), and Apple's per-frame scene illuminance, which iPhones mark as used to show their HDR
   video. It is kept only in its exact layout; any other track another is shown with is refused.
 - Removed: location, device, software and dates in user data and metadata boxes; timed
   metadata tracks (GPS and motion, face detection, Live Photo and motion photo data), timecode
-  and chapter tracks, with their samples; maker data such as GoPro's serial numbers and
+  and chapter tracks (their pictures too), with their samples; maker data such as GoPro's serial numbers and
   Samsung's SEF data; creation times, handler, vendor and compressor names; brands naming a
   camera's maker; the extended language tag, which may name a region; unused media data and
   anything after the movie.
@@ -51,7 +51,8 @@ AVFoundation writes it into QuickTime, iLBC) clean with identical frames and sou
   their original's permissions. Names and messages printed never carry a file's control
   characters to the terminal.
 - A video keeps its extension (.mp4, .mov, .m4v, .3gp, .f4v...), whatever its content: players
-  may read one file differently by its extension. `--anonymous` names videos `video_<random>.mov`.
+  may read one file differently by its extension. A clean copy cleans to itself: cleaning it
+  again changes nothing. `--anonymous` names videos `video_<random>.mov`.
 - Image sequences (HEIF, AVIF) and videos share one cleaner, which also checks that headers and
   sample tables have exactly their size, and that nothing in the movie box changed but the
   cleared fields. The 95 test photos clean exactly as before.
