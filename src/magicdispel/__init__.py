@@ -1,3 +1,3 @@
 """MagicDispel: clean common photo metadata locally, without recompression."""
 
-__version__ = "0.1.4"
+__version__ = "0.1.5"
