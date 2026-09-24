@@ -1,6 +1,7 @@
 """Command line: type magicdispel, drag photos or videos into the terminal, press Enter."""
 
 import argparse
+import signal
 import sys
 
 from . import __version__, banner, exiftool
@@ -40,6 +41,11 @@ def main(argv=None):
     if not (args.photos or args.check):
         print(banner.welcome(__version__, message("usage")))
         return 0
+    # Closing the terminal or stopping the process cancels as Ctrl+C does, which
+    # removes an unfinished copy.
+    for name in ("SIGTERM", "SIGHUP"):
+        if hasattr(signal, name):
+            signal.signal(getattr(signal, name), cancel)
     try:
         # ExifTool is optional: when present and recent, it double-checks results.
         path = exiftool.find()
@@ -64,6 +70,10 @@ def main(argv=None):
     except KeyboardInterrupt:
         print(message("cancelled"), file=sys.stderr)
         return 130
+
+
+def cancel(signum, frame):
+    raise KeyboardInterrupt
 
 
 def explained(error):

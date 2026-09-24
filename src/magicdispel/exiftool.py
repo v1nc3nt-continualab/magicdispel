@@ -5,9 +5,9 @@ before being saved. Any warning, any field outside the display allowlist and
 any data ExifTool cannot identify stops the save. ExifTool reads a photo from
 a pipe: no file is written, and no path, which Windows would pass in its
 legacy code page and ExifTool might misread, is involved. A video, cleaned in
-a file of its own, is read from that file, whose path ExifTool gets in UTF-8
-on its standard input: through a pipe, ExifTool would hold the whole video in
-memory to move through it.
+a file of its own, is read from that file, whose path ExifTool gets on its
+standard input, as the file system's own bytes (UTF-8 on Windows): through a
+pipe, ExifTool would hold the whole video in memory to move through it.
 """
 import json
 import os
@@ -110,8 +110,10 @@ def read(exiftool, data, path=None):
     else:
         # The path is an argument file on standard input: see the module docstring.
         # -ee reads the timed metadata a video keeps too, sample by sample.
-        result = run(exiftool, arguments + ["-ee", "-api", "LargeFileSupport=1", "-@", "-"],
-                     os.fsdecode(path).encode("utf-8") + b"\n")
+        name = os.fsencode(path)
+        if b"\n" in name:  # which would end the argument
+            raise ExifToolError("the folder's name holds a line break")
+        result = run(exiftool, arguments + ["-ee", "-api", "LargeFileSupport=1", "-@", "-"], name + b"\n")
     tags = json.loads(result.stdout)[0]
     for key, value in tags.items():
         if key.split(":")[-1] in ("Error", "Warning"):

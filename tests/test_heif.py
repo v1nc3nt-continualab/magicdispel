@@ -231,7 +231,7 @@ def sequence(dref_flags=1, handler=b"pict", movie_box=b"", track_box=b"", entry_
 
     def movie(offset):
         stbl = box(b"stbl", full(b"stsd", 0, struct.pack(">I", 1) + box(b"av01", entry + entry_box))
-                   + full(b"stsc", 0, struct.pack(">IIII", 1, 1, 1, 1)) + full(b"stsz", 0, struct.pack(">II", 16, 1))
+                   + full(b"stts", 0, struct.pack(">III", 1, 1, 1)) + full(b"stsc", 0, struct.pack(">IIII", 1, 1, 1, 1)) + full(b"stsz", 0, struct.pack(">II", 16, 1))
                    + full(b"stco", 0, struct.pack(">II", 1, offset)))
         location = box(b"url ", b"\0\0\0" + bytes([dref_flags]) + MARKER)
         dinf = box(b"dinf", full(b"dref", 0, struct.pack(">I", 1) + location))

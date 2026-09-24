@@ -21,6 +21,7 @@ MODULES = {"PNG": png, "APNG": png, "BMP": bmp, "JPEG": jpeg, "WEBP": webp, "GIF
 # MP4 and QuickTime are one family: players may read a file differently by its
 # extension, so a video keeps any video extension it has.
 VIDEO_SUFFIXES = (".mp4", ".mov", ".m4v", ".qt", ".3gp", ".3g2")
+VIDEOS = {"MP4", "MOV"}  # the formats cleaned in a copy of the file (see core.clean_copy)
 SUFFIXES = {"JPEG": (".jpg", ".jpeg", ".jpe"), "PNG": (".png",), "APNG": (".png", ".apng"),
             "HEIC": (".heic", ".heif", ".hif"), "AVIF": (".avif",), "WEBP": (".webp",),
             "GIF": (".gif",), "TIFF": (".tiff", ".tif"), "BMP": (".png",),

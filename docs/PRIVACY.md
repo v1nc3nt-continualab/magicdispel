@@ -56,7 +56,10 @@ private data blocks and data after the end of an image or video.
 Removing auxiliary HEIF images limits later portrait, depth-of-field and photographic-style
 edits. Tested HEIC and HDR JPEG files render identically on macOS in SDR and HDR. Removing a
 video's timed metadata likewise ends what only its maker's app draws from it, such as the
-pairing of a Live Photo's video with its photo, or Samsung's slow-motion sections.
+pairing of a Live Photo's video with its photo, or Samsung's slow-motion sections. The gapless
+playback note some encoders put in the metadata (iTunSMPB) goes too: a player that trims the
+encoder's delay by it rather than by the edit list may then play a few milliseconds of
+silence at the start of the sound.
 
 ## How nothing slips through
 
@@ -83,8 +86,14 @@ pairing of a Live Photo's video with its photo, or Samsung's slow-motion section
   HDR and spatial video boxes. Unlike an image sequence's, a sample entry holding a box not on
   the list is refused rather than emptied, since a video may need it to play. Only video and
   sound tracks stay; the samples of the tracks removed are zeroed with every other byte of the
-  media data that no remaining sample uses. Sample tables and headers must have exactly the
-  size their entries and version give them. The check compares every box of the result with
+  media data that no remaining sample uses. Every kept box has exactly the layout its type and
+  version give it, and appears once where the standard allows one; a kept track's sample
+  tables must agree on its samples, chunks and sample descriptions, so that players read the
+  samples MagicDispel keeps and nothing else. Sample groups stay only for roll distances,
+  sync and random access points and temporal layers, whose every byte is checked; others,
+  which only help seeking, are emptied. The file type box may hold only known brands, and its
+  minor version, a number some encoders set, is kept as it is. The name of the codec's maker
+  in H.263 and AMR configurations is cleared. The check compares every box of the result with
   the original's and every kept sample byte for byte. A video is cleaned in a copy next to the
   original, and neither is read into memory.
 - **HEIF and videos in place.** HEIF files and videos are cleaned without moving any image or
@@ -101,7 +110,8 @@ pairing of a Live Photo's video with its photo, or Samsung's slow-motion section
   tracks other than pictures and their alpha, fragmented image sequences and videos, encrypted
   and audio-only videos, video tracks other than video, sound, timed metadata, timecode and
   chapters (subtitles, for instance), video codecs and sample entry boxes not on the list
-  (Motion JPEG among them), a removed track that another needs to be shown, media stored
+  (Motion JPEG among them), 360-degree videos, sample tables that disagree, file types of
+  unknown brands, a removed track that another needs to be shown, media stored
   outside the file, BigTIFF, old-style JPEG in TIFF, metadata inside JPEG-compressed TIFF strips,
   unrecognized ICC tags and floating-point ICC transforms, gain-map metadata of an unknown
   version. RAW photos built on TIFF (DNG, CR2, NEF and others) are refused too: their TIFF
@@ -178,10 +188,10 @@ in SDR and HDR, and no private field survives of the 5 to 90 each photo carried.
 Since 0.2.0 the corpus also holds 64 public sample videos: GoPro's HERO5, HERO7, HERO8,
 Fusion, MAX and Karma samples; AndroidX Media's test files, among them an iPhone 14 Pro Dolby
 Vision video, an Apple spatial video, Pixel motion photo and HLG videos and Samsung
-slow-motion videos; and ExifTool's. 48 clean: FFmpeg decodes identical frames from each, macOS
+slow-motion videos; and ExifTool's. 47 clean: FFmpeg decodes identical frames from each, macOS
 AVFoundation sees the same video and sound tracks and shows the same frames, and ExifTool finds
-no private field. The other 16 are refused as designed: audio-only, fragmented and encrypted
-files, subtitles, a damaged file, Motion JPEG and a track needed to show the video. Three
+no private field. The other 17 are refused as designed: audio-only, fragmented and encrypted
+files, subtitles, two damaged files, Motion JPEG and a track needed to show the video. Three
 videos from an iPhone 16 on iOS 27 (a Live Photo's video, an HDR video and an H.264 one)
 clean the same way, keeping their scene illuminance. A 4.7 GB video is cleaned in under five
 seconds, with 24 MB of memory.

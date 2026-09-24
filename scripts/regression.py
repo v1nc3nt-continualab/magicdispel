@@ -46,6 +46,8 @@ HELPER = Path(__file__).with_name("native_render.swift")
 VIDEO_HELPER = Path(__file__).with_name("native_video.swift")
 CACHE_VERSION = 5
 VIDEO_SUFFIXES = {".mp4", ".m4v", ".mov", ".qt", ".3gp", ".3g2"}
+# Sample entry atoms whose first bytes name the codec's maker, cleared: H.263 and AMR.
+VENDOR_ATOMS = {"d263", "damr"}
 # ffprobe's properties of a video or sound stream that say how it plays.
 STREAM_FIELDS = ("codec_type", "codec_name", "codec_tag_string", "profile", "width", "height", "pix_fmt",
                  "color_range", "color_space", "color_transfer", "color_primaries", "field_order",
@@ -534,19 +536,36 @@ def native_video_differences(before, after):
     if after.get("error"):
         return ["macOS cannot open the output"]
 
+    def tracks(native):
+        return [comparable(track) for track in native.get("tracks", [])]
+
     def playing(native):
-        return [track for track in native.get("tracks", []) if track["type"] in ("vide", "soun")]
+        return [track for track in tracks(native) if track["type"] in ("vide", "soun")]
 
     problems = []
     if playing(before) != playing(after):
         problems.append("macOS sees different video or sound tracks")
-    if any(track not in before.get("tracks", []) for track in after.get("tracks", [])):
+    if any(track not in tracks(before) for track in tracks(after)):
         problems.append("output has a track that differs from the input's")
     if before.get("duration") != after.get("duration"):
         problems.append("macOS duration %s -> %s" % (before.get("duration"), after.get("duration")))
     if any(a != b for a, b in zip(before.get("frames", []), after.get("frames", [])) if a.get("srgb")):
         problems.append("macOS shows different frames")
     return problems
+
+
+def comparable(track):
+    """A track as macOS describes it, less the sample entry atoms that start
+    with the name of the codec's maker, which MagicDispel clears."""
+    formats = []
+    for found in track.get("formats", []):
+        extensions = found.get("extensions", {})
+        atoms = extensions.get("SampleDescriptionExtensionAtoms")
+        if isinstance(atoms, dict):
+            atoms = {kind: value for kind, value in atoms.items() if kind not in VENDOR_ATOMS}
+            found = {**found, "extensions": {**extensions, "SampleDescriptionExtensionAtoms": atoms}}
+        formats.append(found)
+    return {**track, "formats": formats}
 
 
 def same_frames(before, after, jpeg):

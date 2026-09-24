@@ -36,6 +36,8 @@ def clean(argument, exiftool_path=None, naming="plain"):
     kind = formats.identify(data)
     if kind is None:
         raise InputError("unsupported_format")
+    if kind in formats.VIDEOS:  # told apart only past the first bytes, by a long file type box
+        return clean_copy(source, kind, exiftool_path, naming)
     module = formats.MODULES[kind]
     rebuilt = module.rebuild(data)
     verify(module, data, rebuilt)
@@ -65,6 +67,8 @@ def clean_copy(source, kind, exiftool_path=None, naming="plain"):
     partial = reserve(source, suffix)
     try:
         shutil.copyfile(source, partial)
+        if partial.stat().st_size != source.stat().st_size:
+            raise VerificationError("source_changed")
         with mapped(source) as original, mapped(partial, writable=True) as copy:
             if len(copy) != len(original):
                 raise VerificationError("source_changed")
@@ -93,7 +97,10 @@ def verify(module, original, rebuilt):
 def mapped(path, writable=False):
     """A file's bytes, mapped into memory rather than read."""
     with path.open("r+b" if writable else "rb") as stream:
-        view = mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_WRITE if writable else mmap.ACCESS_READ)
+        try:
+            view = mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_WRITE if writable else mmap.ACCESS_READ)
+        except ValueError:  # an empty file: a video emptied while it was being cleaned
+            raise VerificationError("source_changed")
         try:
             yield view
             if writable:
@@ -109,9 +116,10 @@ def output_suffix(source, kind):
 
 
 def reserve(source, suffix):
-    """A new, empty file next to the original, to clean a copy in."""
+    """A new, empty file next to the original, to clean a copy in: hidden, and
+    with a short name, which fits wherever the original's does."""
     while True:
-        partial = source.with_name("%s.magicdispel-%s%s" % (source.stem, secrets.token_hex(4), suffix))
+        partial = source.with_name(".magicdispel-%s.partial%s" % (secrets.token_hex(4), suffix))
         try:
             partial.open("xb").close()
             return partial

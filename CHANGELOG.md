@@ -4,8 +4,8 @@
 
 Videos: MP4 and QuickTime (MOV) files are cleaned too, without changing a single frame. Tested
 on 64 public sample videos, GoPro, iPhone (Dolby Vision, spatial video), Pixel and Samsung ones
-among them: 48 clean, FFmpeg decodes identical frames from each, and macOS plays each the same;
-the other 16 are refused as designed. Three videos from an iPhone 16 on iOS 27 clean the same
+among them: 47 clean, FFmpeg decodes identical frames from each, and macOS plays each the same;
+the other 17 are refused as designed. Three videos from an iPhone 16 on iOS 27 clean the same
 way.
 
 - Kept: video and sound tracks with every sample, decoder configurations, rotation, edit lists,
@@ -17,11 +17,19 @@ way.
   and chapter tracks, with their samples; maker data such as GoPro's serial numbers and
   Samsung's SEF data; creation times, handler, vendor and compressor names; unused media data
   and anything after the movie.
-- Refused: fragmented, encrypted and audio-only files, subtitle tracks, codecs and sample
-  entry boxes not on the list, and a removed track that another needs to be shown.
-- A video is cleaned in a copy next to the original, never read into memory: a 4.7 GB video
-  takes under five seconds. ExifTool's second check reads that copy from its path, with the
-  timed metadata in its samples.
+- Refused: fragmented, encrypted and audio-only files, subtitle tracks, 360-degree videos,
+  codecs and sample entry boxes not on the list, file types of unknown brands, and a removed
+  track that another needs to be shown.
+- Every kept box has exactly its layout and appears once where the standard allows one, and a
+  kept track's sample tables must agree on its samples, chunks and descriptions. Sample groups
+  other than roll distances, sync and random access points and temporal layers are emptied.
+  Uncompressed QuickTime sound is read by its sample entry, as players do. The codec maker's
+  name in H.263 and AMR configurations is cleared. The gapless playback note (iTunSMPB) goes
+  with the metadata.
+- A video is cleaned in a hidden copy next to the original, never read into memory: a 4.7 GB
+  video takes under five seconds. Closing the terminal or stopping MagicDispel removes an
+  unfinished copy, as Ctrl+C does. ExifTool's second check reads that copy from its path, with
+  the timed metadata in its samples.
 - A video keeps its extension, .mp4 or .mov, whatever its content: players may read one file
   differently by its extension. `--anonymous` names videos `video_<random>.mov`.
 - Image sequences (HEIF, AVIF) and videos share one cleaner, which also checks that headers and

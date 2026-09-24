@@ -31,10 +31,14 @@ REFUSED = {b"moof", b"mfra", b"sidx", b"ssix", b"styp"}
 QUICKTIME = b"qt  "
 # What an older QuickTime movie, without a file type box, may start with.
 QUICKTIME_ATOMS = {b"moov", b"mdat", b"wide", b"free", b"skip", b"pnot"}
-# Brands of MP4 files: ISO, MP4, M4V and 3GPP, and those cameras and phones write.
+# Brands of MP4 files: ISO, MP4, M4V and 3GPP, codecs, DASH and CMAF, and
+# those cameras and phones write. A file type box holds only these, and
+# QuickTime's, and zeros where QuickTime pads the list.
 BRANDS = {b"isom", b"iso2", b"iso3", b"iso4", b"iso5", b"iso6", b"iso7", b"iso8", b"iso9", b"mp41", b"mp42",
-          b"mp71", b"avc1", b"M4V ", b"M4VP", b"M4VH", b"3gp4", b"3gp5", b"3gp6", b"3gp7", b"3gp8", b"3gp9",
-          b"3g2a", b"3g2b", b"3g2c", b"3ge6", b"3ge7", b"3gg6", b"MSNV", b"XAVC", b"CAEP", b"dby1"}
+          b"mp71", b"avc1", b"av01", b"iamf", b"dby1", b"M4V ", b"M4VP", b"M4VH", b"3gp4", b"3gp5", b"3gp6",
+          b"3gp7", b"3gp8", b"3gp9", b"3g2a", b"3g2b", b"3g2c", b"3ge6", b"3ge7", b"3gg6", b"dash", b"cmfc",
+          b"cmf2", b"MSNV", b"XAVC", b"CAEP"}
+PADDING = bytes(4)
 VIDEO_ENTRIES = {b"avc1", b"avc3", b"hvc1", b"hev1", b"dvh1", b"dvhe", b"dvav", b"dva1", b"dav1", b"av01",
                  b"vp08", b"vp09", b"mp4v", b"s263", b"h263", b"vvc1", b"vvi1", b"apv1",
                  b"apch", b"apcn", b"apcs", b"apco", b"ap4h", b"ap4x"}  # the last six: ProRes
@@ -46,16 +50,19 @@ SPATIAL = {b"eyes": {b"stri": None, b"hero": None, b"cams": {b"blin": None}, b"c
 # shape and cropping, bit rates, and spatial video.
 VIDEO_BOXES = dict.fromkeys({b"avcC", b"hvcC", b"lhvC", b"av1C", b"vpcC", b"vvcC", b"apvC", b"d263", b"esds",
                              b"dvcC", b"dvvC", b"dvwC", b"colr", b"pasp", b"clap", b"fiel", b"gama", b"btrt",
-                             b"mdcv", b"clli", b"cclv", b"amve", b"SmDm", b"CoLL", b"hfov"}) | {b"vexu": SPATIAL}
+                             b"mdcv", b"clli", b"amve", b"SmDm", b"CoLL", b"hfov"}) | {b"vexu": SPATIAL}
 SOUND_ENTRIES = {b"mp4a", b"alac", b"Opus", b"fLaC", b"ac-3", b"ec-3", b"ac-4", b"lpcm", b"ipcm", b"fpcm",
                  b"sowt", b"twos", b"in24", b"in32", b"fl32", b"fl64", b"raw ", b"ulaw", b"alaw", b"samr",
                  b"sawb", b"mha1", b"mhm1", b"iamf", b"dtsc", b"dtse", b"dtsh", b"dtsl", b"dtsx", b"mlpa",
                  b".mp3"}
 # QuickTime's sound extension: the format, its configuration, byte order, and a terminator.
 WAVE = dict.fromkeys({b"frma", b"mp4a", b"esds", b"alac", b"enda", b"chan", b"\0\0\0\0"})
-SOUND_BOXES = dict.fromkeys({b"esds", b"chan", b"chnl", b"srat", b"dac3", b"dec3", b"dac4", b"dOps", b"alac",
+SOUND_BOXES = dict.fromkeys({b"esds", b"chan", b"srat", b"dac3", b"dec3", b"dac4", b"dOps", b"alac",
                              b"dfLa", b"pcmC", b"damr", b"mhaC", b"mhaP", b"iacb", b"ddts", b"udts", b"dmlp",
-                             b"SA3D", b"btrt"}) | {b"wave": WAVE}
+                             b"btrt"}) | {b"wave": WAVE}
+# Google's 360-degree video, version 1: a uuid box in the video track, which
+# players need to show it. It is refused, as version 2's boxes are.
+SPHERICAL = bytes.fromhex("ffcc8263f8554a938814587a02521fdd")
 # Apple's per-frame scene illuminance, which iPhones mark as used to show their
 # HDR video (a track reference 'rndr'): a metadata track with this one sample
 # entry, one key in milli-lux, and samples of one 32-bit value each, which
@@ -74,28 +81,24 @@ def scene_illuminance(data, track):
     describes it, naming the tracks it helps show and nothing else."""
     if track.handler != b"meta" or [kind for kind, _ in track.references] != [b"rndr"]:
         return False
-    tables = list(movie.sample_tables(data, track.box.content, track.box.end))
-    if len(tables) != 1:
-        return False
-    stsd = [found for found in bmff.boxes(data, tables[0].content, tables[0].end) if found.kind == b"stsd"]
-    entries = list(bmff.boxes(data, stsd[0].content + 8, stsd[0].end)) if len(stsd) == 1 else []
+    table = movie.track_table(data, track.box)
+    entries = list(bmff.boxes(data, table.stsd.content + 8, table.stsd.end))
     if len(entries) != 1 or entries[0].kind != b"mebx" or data[entries[0].content:entries[0].end] != SCENE_ILLUMINANCE:
         return False
-    if set(movie.sample_sizes(data, tables[0])) - {len(ILLUMINANCE_SAMPLE) + 4}:
+    if any(size != len(ILLUMINANCE_SAMPLE) + 4 for size in movie.sample_sizes(data, table.stsz)):
         return False
     return all(data[position:position + 8] == ILLUMINANCE_SAMPLE
                and int.from_bytes(data[position + 8:position + 12], "big") <= MAX_MILLILUX
-               for start, end in movie.sample_ranges(data, tables[0]) for position in range(start, end, 12))
+               for start, end in table.ranges for position in range(start, end, 12))
 
 
 MOVIE = movie.Policy(
     boxes={
-        b"moov": {b"mvhd", b"trak", b"mvex"},
-        b"mvex": {b"mehd", b"trex"},
+        b"moov": {b"mvhd", b"trak"},  # mvex, which only says fragments may follow, goes
         b"trak": {b"tkhd", b"tref", b"edts", b"mdia", b"tapt"},
         b"tapt": {b"clef", b"prof", b"enof"},  # QuickTime's display sizes
         b"edts": {b"elst"},
-        b"mdia": {b"mdhd", b"hdlr", b"minf"},
+        b"mdia": {b"mdhd", b"hdlr", b"elng", b"minf"},  # elng: the language, such as zh-Hant
         b"minf": {b"vmhd", b"smhd", b"gmhd", b"hdlr", b"dinf", b"stbl"},  # hdlr: QuickTime's data handler
         b"gmhd": {b"gmin"},  # the header of a scene illuminance track
         b"dinf": {b"dref"},
@@ -167,20 +170,22 @@ def cleaned(data, buffer):
     top = top_boxes(data)
     if {found.kind for found in top} & REFUSED:
         raise unsupported("fragmented video")
+    if top[0].kind == b"ftyp":
+        check_brands(data, top[0])
     movies = [found for found in top if found.kind == b"moov"]
     if len(movies) != 1:
         raise StructureError("no single movie box")
+    check_spherical(data, movies[0])
     kept = movie.clean(buffer, movies[0], MOVIE)
     for found in top:
         if found.kind not in KEPT:
             movie.empty(buffer, found)
     media = media_spans(top)
     used = movie.movie_ranges(buffer, movies[0])
-    if not inside(used, media):
+    if not movie.inside(used, media):
         raise StructureError("samples outside the media data")
-    for start, end in media:
-        for gap in movie.gaps(used, start, end):
-            movie.zero(buffer, *gap)
+    for gap in movie.uncovered(used, media):
+        movie.zero(buffer, *gap)
     # Emptied boxes at the very end, and anything else there, hold no offsets anyone needs.
     return max(found.end for found in top if found.kind in KEPT), kept
 
@@ -199,13 +204,25 @@ def top_boxes(data):
     return found
 
 
+def check_brands(data, ftyp):
+    """A file type box: a major brand, a minor version, which is kept as it
+    is, and compatible brands, all of them known."""
+    brands = [bytes(data[p:p + 4]) for p in range(ftyp.content, ftyp.end, 4)]
+    known = BRANDS | {QUICKTIME}
+    if (ftyp.end - ftyp.content) % 4 or len(brands) < 2 or brands[0] not in known or \
+            set(brands[2:]) - known - {PADDING}:  # brands[1] is the minor version
+        raise unsupported("file type " + b" ".join(brands[:1] + brands[2:]).decode("latin-1"))
+
+
+def check_spherical(data, moov):
+    for trak in bmff.boxes(data, moov.content, moov.end):
+        if trak.kind == b"trak" and any(found.kind == b"uuid" and data[found.content:found.content + 16] == SPHERICAL
+                                        for found in bmff.boxes(data, trak.content, trak.end)):
+            raise unsupported("360-degree video")
+
+
 def media_spans(top):
     return [(found.content, found.end) for found in top if found.kind == b"mdat"]
-
-
-def inside(used, media):
-    """Whether every sample lies in a media data box."""
-    return all(start == end or any(a <= start and end <= b for a, b in media) for start, end in used)
 
 
 # ---------------------------------------------------------------- verification
@@ -239,9 +256,9 @@ def check(original, rebuilt):
         movie.fail("no video track kept")
     media = media_spans(top)
     used = movie.movie_ranges(rebuilt, movies[0])
-    if not inside(used, media):
+    if not movie.inside(used, media):
         movie.fail("samples outside the media data")
     if not movie.same(original, rebuilt, used):
         movie.fail("samples changed")
-    if not movie.zeroed(rebuilt, [gap for start, end in media for gap in movie.gaps(used, start, end)]):
+    if not movie.zeroed(rebuilt, movie.uncovered(used, media)):
         movie.fail("unused media data kept")
