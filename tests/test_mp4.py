@@ -68,7 +68,7 @@ def table(offset, sizes):
 
 def track(ident, kind, entry, offset, sizes, references=b"", extra=b"", header=b"vmhd"):
     media_header = {b"vmhd": full(b"vmhd", 0, bytes(8), flags=1), b"smhd": full(b"smhd", 0, bytes(4)),
-                    b"gmhd": box(b"gmhd", MARKER)}[header]
+                    b"gmhd": box(b"gmhd", MARKER), b"gmin": box(b"gmhd", full(b"gmin", 0, bytes(12)))}[header]
     minf = box(b"minf", media_header + handler(b"alis", b"Core Media Data Handler " + MARKER, b"dhlr")
                + box(b"dinf", full(b"dref", 0, struct.pack(">I", 1) + full(b"alis", 0, b"", flags=1)))
                + box(b"stbl", full(b"stsd", 0, struct.pack(">I", 1) + entry) + table(offset, sizes)))
@@ -115,6 +115,18 @@ def movie_file(quicktime=True, typed=True, tracks=None, movie_extra=b"", top_ext
                + movie_extra)
     tail = box(b"moof", MARKER) if fragmented else b""
     return head + box(b"mdat", media) + moov + tail + box(b"sefd", MARKER) + b"TRAILING " + MARKER
+
+
+def scene_illuminance(key=b"com.apple.quicktime.scene-illuminance", unit=b"com.apple.quicktime.milli-lux"):
+    """Apple's scene illuminance sample entry, as iOS writes it: one key, its
+    unit, a structural dependency and a conforming 32-bit unsigned type."""
+    item = (box(b"keyd", b"mdta" + key) + box(b"dtyp", struct.pack(">I", 1) + unit)
+            + box(b"sdpd", box(b"sdpi", bytes(4))) + box(b"ctps", box(b"dtyp", struct.pack(">II", 0, 77))))
+    return box(b"mebx", bytes(6) + struct.pack(">H", 1) + box(b"keys", box(struct.pack(">I", 1), item)))
+
+
+def illuminance(*millilux):
+    return [struct.pack(">III", 12, 1, value) for value in millilux]
 
 
 def boxes_at(data, path):
@@ -178,6 +190,33 @@ class MovieTests(unittest.TestCase):
         for result in tampered:
             with self.subTest(size=len(result)), self.assertRaises(VerificationError):
                 mp4.verify(data, result)
+
+    def test_scene_illuminance_that_iphones_show_hdr_video_with_stays(self):
+        video = (1, b"vide", visual_entry(b"hvc1", box(b"hvcC", HVCC)), VIDEO, b"", b"vmhd")
+        lux = illuminance(69000, 68000, 100_000_000)
+        data = movie_file(tracks=[video, (2, b"meta", scene_illuminance(), lux, box(b"rndr", struct.pack(">I", 1)),
+                                          b"gmin")])
+        rebuilt = self.assertCleaned(data)
+        self.assertEqual(len(boxes_at(rebuilt, [b"moov", b"trak"])), 2)
+        self.assertIn(scene_illuminance(), rebuilt)
+        self.assertEqual(rebuilt.find(b"".join(lux)), data.find(b"".join(lux)))
+        # Anything else Apple might render with is refused, as are values out of range.
+        variants = {
+            "another key": scene_illuminance(key=b"com.apple.quicktime.scene-illuminancf"),
+            "another unit": scene_illuminance(unit=b"com.apple.quicktime.micro-lux"),
+        }
+        for reason, entry in variants.items():
+            with self.subTest(reason):
+                self.assertRefused(movie_file(tracks=[video, (2, b"meta", entry, lux, box(b"rndr", struct.pack(">I", 1)),
+                                                               b"gmin")]))
+        for reason, samples in {"out of range": illuminance(100_000_001), "long": [lux[0] + bytes(4)],
+                                "another key": [struct.pack(">III", 12, 2, 1)]}.items():
+            with self.subTest(reason):
+                self.assertRefused(movie_file(tracks=[video, (2, b"meta", scene_illuminance(), samples,
+                                                              box(b"rndr", struct.pack(">I", 1)), b"gmin")]))
+        # Without the reference it shows nothing, and goes like any metadata track.
+        plain = self.assertCleaned(movie_file(tracks=[video, (2, b"meta", scene_illuminance(), lux, b"", b"gmin")]))
+        self.assertEqual(len(boxes_at(plain, [b"moov", b"trak"])), 1)
 
     def test_what_cannot_be_cleaned_safely_is_refused(self):
         video = (1, b"vide", visual_entry(b"avc1", box(b"avcC", bytes(7))), VIDEO, b"", b"vmhd")

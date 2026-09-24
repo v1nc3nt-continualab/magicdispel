@@ -25,13 +25,14 @@ TIMED = {b"mvhd", b"tkhd", b"mdhd"}
 HANDLER_FIELDS = 12        # a handler's version, flags and types; its vendor, flags and name follow
 VISUAL_FIELDS = 78         # bytes of a visual sample entry before its boxes
 SOUND_FIELDS = 28          # of a sound sample entry; QuickTime's versions 1 and 2 add more
+SAMPLE_FIELDS = 8          # of any other: reserved bytes and a data reference index
 QUICKTIME_SOUND = {1: 16, 2: 36}
 VISUAL_HANDLERS = {b"pict", b"vide", b"auxv"}
 VENDOR = (12, 16)          # within a visual or sound entry: QuickTime's vendor code
 COMPRESSOR_NAME = (42, 74)  # within a visual entry
 # Payload sizes of fixed-size boxes, by version where they have versions 0 and 1.
 FIXED_SIZES = {b"mvhd": (100, 112), b"tkhd": (84, 96), b"mdhd": (24, 36), b"cslg": (24, 44),
-               b"vmhd": 12, b"smhd": 8, b"nmhd": 4, b"clef": 12, b"prof": 12, b"enof": 12}
+               b"vmhd": 12, b"smhd": 8, b"nmhd": 4, b"gmin": 16, b"clef": 12, b"prof": 12, b"enof": 12}
 # Tables of a count and that many entries: (bytes before the count, entry size by version).
 TABLES = {b"stts": (4, (8, 8)), b"ctts": (4, (8, 8)), b"stss": (4, (4, 4)), b"stps": (4, (4, 4)),
           b"stsc": (4, (12, 12)), b"stco": (4, (4, 4)), b"co64": (4, (8, 8)), b"elst": (4, (12, 20))}
@@ -65,6 +66,10 @@ class Policy:
         tracks they point to.
     strict: refuse sample entries holding boxes the policy does not list,
         rather than emptying those boxes.
+    rendering: a function (data, track) telling whether a track of a removed
+        handler type is one that another track is shown with ('rndr'), and
+        that the policy recognizes exactly; such a track is kept. A removed
+        track that another is shown with is refused otherwise.
     """
     boxes: dict
     entries: dict
@@ -73,6 +78,7 @@ class Policy:
     references: frozenset = None
     dangling: frozenset = frozenset()
     strict: bool = False
+    rendering: object = None
 
 
 class Track(NamedTuple):
@@ -127,13 +133,14 @@ def track_references(data, trak):
     return references
 
 
-def removed_tracks(found, policy):
+def removed_tracks(data, found, policy):
     """The IDs of the tracks that go. Any other track the policy does not keep
     is refused, and so is a reference that removing them would break."""
     chapters = {ident for track in found for kind, idents in track.references if kind == b"chap" for ident in idents}
     removed = {track.ident for track in found
-               if track.handler in policy.removed or (policy.chapters and track.handler == b"text"
-                                                      and track.ident in chapters)}
+               if (track.handler in policy.removed or (policy.chapters and track.handler == b"text"
+                                                       and track.ident in chapters))
+               and not (policy.rendering and policy.rendering(data, track))}
     for track in found:
         if track.ident not in removed and track.handler not in policy.entries:
             raise unsupported("%s track" % track.handler.decode("latin-1"))
@@ -156,7 +163,7 @@ def removed_tracks(found, policy):
 def clean(buffer, moov, policy):
     """Clean a movie box in place, as the policy says; [Track] of those kept."""
     found = tracks(buffer, moov)
-    removed = removed_tracks(found, policy)
+    removed = removed_tracks(buffer, found, policy)
     for track in found:
         if track.ident in removed:
             empty(buffer, track.box)
@@ -211,7 +218,8 @@ def sample_entries(data, stsd, track_handler, policy):
     for entry in bmff.boxes(data, stsd.content + 8, stsd.end):
         if entry.kind not in types:
             raise unsupported("sample entry " + entry.kind.decode("latin-1"))
-        fields = VISUAL_FIELDS if track_handler in VISUAL_HANDLERS else SOUND_FIELDS
+        fields = (VISUAL_FIELDS if track_handler in VISUAL_HANDLERS
+                  else SOUND_FIELDS if track_handler == b"soun" else SAMPLE_FIELDS)
         if fields == SOUND_FIELDS and entry.end - entry.content >= fields and version == 0:
             # QuickTime sound entries of versions 1 and 2 have more fields. In ISO files a
             # version 1 entry, of the same size as version 0, only follows a version 1
@@ -244,9 +252,11 @@ def entry_boxes(data, entry, fields):
 
 
 def entry_fields(entry, track_handler):
-    """The fields of a sample entry that are cleared: its vendor code and, in a
-    visual entry, its compressor name."""
-    spans = [(entry.content + VENDOR[0], entry.content + VENDOR[1])]
+    """The fields of a sample entry that are cleared: in a visual or sound
+    entry its vendor code and, in a visual one, its compressor name."""
+    spans = []
+    if track_handler in VISUAL_HANDLERS or track_handler == b"soun":
+        spans.append((entry.content + VENDOR[0], entry.content + VENDOR[1]))
     if track_handler in VISUAL_HANDLERS:
         spans.append((entry.content + COMPRESSOR_NAME[0], entry.content + COMPRESSOR_NAME[1]))
     return spans
@@ -349,12 +359,21 @@ def sample_tables(data, start, end):
             yield from sample_tables(data, found.content, found.end)
 
 
-def sample_ranges(data, stbl):
-    """(start, end) of each chunk of samples, from stsc, stsz and stco/co64."""
+def sample_sizes(data, stbl):
+    """The size of each sample, from stsz."""
     parts = {found.kind: found.content for found in bmff.boxes(data, stbl.content, stbl.end)}
     try:
         fixed, count = struct.unpack_from(">II", data, parts[b"stsz"] + 4)
-        sizes = [fixed] * count if fixed else list(struct.unpack_from(">%dI" % count, data, parts[b"stsz"] + 12))
+        return [fixed] * count if fixed else list(struct.unpack_from(">%dI" % count, data, parts[b"stsz"] + 12))
+    except (KeyError, struct.error):
+        raise unsupported("sample table")
+
+
+def sample_ranges(data, stbl):
+    """(start, end) of each chunk of samples, from stsc, stsz and stco/co64."""
+    parts = {found.kind: found.content for found in bmff.boxes(data, stbl.content, stbl.end)}
+    sizes = sample_sizes(data, stbl)
+    try:
         runs = [struct.unpack_from(">III", data, parts[b"stsc"] + 8 + 12 * n)[:2]
                 for n in range(struct.unpack_from(">I", data, parts[b"stsc"] + 4)[0])]
         wide = b"co64" in parts
@@ -428,7 +447,8 @@ def check(original, rebuilt, moov, policy):
     found = tracks(rebuilt, moov)
     idents = {track.ident for track in found}
     for track in found:
-        if track.handler not in policy.entries:
+        if track.handler not in policy.entries or (track.handler in policy.removed and not (
+                policy.rendering and policy.rendering(rebuilt, track))):
             fail("%r track kept" % track.handler)
         for kind, targets in track.references:
             if not set(targets) <= idents or (policy.references is not None and kind not in policy.references):

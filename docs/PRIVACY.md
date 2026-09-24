@@ -25,8 +25,9 @@ anonymization.
   proportions are kept.
 - **Video.** Video and sound tracks, with every sample copied byte for byte; their decoder
   configurations, rotation and display sizes, edit lists, color and HDR (HDR10, HLG, Dolby
-  Vision); and Apple's spatial video information: which views there are, the cameras' baseline
-  and the projection.
+  Vision); Apple's spatial video information: which views there are, the cameras' baseline
+  and the projection; and Apple's per-frame scene illuminance, which iPhones mark as used to
+  show their HDR video, and which says how bright the scene was, as the video itself shows.
 - **Structure.** Transparency, animation frames, timing and loop count, TIFF pages and page
   numbers, and the format's own headers.
 - **The file name**, with `_clean` added and without the dates, times and timestamps that
@@ -46,7 +47,7 @@ item properties such as descriptions, creation times and camera parameters; JPEG
 IDs; in image sequences, every box not needed to play them, and creation times, handler and
 encoder names; in videos, the location, device, software and dates of user data and metadata
 boxes, timed metadata tracks (GPS and motion data, face detection, Live Photo and motion photo
-data), timecode and chapter tracks, maker data such as GoPro's serial numbers and Samsung's SEF
+data, and any other than scene illuminance), timecode and chapter tracks, maker data such as GoPro's serial numbers and Samsung's SEF
 data, creation times, handler, vendor and compressor names, and media data no remaining track
 uses; TIFF EXIF and GPS directories, descriptions, private tags and sub-images; and unknown or
 private data blocks and data after the end of an image or video.
@@ -118,7 +119,9 @@ pairing of a Live Photo's video with its photo, or Samsung's slow-motion section
 Data hidden inside the compressed image data itself, for example in JPEG scans, VP8 or HEVC
 frames, GIF LZW data or unused palette entries, is copied along with the image. So is data
 inside video and sound samples, such as the SEI messages some encoders write into H.264 and
-HEVC frames. Detecting such steganography is beyond this tool.
+HEVC frames: the frames of an iPhone's Live Photo video, for one, carry an 8-byte value of
+unknown meaning that other videos lack. Decoder configurations (such as hvcC and avcC) are
+copied whole too, as the samples are. Detecting such steganography is beyond this tool.
 
 A JPEG gain map that only an Ultra HDR GContainer directory points to, with no multi-picture
 index, is not recognized: it sits after the end of the image and is removed as trailing data,
@@ -175,8 +178,10 @@ Vision video, an Apple spatial video, Pixel motion photo and HLG videos and Sams
 slow-motion videos; and ExifTool's. 48 clean: FFmpeg decodes identical frames from each, macOS
 AVFoundation sees the same video and sound tracks and shows the same frames, and ExifTool finds
 no private field. The other 16 are refused as designed: audio-only, fragmented and encrypted
-files, subtitles, a damaged file, Motion JPEG and a track needed to show the video. A 4.7 GB
-video is cleaned in under five seconds, with 24 MB of memory.
+files, subtitles, a damaged file, Motion JPEG and a track needed to show the video. Three
+videos from an iPhone 16 on iOS 27 (a Live Photo's video, an HDR video and an H.264 one)
+clean the same way, keeping their scene illuminance. A 4.7 GB video is cleaned in under five
+seconds, with 24 MB of memory.
 
 On macOS, Windows and Linux, CI runs the unit tests with Python 3.10 and 3.13, with and without
 ExifTool, and installs MagicDispel with the install scripts. On Windows and Linux, MagicDispel

@@ -13,8 +13,8 @@ Every run compares each cleaned output with its own input. Pillow must decode
 the same frames (a JPEG may leave out pictures after its first, such as
 previews); on macOS, ImageIO/ColorSync must render the same pixels, HDR,
 gain maps, orientation and DPI; a video must keep its video and sound tracks
-as AVFoundation sees them, and nothing else, and ffmpeg must decode the same
-frames and streams; the source must be untouched; and no probe marker (see
+as AVFoundation sees them, and any other track it keeps unchanged, and ffmpeg
+must decode the same frames and streams; the source must be untouched; and no probe marker (see
 make_probes.py) may survive. With --baseline, every sample must
 also keep its outcome, and outputs must not gain metadata tags the baseline
 output lacked. --identical additionally demands byte-identical outputs: the
@@ -525,9 +525,10 @@ def decoded_differences(before, after):
 
 
 def native_video_differences(before, after):
-    """A video must keep, in macOS, its video and sound tracks as they were,
-    and no other track, and frames macOS shows of the input must look the
-    same. Frames of codecs macOS does not decode are left to ffmpeg."""
+    """A video must keep, in macOS, its video and sound tracks as they were;
+    any other track it keeps (Apple's scene illuminance) must be one of the
+    input's, unchanged; and frames macOS shows of the input must look the same.
+    Frames of codecs macOS does not decode are left to ffmpeg."""
     if before.get("error"):
         return []
     if after.get("error"):
@@ -539,8 +540,8 @@ def native_video_differences(before, after):
     problems = []
     if playing(before) != playing(after):
         problems.append("macOS sees different video or sound tracks")
-    if len(playing(after)) != len(after.get("tracks", [])):
-        problems.append("output kept tracks other than video and sound")
+    if any(track not in before.get("tracks", []) for track in after.get("tracks", [])):
+        problems.append("output has a track that differs from the input's")
     if before.get("duration") != after.get("duration"):
         problems.append("macOS duration %s -> %s" % (before.get("duration"), after.get("duration")))
     if any(a != b for a, b in zip(before.get("frames", []), after.get("frames", [])) if a.get("srgb")):

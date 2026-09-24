@@ -18,6 +18,8 @@ copy of itself (see clean) without being read into memory.
 Data inside the compressed samples, such as the SEI messages of H.264 and
 HEVC, is copied with them, as image data is.
 """
+import struct
+
 from .. import icc
 from ..errors import FormatError
 from . import bmff, movie
@@ -54,6 +56,38 @@ WAVE = dict.fromkeys({b"frma", b"mp4a", b"esds", b"alac", b"enda", b"chan", b"\0
 SOUND_BOXES = dict.fromkeys({b"esds", b"chan", b"chnl", b"srat", b"dac3", b"dec3", b"dac4", b"dOps", b"alac",
                              b"dfLa", b"pcmC", b"damr", b"mhaC", b"mhaP", b"iacb", b"ddts", b"udts", b"dmlp",
                              b"SA3D", b"btrt"}) | {b"wave": WAVE}
+# Apple's per-frame scene illuminance, which iPhones mark as used to show their
+# HDR video (a track reference 'rndr'): a metadata track with this one sample
+# entry, one key in milli-lux, and samples of one 32-bit value each, which
+# Apple documents as 0 to 100,000,000.
+SCENE_ILLUMINANCE = bytes(6) + struct.pack(">H", 1) + bmff.box(b"keys", bmff.box(struct.pack(">I", 1), (
+    bmff.box(b"keyd", b"mdta" + b"com.apple.quicktime.scene-illuminance")
+    + bmff.box(b"dtyp", struct.pack(">I", 1) + b"com.apple.quicktime.milli-lux")
+    + bmff.box(b"sdpd", bmff.box(b"sdpi", bytes(4)))
+    + bmff.box(b"ctps", bmff.box(b"dtyp", struct.pack(">II", 0, 77))))))
+ILLUMINANCE_SAMPLE = struct.pack(">II", 12, 1)  # a 12-byte item of key 1, then its value
+MAX_MILLILUX = 100_000_000
+
+
+def scene_illuminance(data, track):
+    """Whether a track is Apple's scene illuminance exactly, as SCENE_ILLUMINANCE
+    describes it, naming the tracks it helps show and nothing else."""
+    if track.handler != b"meta" or [kind for kind, _ in track.references] != [b"rndr"]:
+        return False
+    tables = list(movie.sample_tables(data, track.box.content, track.box.end))
+    if len(tables) != 1:
+        return False
+    stsd = [found for found in bmff.boxes(data, tables[0].content, tables[0].end) if found.kind == b"stsd"]
+    entries = list(bmff.boxes(data, stsd[0].content + 8, stsd[0].end)) if len(stsd) == 1 else []
+    if len(entries) != 1 or entries[0].kind != b"mebx" or data[entries[0].content:entries[0].end] != SCENE_ILLUMINANCE:
+        return False
+    if set(movie.sample_sizes(data, tables[0])) - {len(ILLUMINANCE_SAMPLE) + 4}:
+        return False
+    return all(data[position:position + 8] == ILLUMINANCE_SAMPLE
+               and int.from_bytes(data[position + 8:position + 12], "big") <= MAX_MILLILUX
+               for start, end in movie.sample_ranges(data, tables[0]) for position in range(start, end, 12))
+
+
 MOVIE = movie.Policy(
     boxes={
         b"moov": {b"mvhd", b"trak", b"mvex"},
@@ -62,19 +96,22 @@ MOVIE = movie.Policy(
         b"tapt": {b"clef", b"prof", b"enof"},  # QuickTime's display sizes
         b"edts": {b"elst"},
         b"mdia": {b"mdhd", b"hdlr", b"minf"},
-        b"minf": {b"vmhd", b"smhd", b"hdlr", b"dinf", b"stbl"},  # hdlr: QuickTime's data handler
+        b"minf": {b"vmhd", b"smhd", b"gmhd", b"hdlr", b"dinf", b"stbl"},  # hdlr: QuickTime's data handler
+        b"gmhd": {b"gmin"},  # the header of a scene illuminance track
         b"dinf": {b"dref"},
         b"stbl": {b"stsd", b"stts", b"ctts", b"cslg", b"stsc", b"stsz", b"stco", b"co64", b"stss", b"stps",
                   b"stsh", b"sdtp", b"sbgp", b"sgpd", b"subs", b"padb"},
     },
-    entries={b"vide": (VIDEO_ENTRIES, VIDEO_BOXES), b"soun": (SOUND_ENTRIES, SOUND_BOXES)},
+    entries={b"vide": (VIDEO_ENTRIES, VIDEO_BOXES), b"soun": (SOUND_ENTRIES, SOUND_BOXES),
+             b"meta": ({b"mebx"}, {b"keys": None})},  # only scene illuminance: see rendering
     removed=frozenset({b"meta", b"tmcd", b"hint"}),
     chapters=True,
     # Between kept tracks: synchronization, hint, depth, parallax, auxiliary and
-    # layered video. To removed ones: timecode, chapters, descriptions, hints.
-    references=frozenset({b"sync", b"hind", b"vdep", b"vplx", b"auxl", b"sbas", b"scal", b"fall"}),
+    # layered video, rendering. To removed ones: timecode, chapters, descriptions, hints.
+    references=frozenset({b"sync", b"hind", b"vdep", b"vplx", b"auxl", b"sbas", b"scal", b"fall", b"rndr"}),
     dangling=frozenset({b"tmcd", b"chap", b"cdsc", b"hint"}),
-    strict=True)
+    strict=True,
+    rendering=scene_illuminance)
 
 
 def box_types(boxes):
@@ -82,8 +119,9 @@ def box_types(boxes):
     return set(boxes).union(*(box_types(children) for children in boxes.values() if children))
 
 
-# Every box type a clean video may hold, which this module checks itself.
-STRUCTURE = (KEPT | {b"free"} | movie.SELF_REFERENCES | set().union(*MOVIE.boxes.values())
+# Every box type a clean video may hold, which this module checks itself;
+# track references are boxes too.
+STRUCTURE = (KEPT | {b"free"} | movie.SELF_REFERENCES | set().union(*MOVIE.boxes.values()) | MOVIE.references
              | set().union(*(entries | box_types(boxes) for entries, boxes in MOVIE.entries.values())))
 
 

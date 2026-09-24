@@ -5,10 +5,13 @@
 Videos: MP4 and QuickTime (MOV) files are cleaned too, without changing a single frame. Tested
 on 64 public sample videos, GoPro, iPhone (Dolby Vision, spatial video), Pixel and Samsung ones
 among them: 48 clean, FFmpeg decodes identical frames from each, and macOS plays each the same;
-the other 16 are refused as designed.
+the other 16 are refused as designed. Three videos from an iPhone 16 on iOS 27 clean the same
+way.
 
 - Kept: video and sound tracks with every sample, decoder configurations, rotation, edit lists,
-  color, HDR, Dolby Vision and Apple's spatial video information.
+  color, HDR, Dolby Vision, Apple's spatial video information, and Apple's per-frame scene
+  illuminance, which iPhones mark as used to show their HDR video. It is kept only in its exact
+  layout; any other track another is shown with is refused.
 - Removed: location, device, software and dates in user data and metadata boxes; timed
   metadata tracks (GPS and motion, face detection, Live Photo and motion photo data), timecode
   and chapter tracks, with their samples; maker data such as GoPro's serial numbers and
@@ -17,7 +20,8 @@ the other 16 are refused as designed.
 - Refused: fragmented, encrypted and audio-only files, subtitle tracks, codecs and sample
   entry boxes not on the list, and a removed track that another needs to be shown.
 - A video is cleaned in a copy next to the original, never read into memory: a 4.7 GB video
-  takes under five seconds. ExifTool's second check reads that copy from its path.
+  takes under five seconds. ExifTool's second check reads that copy from its path, with the
+  timed metadata in its samples.
 - A video keeps its extension, .mp4 or .mov, whatever its content: players may read one file
   differently by its extension. `--anonymous` names videos `video_<random>.mov`.
 - Image sequences (HEIF, AVIF) and videos share one cleaner, which also checks that headers and

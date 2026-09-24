@@ -109,7 +109,8 @@ def read(exiftool, data, path=None):
         result = run(exiftool, arguments + ["-"], data)
     else:
         # The path is an argument file on standard input: see the module docstring.
-        result = run(exiftool, arguments + ["-api", "LargeFileSupport=1", "-@", "-"],
+        # -ee reads the timed metadata a video keeps too, sample by sample.
+        result = run(exiftool, arguments + ["-ee", "-api", "LargeFileSupport=1", "-@", "-"],
                      os.fsdecode(path).encode("utf-8") + b"\n")
     tags = json.loads(result.stdout)[0]
     for key, value in tags.items():
