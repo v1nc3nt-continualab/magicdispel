@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.5 (2026-09-24)
 
 HDR photos taken with iOS 27 are cleaned: 0.1.4 refused them ("unsupported ICC color tag
 HAGC"). Tested with an iPhone 16 on iOS 27.0; the clean copy renders identically in macOS, in
