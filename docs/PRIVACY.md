@@ -94,6 +94,11 @@ Data hidden inside the compressed image data itself, for example in JPEG scans, 
 frames, GIF LZW data or unused palette entries, is copied along with the image. Detecting such
 steganography is beyond this tool.
 
+A JPEG gain map that only an Ultra HDR GContainer directory points to, with no multi-picture
+index, is not recognized: it sits after the end of the image and is removed as trailing data,
+so such a photo keeps its SDR look but loses its HDR one. Ultra HDR photos from Android carry a
+multi-picture index and keep their gain maps.
+
 ## File-system information
 
 Outputs are new files containing only the verified bytes. Extended attributes, macOS resource

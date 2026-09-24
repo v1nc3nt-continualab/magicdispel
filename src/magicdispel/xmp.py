@@ -7,6 +7,7 @@ import math
 import xml.etree.ElementTree as ET
 
 RDF = "http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+XMP_NOTE = "http://ns.adobe.com/xmp/note/"  # where a packet names its extension
 ADOBE_GAIN_MAP = "http://ns.adobe.com/hdr-gain-map/1.0/"
 APPLE_PIXEL_DATA = "http://ns.apple.com/pixeldatainfo/1.0/"
 APPLE_GAIN_MAP = "http://ns.apple.com/HDRGainMap/1.0/"
@@ -33,17 +34,8 @@ class XMPError(ValueError):
 
 def hdr_fields(packet):
     """[(namespace, name, value or [values])] for the recognized HDR fields."""
-    packet = packet.rstrip(b"\0 \t\r\n")
-    if not packet:
-        return []
-    if b"<!DOCTYPE" in packet or b"<!ENTITY" in packet:
-        raise XMPError("XMP with a document type or entities")
-    try:
-        root = ET.fromstring(packet)
-    except ET.ParseError as error:
-        raise XMPError(str(error)) from error
     fields = []
-    for description in root.iter("{%s}Description" % RDF):
+    for description in descriptions(packet):
         for name, value in description.attrib.items():
             if permitted(name, value):
                 fields.append((*split(name), value))
@@ -57,6 +49,33 @@ def hdr_fields(packet):
                         and permitted(child.tag, values):
                     fields.append((*split(child.tag), values))
     return fields
+
+
+def extension(packet):
+    """The GUID of the extended packet a main packet names (XMP part 3), as
+    bytes, or None. Large XMP continues there, and Ultra HDR photos may keep
+    their gain-map fields in it."""
+    for description in descriptions(packet):
+        value = description.get("{%s}HasExtendedXMP" % XMP_NOTE)
+        child = description.find("{%s}HasExtendedXMP" % XMP_NOTE)
+        value = value if value is not None else child.text if child is not None else None
+        if value and len(value) == 32 and all(c in "0123456789ABCDEFabcdef" for c in value):
+            return value.encode("ascii")
+    return None
+
+
+def descriptions(packet):
+    """The rdf:Description elements of a packet."""
+    packet = packet.rstrip(b"\0 \t\r\n")
+    if not packet:
+        return []
+    if b"<!DOCTYPE" in packet or b"<!ENTITY" in packet:
+        raise XMPError("XMP with a document type or entities")
+    try:
+        root = ET.fromstring(packet)
+    except ET.ParseError as error:
+        raise XMPError(str(error)) from error
+    return list(root.iter("{%s}Description" % RDF))
 
 
 def hdr_packet(fields):

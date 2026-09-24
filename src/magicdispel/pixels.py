@@ -58,10 +58,13 @@ def compare(original, rebuilt, kind, frames=None):
 
 def digest(data, kind, frames=None):
     """A digest of every displayed frame, or of the given ones: its pixels as
-    decoded, their mode and palette, timing, transparency and the repeat count."""
+    decoded, their mode and palette, timing, transparency and the repeat count.
+    Pillow may show fewer frames than a file holds (an Ultra HDR JPEG as its
+    primary image alone, without the gain map); only those are given."""
     result = hashlib.sha256()
     with opened(data, kind) as picture:
-        frames = range(getattr(picture, "n_frames", 1)) if frames is None else frames
+        shown = getattr(picture, "n_frames", 1)
+        frames = range(shown) if frames is None else [index for index in frames if index < shown]
         result.update(repr((picture.size, len(frames), picture.info.get("loop"),
                             picture.info.get("default_image", False))).encode())
         for index in frames:

@@ -2,11 +2,20 @@
 
 ## Unreleased
 
-- Android photos with an Ultra HDR gain map were refused ("ISO gain map metadata, unknown
-  flags") when their ISO 21496-1 metadata set reserved flag bits, as some phones write it.
-  Reserved bits are now ignored, as the reference decoders (libavif, libultrahdr) ignore them.
-  In JPEG, anything after the fields the standard defines is dropped instead of refusing the
-  photo. Metadata with a zero denominator, which decoders reject, is still refused.
+Android's Ultra HDR photos clean again: 0.1.2 refused them. Tested with Google's own Ultra
+HDR samples (libultrahdr and Skia): every one now cleans, and renders identically in macOS,
+in SDR and HDR.
+
+- 0.1.2 refused Ultra HDR photos as "cannot be decoded to check the result". Pillow shows such
+  a photo as its primary image alone, without the gain map, and the pixel check asked it for
+  the gain map. The check now compares the frames Pillow shows; the gain map's own data is
+  still checked byte for byte.
+- ISO 21496-1 gain-map metadata was refused as "unknown flags" when a phone set its reserved
+  flag bits. Reserved bits are now ignored, as the reference decoders (libavif, libultrahdr)
+  ignore them. In JPEG, anything after the fields the standard defines is dropped instead of
+  refusing the photo. Metadata with a zero denominator, which decoders reject, is still refused.
+- HDR fields that a JPEG keeps in extended XMP (the continuation of a large packet, which the
+  main packet names) are kept, in the one fresh packet.
 
 ## 0.1.2 (2026-09-24)
 

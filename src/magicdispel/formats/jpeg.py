@@ -3,14 +3,15 @@
 Copied unchanged: quantization and Huffman tables, frame and scan headers with
 their compressed data, restart intervals, Adobe color-transform information,
 and HDR data (ISO 21496-1 gain-map metadata up to the end of the fields its
-standard defines, Apple gain curves and Apple's MPF marker). Written afresh: JFIF (density
-only, no thumbnail), EXIF (orientation, resolution, color space, Apple HDR
-headroom), XMP (recognized HDR fields), the ICC profile (sanitized) and the
-multi-picture (MPF) index, which is how HDR gain maps are attached. Of the
-images an MPF index lists, the primary image and its HDR gain maps are kept
-and previews are dropped; any other kind of image is refused. Everything else
-is dropped, including comments, IPTC/Photoshop blocks, C2PA, thumbnails, maker
-notes and trailing data.
+standard defines, Apple gain curves and Apple's MPF marker). Written afresh:
+JFIF (density only, no thumbnail), EXIF (orientation, resolution, color space,
+Apple HDR headroom), XMP (recognized HDR fields, also from an extended
+packet), the ICC profile (sanitized) and the multi-picture (MPF) index, which
+is how HDR gain maps are attached. Of the images an MPF index lists, the
+primary image and its HDR gain maps are kept and previews are dropped; any
+other kind of image is refused. Everything else is dropped, including
+comments, IPTC/Photoshop blocks, C2PA, thumbnails, maker notes and trailing
+data.
 """
 import hashlib
 import struct
@@ -26,6 +27,8 @@ FRAME_HEADERS = {0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7, 0xC9, 0xCA, 0xCB, 0xC
 CODING = FRAME_HEADERS | {0xC4, 0xCC, 0xDB, 0xDD, 0xDC, TEM, SOS}
 MAX_PAYLOAD = 65533  # a segment's 16-bit length also counts its own two bytes
 EXIF_ID, XMP_ID = b"Exif\0\0", b"http://ns.adobe.com/xap/1.0/\0"
+XMP_EXTENSION_ID = b"http://ns.adobe.com/xmp/extension/\0"
+EXTENSION_HEADER = len(XMP_EXTENSION_ID) + 32 + 8  # then a GUID, the full length and an offset
 ICC_ID, MPF_ID = b"ICC_PROFILE\0", b"MPF\0"
 ISO_GAIN_MAP_ID, APPLE_CURVE_ID = b"urn:iso:std:iso:ts:21496:-1\0", b"AROT\0\0"
 JFIF_FIELDS = 12  # identifier, version, density unit and density; a thumbnail may follow
@@ -113,15 +116,46 @@ def rewritten_exif(parsed):
 
 
 def rewritten_xmp(parsed):
+    """One fresh packet with the HDR fields of the main XMP packet and of the
+    extended packet it names, if that is whole."""
     packets = [payload[len(XMP_ID):] for marker, _, _, payload in parsed
                if marker == APP1 and payload.startswith(XMP_ID)]
+    if not packets:
+        return None
     try:
-        packet = xmp.hdr_packet(xmp.hdr_fields(packets[0])) if packets else b""
+        fields = xmp.hdr_fields(packets[0])
+        guid = xmp.extension(packets[0])
+        extended = extended_xmp(parsed, guid) if guid else None
+        if extended:
+            named = {field[:2] for field in fields}
+            fields += [field for field in xmp.hdr_fields(extended) if field[:2] not in named]
+        packet = xmp.hdr_packet(fields)
     except xmp.XMPError as error:
         raise FormatError("unsupported_part", format="JPEG", part="XMP: " + str(error))
     if len(XMP_ID) + len(packet) > MAX_PAYLOAD:
         raise FormatError("unsupported_part", format="JPEG", part="oversized HDR XMP")
     return segment(APP1, XMP_ID + packet) if packet else None
+
+
+def extended_xmp(parsed, guid):
+    """The extended XMP packet with this GUID, joined from its segments, or
+    None if they do not make it up exactly. Each holds the GUID, the packet's
+    full length, its piece's offset, then the piece."""
+    pieces, total = {}, None
+    for marker, _, _, payload in parsed:
+        if marker == APP1 and payload.startswith(XMP_EXTENSION_ID) and len(payload) >= EXTENSION_HEADER:
+            if payload[len(XMP_EXTENSION_ID):len(XMP_EXTENSION_ID) + 32] != guid:
+                continue
+            length, offset = struct.unpack_from(">II", payload, len(XMP_EXTENSION_ID) + 32)
+            if total not in (None, length) or offset in pieces:
+                return None
+            total, pieces[offset] = length, payload[EXTENSION_HEADER:]
+    packet = b""
+    for offset in sorted(pieces):
+        if offset != len(packet):
+            return None
+        packet += pieces[offset]
+    return packet if pieces and len(packet) == total else None
 
 
 def sanitized_profile_slices(parsed):
