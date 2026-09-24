@@ -55,9 +55,11 @@ edits. Tested HEIC and HDR JPEG files render identically on macOS in SDR and HDR
   holds exactly the strips or tiles its image needs, uncompressed ones at exactly their size, and
   every kept tag has exactly the number of values the specification gives it. HEIF item
   properties are kept only if they say how to decode and show an image. JPEG multi-picture
-  indexes are written fresh. Every kept ICC color tag, ISO 21496-1 gain-map metadata block and
-  Apple HDR curve must match its type's layout: a byte outside it that is not zero, after a
-  curve, in a reserved field or between the parts of a lookup table, gets the file refused.
+  indexes are written fresh. Every kept ICC color tag and Apple HDR curve must match its type's
+  layout: a byte outside it that is not zero, after a curve, in a reserved field or between
+  the parts of a lookup table, gets the file refused. ISO 21496-1 gain-map metadata keeps only
+  the fields its standard defines, which are all a decoder reads: in JPEG anything after them
+  is dropped, and in HEIF, where an item cannot be shortened in place, it gets the file refused.
 - **Image sequences.** Animated AVIF and HEIF files keep only the boxes on a fixed list:
   headers, tracks, edits and sample tables, and in each sample entry its decoder
   configuration and color and display properties. Readers skip boxes they do not know, so

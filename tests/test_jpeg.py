@@ -209,15 +209,27 @@ class RebuildTests(unittest.TestCase):
             jpeg.rebuild(with_segments(encode(gradient()), app(0xEA, curve + MARKER)))
         self.assertEqual(caught.exception.key, "unsupported_part")
 
-    def test_iso_gain_map_metadata_is_kept_only_in_its_exact_layout(self):
+    def test_iso_gain_map_metadata_keeps_the_fields_of_its_layout_only(self):
         namespace = b"urn:iso:std:iso:ts:21496:-1\0"
-        # The primary image's version fields alone, then metadata of one and of three channels.
-        for metadata in (bytes(4), iso_metadata(), iso_metadata(channels=3, common=True)):
-            with self.subTest(size=len(metadata)):
-                self.assertRebuilt(with_segments(encode(gradient()), app(0xE2, namespace + metadata)))
+
+        def kept(metadata):
+            rebuilt = self.assertRebuilt(with_segments(encode(gradient()), app(0xE2, namespace + metadata)))
+            return next(p for m, _, _, p in jpeg.segments(rebuilt) if m == 0xE2 and p.startswith(namespace))
+
+        # As they are: the primary image's version fields alone, metadata of one and of
+        # three channels, reserved flag bits set (as phones do), a newer writer version.
+        reserved = iso_metadata()[:4] + bytes([iso_metadata()[4] | 0x33]) + iso_metadata()[5:]
         newer = struct.pack(">HH", 0, 1) + iso_metadata()[4:]
-        unknown_flag = iso_metadata()[:4] + bytes([iso_metadata()[4] | 0x01]) + iso_metadata()[5:]
-        for metadata in (iso_metadata(tail=MARKER), iso_metadata()[:-1], newer, unknown_flag, bytes(20)):
+        for metadata in (bytes(4), iso_metadata(), iso_metadata(channels=3, common=True), reserved, newer):
+            with self.subTest(flags=metadata[4:5]):
+                self.assertEqual(kept(metadata), namespace + metadata)
+        # Anything after the fields, which no decoder reads, is dropped.
+        for metadata in (iso_metadata(tail=MARKER), newer + MARKER):
+            with self.subTest(tail=len(metadata)):
+                self.assertEqual(kept(metadata), namespace + metadata[:-len(MARKER)])
+        # Cut short, of a minimum version a decoder of version 0 may not read, or with zero denominators.
+        unreadable = struct.pack(">HH", 1, 1) + iso_metadata()[4:]
+        for metadata in (iso_metadata()[:-1], unreadable, bytes(20), bytes(61)):
             with self.subTest(size=len(metadata)), self.assertRaises(FormatError) as caught:
                 jpeg.rebuild(with_segments(encode(gradient()), app(0xE2, namespace + metadata)))
             self.assertEqual(caught.exception.key, "unsupported_part")

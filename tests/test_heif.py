@@ -292,13 +292,18 @@ class ToneMapTests(HeifTests):
                          refs=[(b"dimg", 2, [1, 3])], group=(2, 1))
 
     def test_metadata_in_its_exact_layout_is_kept(self):
-        rebuilt = self.assertRebuilt(self.tone_mapped(b"\0" + self.METADATA))
-        self.assertIn(b"\0" + self.METADATA, rebuilt)
+        reserved = self.METADATA[:4] + bytes([self.METADATA[4] | 0x33]) + self.METADATA[5:]
+        newer = struct.pack(">HH", 0, 1) + self.METADATA[4:]
+        for metadata in (self.METADATA, reserved, newer):
+            with self.subTest(metadata=metadata[:5]):
+                rebuilt = self.assertRebuilt(self.tone_mapped(b"\0" + metadata))
+                self.assertIn(b"\0" + metadata, rebuilt)
 
     def test_anything_else_is_refused(self):
-        newer = struct.pack(">HH", 0, 1) + self.METADATA[4:]
+        # An item cannot be shortened in place, so anything after the fields is refused.
+        unreadable = struct.pack(">HH", 1, 0) + self.METADATA[4:]
         for payload in (b"\0" + self.METADATA + MARKER, b"\0" + self.METADATA[:-4], b"\1" + self.METADATA,
-                        b"\0" + newer):
+                        b"\0" + unreadable, b"\0" + self.METADATA[:5] + bytes(56)):
             with self.subTest(size=len(payload)):
                 self.assertRefused(self.tone_mapped(payload), "unsupported_part")
 

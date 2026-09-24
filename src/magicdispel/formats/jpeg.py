@@ -2,8 +2,8 @@
 
 Copied unchanged: quantization and Huffman tables, frame and scan headers with
 their compressed data, restart intervals, Adobe color-transform information,
-and HDR data (ISO 21496-1 gain-map metadata in exactly its standard layout,
-Apple gain curves and Apple's MPF marker). Written afresh: JFIF (density
+and HDR data (ISO 21496-1 gain-map metadata up to the end of the fields its
+standard defines, Apple gain curves and Apple's MPF marker). Written afresh: JFIF (density
 only, no thumbnail), EXIF (orientation, resolution, color space, Apple HDR
 headroom), XMP (recognized HDR fields), the ICC profile (sanitized) and the
 multi-picture (MPF) index, which is how HDR gain maps are attached. Of the
@@ -95,6 +95,8 @@ def expected_segments(data):
             seen_xmp = True
         elif marker == APP2 and payload.startswith(ICC_ID):
             result.append(segment(APP2, payload[:ICC_HEADER] + next(profile_slices)))
+        elif marker == APP2 and payload.startswith(ISO_GAIN_MAP_ID):
+            result.append(segment(APP2, iso_gain_map(payload)))
         elif is_rendering_segment(marker, payload):
             result.append(data[start:end])
         elif marker in APPLICATION or marker == COM:
@@ -153,15 +155,19 @@ def sanitized_profile_slices(parsed):
     return [slices[index] for index in order]
 
 
+def iso_gain_map(payload):
+    """An ISO 21496-1 segment cut to the fields the standard defines, which are
+    all a decoder reads."""
+    metadata = payload[len(ISO_GAIN_MAP_ID):]
+    try:
+        return ISO_GAIN_MAP_ID + metadata[:gainmap.size(metadata)]
+    except gainmap.GainMapError as error:
+        raise FormatError("unsupported_part", format="JPEG", part="ISO gain map metadata, %s" % error)
+
+
 def is_rendering_segment(marker, payload):
-    """HDR data kept verbatim once its layout checks out: ISO 21496-1 gain-map
-    metadata and Apple's gain curve."""
-    if marker == APP2 and payload.startswith(ISO_GAIN_MAP_ID):
-        try:
-            gainmap.check(payload[len(ISO_GAIN_MAP_ID):])
-        except gainmap.GainMapError as error:
-            raise FormatError("unsupported_part", format="JPEG", part="ISO gain map metadata, %s" % error)
-        return True
+    """HDR data kept verbatim once its layout checks out: Apple's gain curve,
+    and Adobe's color-transform segment."""
     if marker in (APP2, APP10) and payload.startswith(APPLE_CURVE_ID):
         # The identifier, a point count, 4 bytes per point, then at most 64 zero bytes.
         points = len(APPLE_CURVE_ID)

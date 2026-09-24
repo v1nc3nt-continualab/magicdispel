@@ -228,7 +228,8 @@ def check_tone_maps(data, layout):
             try:
                 if payload[:1] != b"\0":
                     raise gainmap.GainMapError("tone map version")
-                gainmap.check(payload[1:], full=True)
+                if gainmap.size(payload[1:], full=True) != len(payload) - 1:
+                    raise gainmap.GainMapError("data after the metadata")
             except gainmap.GainMapError as error:
                 raise unsupported("gain map metadata, %s" % error)
 

@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Android photos with an Ultra HDR gain map were refused ("ISO gain map metadata, unknown
+  flags") when their ISO 21496-1 metadata set reserved flag bits, as some phones write it.
+  Reserved bits are now ignored, as the reference decoders (libavif, libultrahdr) ignore them.
+  In JPEG, anything after the fields the standard defines is dropped instead of refusing the
+  photo. Metadata with a zero denominator, which decoders reject, is still refused.
+
 ## 0.1.2 (2026-09-24)
 
 Fixes from an independent review, which built files that hid data where 0.1.1 did not look.
