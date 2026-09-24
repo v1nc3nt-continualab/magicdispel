@@ -58,11 +58,11 @@ VIDEO_BOXES = dict.fromkeys({b"avcC", b"hvcC", b"lhvC", b"av1C", b"vpcC", b"vvcC
                              b"uuid"}) | {b"vexu": SPATIAL}
 PRORES = {b"apch", b"apcn", b"apcs", b"apco", b"ap4h", b"ap4x"}
 # Sound: AAC and the rest of MPEG, Apple's lossless and positional audio
-# (APAC), Opus, FLAC (QuickTime's 'flac' too), Dolby, DTS, AMR, IAMF, and
-# uncompressed sound.
-SOUND_ENTRIES = {b"mp4a", b"alac", b"apac", b"Opus", b"fLaC", b"flac", b"ac-3", b"ec-3", b"ac-4", b"lpcm", b"ipcm",
-                 b"fpcm", b"sowt", b"twos", b"in24", b"in32", b"fl32", b"fl64", b"raw ", b"ulaw", b"alaw", b"samr",
-                 b"sawb", b"mha1", b"mhm1", b"iamf", b"dtsc", b"dtse", b"dtsh", b"dtsl", b"dtsx", b"mlpa",
+# (APAC), Opus, FLAC (QuickTime's 'flac' too), Dolby, DTS, AMR, IAMF,
+# QuickTime's IMA ADPCM, and uncompressed sound.
+SOUND_ENTRIES = {b"mp4a", b"alac", b"apac", b"ima4", b"Opus", b"fLaC", b"flac", b"ac-3", b"ec-3", b"ac-4", b"lpcm",
+                 b"ipcm", b"fpcm", b"sowt", b"twos", b"in24", b"in32", b"fl32", b"fl64", b"raw ", b"ulaw", b"alaw",
+                 b"samr", b"sawb", b"mha1", b"mhm1", b"iamf", b"dtsc", b"dtse", b"dtsh", b"dtsl", b"dtsx", b"mlpa",
                  b".mp3"}
 # QuickTime's sound extension: the format, its configuration, byte order, and a terminator.
 WAVE = dict.fromkeys({b"frma", b"mp4a", b"esds", b"alac", b"dac3", b"dec3", b"samr", b"dfLa", b"enda", b"chan",

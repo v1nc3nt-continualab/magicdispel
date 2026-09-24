@@ -40,7 +40,9 @@ way.
   metadata in its samples, and gives up after ten minutes.
 - Photos: a HEIF file keeps only the brands that say how to read it (HEIF's, MIAF's, AVIF's,
   and those of the other image codecs); others are cleared, and a second file type box is
-  emptied. An image's decoder configuration must end where it says, as in videos. Checking which
+  emptied. An image's decoder configuration must end where it says, as in videos. An image
+  sequence's thumbnail track goes, as thumbnail images do, and no removed image may share
+  bytes with a kept sequence's frames (ImageIO's animated HEIC with thumbnails was refused). Checking which
   removed items share data with kept ones no longer takes time that grows with the square of
   their number. Clean copies of photos also get
   their original's permissions. Names and messages printed never carry a file's control

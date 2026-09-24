@@ -310,6 +310,26 @@ class SequenceTests(unittest.TestCase):
         avci = sequence().replace(b"avis\0\0\0\0avisavifmsf1", b"avci\0\0\0\0avisavifmsf1")
         self.assertTrue(heif.rebuild(avci).startswith(avci[:24]))
 
+    def test_a_thumbnail_track_goes_as_thumbnail_images_do(self):
+        # A second track of the same pictures, a thumbnail of the first, which
+        # goes into the movie box before mdat: every chunk offset grows by its size.
+        base = sequence()
+        moov = next(found for found in bmff.boxes(base) if found.kind == b"moov")
+        trak = next(found for found in bmff.boxes(base, moov.content, moov.end) if found.kind == b"trak")
+        second = bytearray(box(b"tref", box(b"thmb", struct.pack(">I", 0))) + base[trak.content:trak.end])
+        second = bytearray(box(b"trak", bytes(second)))
+        tkhd = second.index(b"tkhd") + 4
+        second[tkhd + 20:tkhd + 24] = struct.pack(">I", 2)  # after version 1's times
+        stco = second.index(b"stco") + 12
+        offset = int.from_bytes(second[stco:stco + 4], "big") + len(second)
+        second[stco:stco + 4] = struct.pack(">I", offset)
+        data = sequence(movie_box=bytes(second))
+        rebuilt = heif.rebuild(data)
+        heif.verify(data, rebuilt)
+        moov = next(found for found in bmff.boxes(rebuilt) if found.kind == b"moov")
+        self.assertEqual([found.kind for found in bmff.boxes(rebuilt, moov.content, moov.end)].count(b"trak"), 1)
+        self.assertIn(b"SAMPLE_PIXELS...", rebuilt)
+
     def test_media_stored_elsewhere_is_refused(self):
         with self.assertRaises(FormatError) as caught:
             heif.rebuild(sequence(dref_flags=0))

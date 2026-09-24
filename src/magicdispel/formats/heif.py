@@ -55,7 +55,8 @@ SEQUENCE = movie.Policy(
         b"stbl": {b"stsd", b"stts", b"ctts", b"cslg", b"stsc", b"stsz", b"stco", b"co64", b"stss", b"sdtp",
                   b"sbgp", b"sgpd"},
     },
-    entries={handler: (VISUAL_ENTRIES, ENTRY_BOXES) for handler in (b"pict", b"vide", b"auxv")})
+    entries={handler: (VISUAL_ENTRIES, ENTRY_BOXES) for handler in (b"pict", b"vide", b"auxv")},
+    thumbnails=True)
 # Coded, derived and tiled images. Metadata items are removed (XMP is reduced);
 # any other item type is refused rather than guessed at.
 IMAGE_ITEMS = {b"hvc1", b"av01", b"grid", b"iden", b"iovl", b"tmap", b"jpeg", b"avc1", b"hvt1",
@@ -140,8 +141,9 @@ def cleaned(data):
     movie.clear(result, file_type_brands(data, top[0]))
     kept = kept_boxes(top)
     layout = bmff.layout(data)
-    if layout:
-        clean_items(data, layout, result)
+    if layout:  # items share no data with the samples a sequence keeps, nor with each other
+        clean_items(data, layout, result, [span for found in top if found.kind == b"moov"
+                                           for span in movie.kept_ranges(data, found, SEQUENCE)])
     for found in top:
         if found.kind == b"meta":
             for a, b in list(profiles(result, children(found), found.end)):
@@ -169,9 +171,10 @@ def kept_boxes(top):
 
 # ----------------------------------------------------------------------- items
 
-def clean_items(data, layout, result):
+def clean_items(data, layout, result, samples):
     """Remove metadata, editing-only and thumbnail items with everything only
-    they use, reduce XMP to HDR fields, and rewrite the item tables."""
+    they use, reduce XMP to HDR fields, and rewrite the item tables. No item
+    removed may share bytes with a kept one or with the kept `samples`."""
     auxiliary = check_items(data, layout)
     seeds = ({ident for ident, item in layout.items.items() if item.kind in METADATA_ITEMS and not item.xmp}
              | {ident for ident, urn in auxiliary.items() if urn in EDITING_AUXILIARIES}
@@ -179,7 +182,7 @@ def clean_items(data, layout, result):
              | {ident for ident, item in layout.items.items() if item.xmp and without_hdr_fields(data, layout, ident)})
     deleted = removed_items(layout, seeds)
     live = set(layout.items) - deleted
-    retained = movie.merged(span for ident in live for span in layout.extents[ident])
+    retained = movie.merged([span for ident in live for span in layout.extents[ident]] + samples)
     for ident in deleted:
         for start, end in layout.extents[ident]:
             if movie.overlaps(retained, start, end):

@@ -425,6 +425,11 @@ class TableTests(VideoTests):
                    + full(b"pcmC", 0, bytes([1, 32])))
         data = sound_movie(fpcm, one_unit, struct.pack(">II", 4, 4))
         self.assertEqual(self.assertCleaned(data).find(b"PCM_FRAMES_BYTES"), data.find(b"PCM_FRAMES_BYTES"))
+        # u-law as AVFoundation writes it: an entry of version 2, a frame (of 4 channels here) a packet.
+        ulaw = box(b"ulaw", bytes(6) + struct.pack(">HHH", 1, 2, 0) + b"appl" + struct.pack(">HHhHI", 3, 16, -2, 0, 1 << 16)
+                   + struct.pack(">IdIIIIII", 72, 48000.0, 4, 0x7F000000, 8, 0, 4, 1))
+        data = sound_movie(ulaw, one_unit, frames)
+        self.assertEqual(self.assertCleaned(data).find(b"PCM_FRAMES_BYTES"), data.find(b"PCM_FRAMES_BYTES"))
         # Packets of several frames are read whole, and frames by their channels and bits.
         whole = sound_movie(pcm_entry(channels=1, packet=(2, 8)), one_unit, frames)
         self.assertEqual(self.assertCleaned(whole).find(b"PCM_FRAMES_BYTES"), whole.find(b"PCM_FRAMES_BYTES"))
@@ -437,6 +442,7 @@ class TableTests(VideoTests):
             "ISO's, which FFmpeg reads by stsz": sound_movie(ipcm, one_unit, struct.pack(">II", 4, 4)),
             "raw of 24 bits, which FFmpeg reads as 8": sound_movie(pcm_entry(b"raw ", 1, 24), one_unit, frames),
             "twos of 64 bits, which FFmpeg reads as 16": sound_movie(pcm_entry(b"twos", 1, 64), one_unit, frames),
+            "IMA ADPCM of no given packets": sound_movie(pcm_entry(b"ima4", 1, 16), one_unit, frames),
             "compressed, of size 1": sound_movie(sound_entry(False), one_unit, frames),
             "one-unit frames in two runs": sound_movie(pcm_entry(), struct.pack(">5I", 2, 2, 1, 2, 1), frames),
             "one-unit frames of listed sizes": sound_movie(pcm_entry(), one_unit, struct.pack(">6I", 0, 4, 1, 1, 1, 1)),

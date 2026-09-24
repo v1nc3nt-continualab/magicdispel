@@ -120,7 +120,8 @@ silence at the start of the sound.
   tracks other than pictures and their alpha, fragmented image sequences and videos, encrypted
   and audio-only videos, video tracks other than video, sound, timed metadata, timecode and
   chapters (subtitles, for instance), video codecs and sample entry boxes not on the list
-  (Motion JPEG among them), Google's 360-degree videos, sample tables that disagree, decoder
+  (Motion JPEG among them, and Opus as AVFoundation writes it into QuickTime movies, in a form
+  with no public layout), Google's 360-degree videos, sample tables that disagree, decoder
   configurations with data after them, uncompressed sound players could read in two ways, file
   types of unknown major brands, a removed track that another needs to be shown, media stored
   outside the file, BigTIFF, old-style JPEG in TIFF, metadata inside JPEG-compressed TIFF strips,

@@ -114,6 +114,7 @@ ISO_PCM = {b"ipcm", b"fpcm"}  # ISO's uncompressed sound, whose bits per sample 
 LPCM = b"lpcm"  # QuickTime's, described by a version 2 entry
 SAMPLE_BITS = {8, 16, 24, 32, 64}
 PCM = set(PCM_BITS) | set(ENTRY_BITS) | ISO_PCM | {LPCM}
+PACKED = {b"ima4"}  # compressed sound FFmpeg reads in packets of its own when a version 0 entry gives none
 CHUNK = 1 << 20
 BLOCK = 1 << 16  # table entries read at a time
 
@@ -129,6 +130,7 @@ class Policy:
     removed: handler types of tracks removed with their samples. A track whose
         handler type is neither kept nor removed is refused.
     chapters: whether a text track that a kept track names as its chapters goes too.
+    thumbnails: whether a track that is a thumbnail of another ('thmb') goes too.
     references: track reference types kept between kept tracks; None keeps
         all of them as they are.
     dangling: reference types from a kept track that go with the removed
@@ -146,6 +148,7 @@ class Policy:
     entries: dict
     removed: frozenset = frozenset()
     chapters: bool = False
+    thumbnails: bool = False
     references: frozenset = None
     dangling: frozenset = frozenset()
     strict: bool = False
@@ -222,7 +225,8 @@ def removed_tracks(data, found, policy):
     chapters = {ident for track in found for kind, idents in track.references if kind == b"chap" for ident in idents}
     removed = {track.ident for track in found
                if (track.handler in policy.removed or (policy.chapters and track.handler == b"text"
-                                                       and track.ident in chapters))
+                                                       and track.ident in chapters)
+                   or policy.thumbnails and any(kind == b"thmb" for kind, _ in track.references))
                and not (policy.rendering and policy.rendering(data, track))}
     for track in found:
         if track.ident not in removed and track.handler not in policy.entries:
@@ -242,6 +246,13 @@ def removed_tracks(data, found, policy):
 
 
 # --------------------------------------------------------------------- cleaning
+
+def kept_ranges(data, moov, policy):
+    """(start, end) of the chunks of the tracks that clean keeps."""
+    found = tracks(data, moov)
+    removed = removed_tracks(data, found, policy)
+    return [span for track in found if track.ident not in removed for span in track_table(data, track.box).ranges]
+
 
 def clean(buffer, moov, policy):
     """Clean a movie box in place, as the policy says; [Track] of those kept."""
@@ -776,7 +787,7 @@ def sound_unit(data, trak, stsd, stts, stsz):
     if data[stsd.content] or len(entries) != 1:
         raise unsupported("sound whose samples could be read in two ways")
     frame, packet = frame_size(data, entries[0]), packet_size(data, entries[0])
-    if pcm and not frame:
+    if pcm and not frame or chunked and entries[0].kind in PACKED and not packet:
         raise unsupported("sound whose sample sizes are not given")
     if packet and packet[1] > 1:
         if not (chunked and packet[0]):
@@ -800,19 +811,20 @@ def frame_size(data, entry):
     that FFmpeg and AVFoundation read differently."""
     fields = entry.content
     version = int.from_bytes(data[fields + 8:fields + 10], "big")
-    channels = int.from_bytes(data[fields + 16:fields + 18], "big")
-    if entry.kind == LPCM and version == 2 and entry.end - fields >= 64:
-        channels = int.from_bytes(data[fields + 40:fields + 44], "big")
-        bits = int.from_bytes(data[fields + 48:fields + 52], "big")  # constant bits per channel
-    elif entry.kind in ISO_PCM and version == 0:
+    if version == 2 and entry.end - fields >= 64:  # channels, then constant bits per channel
+        channels, bits = (int.from_bytes(data[fields + start:fields + start + 4], "big") for start in (40, 48))
+    elif version in (0, 1):
+        channels, bits = (int.from_bytes(data[fields + start:fields + start + 2], "big") for start in (16, 18))
+    else:
+        return None
+    if entry.kind in ISO_PCM and version == 0:
         bits = next((data[found.content + 5] for found in entry_boxes(data, entry, SOUND_FIELDS)
                      if found.kind == b"pcmC" and found.end - found.content == ENTRY_SIZES[b"pcmC"]), None)
-    elif entry.kind in PCM_BITS and version in (0, 1):
-        bits = PCM_BITS[entry.kind]
-    elif entry.kind in ENTRY_BITS and version in (0, 1):
-        bits = int.from_bytes(data[fields + 18:fields + 20], "big")
+    elif entry.kind in PCM_BITS:  # of its type's size, which a version 2 entry must give too
+        bits = PCM_BITS[entry.kind] if version < 2 or bits == PCM_BITS[entry.kind] else None
+    elif entry.kind in ENTRY_BITS:
         bits = bits if bits in ENTRY_BITS[entry.kind] else None
-    else:
+    elif entry.kind != LPCM or version != 2:
         return None
     return channels * bits // 8 if bits in SAMPLE_BITS else None
 
