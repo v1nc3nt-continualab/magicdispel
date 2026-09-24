@@ -1,4 +1,4 @@
-"""Command line: type magicdispel, drag photos into the terminal, press Enter."""
+"""Command line: type magicdispel, drag photos or videos into the terminal, press Enter."""
 
 import argparse
 import sys

@@ -12,8 +12,10 @@ the repository; it usually holds personal photos.
 Every run compares each cleaned output with its own input. Pillow must decode
 the same frames (a JPEG may leave out pictures after its first, such as
 previews); on macOS, ImageIO/ColorSync must render the same pixels, HDR,
-gain maps, orientation and DPI; the source must be untouched; and no probe
-marker (see make_probes.py) may survive. With --baseline, every sample must
+gain maps, orientation and DPI; a video must keep its video and sound tracks
+as AVFoundation sees them, and nothing else, and ffmpeg must decode the same
+frames and streams; the source must be untouched; and no probe marker (see
+make_probes.py) may survive. With --baseline, every sample must
 also keep its outcome, and outputs must not gain metadata tags the baseline
 output lacked. --identical additionally demands byte-identical outputs: the
 bar for pure refactoring. Each run is saved to CORPUS/runs/ for later diffs.
@@ -41,7 +43,15 @@ from magicdispel.exiftool import find as find_exiftool, usable, version
 
 MARKER = b"SECRET-40.7128N"
 HELPER = Path(__file__).with_name("native_render.swift")
-CACHE_VERSION = 4
+VIDEO_HELPER = Path(__file__).with_name("native_video.swift")
+CACHE_VERSION = 5
+VIDEO_SUFFIXES = {".mp4", ".m4v", ".mov", ".qt", ".3gp", ".3g2"}
+# ffprobe's properties of a video or sound stream that say how it plays.
+STREAM_FIELDS = ("codec_type", "codec_name", "codec_tag_string", "profile", "width", "height", "pix_fmt",
+                 "color_range", "color_space", "color_transfer", "color_primaries", "field_order",
+                 "r_frame_rate", "avg_frame_rate", "nb_frames", "duration_ts", "time_base", "start_pts",
+                 "sample_rate", "channels", "channel_layout", "bits_per_sample", "sample_aspect_ratio",
+                 "display_aspect_ratio", "side_data_list")
 # Display fields an output may newly keep, provided the value is the input's own.
 DISPLAY_TAGS = re.compile(
     r"^(Orientation|[XY]Resolution|ResolutionUnit|PixelsPerUnit[XY]|PixelUnits|SRGBRendering|"
@@ -83,51 +93,78 @@ def pillow_fingerprint(path):
         return None
 
 
+def is_video(path):
+    return Path(path).suffix.lower() in VIDEO_SUFFIXES
+
+
+def decoded_fingerprint(path):
+    """What ffmpeg, a decoder independent of macOS, makes of a video: a hash of
+    every decoded video and sound frame, and each such stream's properties;
+    None for other files, or without ffmpeg."""
+    if not is_video(path) or not (shutil.which("ffmpeg") and shutil.which("ffprobe")):
+        return None
+    decoded = subprocess.run(["ffmpeg", "-v", "error", "-i", str(path), "-map", "0:v?", "-map", "0:a?",
+                              "-f", "framemd5", "-"], capture_output=True)
+    lines = [line for line in decoded.stdout.decode("utf-8", "replace").splitlines()
+             if line and not line.startswith("#")]
+    probe = subprocess.run(["ffprobe", "-v", "error", "-show_streams", "-of", "json", str(path)], capture_output=True)
+    streams = json.loads(probe.stdout or b"{}").get("streams", [])
+    return {"frames": None if decoded.returncode else hashlib.sha256("\n".join(lines).encode()).hexdigest(),
+            "count": len(lines), "streams": [{field: stream.get(field) for field in STREAM_FIELDS}
+                                             for stream in streams if stream.get("codec_type") in ("video", "audio")]}
+
+
 class NativeRenderer:
-    """macOS ImageIO/ColorSync fingerprints via the compiled native_render.swift."""
+    """macOS fingerprints: of images from ImageIO/ColorSync, via the compiled
+    native_render.swift, and of videos from AVFoundation, via native_video.swift."""
 
     def __init__(self, cache):
-        self.binary = None
+        self.binaries = {}
         if sys.platform != "darwin" or not shutil.which("swiftc"):
             return
-        version = hashlib.sha256(HELPER.read_bytes()).hexdigest()[:12]
-        self.binary = cache / ("native_render-" + version)
-        if not self.binary.exists():
-            cache.mkdir(parents=True, exist_ok=True)
-            subprocess.run(["swiftc", "-O", "-module-cache-path", str(cache / "swift-modules"),
-                            str(HELPER), "-o", str(self.binary)], check=True)
+        for video, helper in ((False, HELPER), (True, VIDEO_HELPER)):
+            version = hashlib.sha256(helper.read_bytes()).hexdigest()[:12]
+            binary = cache / ("%s-%s" % (helper.stem, version))
+            if not binary.exists():
+                cache.mkdir(parents=True, exist_ok=True)
+                subprocess.run(["swiftc", "-O", "-module-cache-path", str(cache / "swift-modules"),
+                                str(helper), "-o", str(binary)], check=True)
+            self.binaries[video] = binary
 
     @property
     def version(self):
-        return self.binary.name if self.binary else None
+        return "+".join(binary.name for binary in self.binaries.values()) or None
 
     def fingerprints(self, paths):
         """Map str(path) -> fingerprint. Small batches keep memory use bounded."""
-        if not self.binary:
-            return {}
         result = {}
-        for start in range(0, len(paths), 6):
-            batch = [str(path) for path in paths[start:start + 6]]
-            lines = subprocess.run([str(self.binary), *batch], capture_output=True, text=True,
-                                   check=True).stdout.splitlines()
-            for line in lines:
-                record = json.loads(line)
-                result[record.pop("file")] = record
+        for video, binary in self.binaries.items():
+            chosen = [str(path) for path in paths if is_video(path) == video]
+            for start in range(0, len(chosen), 6):
+                lines = subprocess.run([str(binary), *chosen[start:start + 6]], capture_output=True, text=True,
+                                       check=True).stdout.splitlines()
+                for line in lines:
+                    record = json.loads(line)
+                    result[record.pop("file")] = record
         return result
 
 
 def exiftool_tags(exiftool, paths):
-    """Every tag ExifTool reports for each file, excluding file-system details."""
-    if not paths:
-        return {}
-    output = subprocess.run(
-        [exiftool, "-config", "", "-charset", "filename=UTF8", "-j", "-G1:4", "-a", "-s",
-         "-u", "-e", "-n", *map(str, paths)], capture_output=True).stdout
+    """Every tag ExifTool reports for each file, excluding file-system details;
+    for videos, the timed metadata in their samples too."""
     result = {}
-    for entry in json.loads(output or b"[]"):
-        source = entry.pop("SourceFile")
-        result[source] = {key: shorten(value) for key, value in entry.items()
-                          if key.split(":")[0] not in {"System", "ExifTool"}}
+    for video in (False, True):
+        chosen = [str(path) for path in paths if is_video(path) == video]
+        if not chosen:
+            continue
+        output = subprocess.run(
+            [exiftool, "-config", "", "-charset", "filename=UTF8", "-j", "-G1:4", "-a", "-s",
+             "-u", "-e", "-n", *(["-ee", "-api", "LargeFileSupport=1"] if video else []), *chosen],
+            capture_output=True).stdout
+        for entry in json.loads(output or b"[]"):
+            source = entry.pop("SourceFile")
+            result[source] = {key: shorten(value) for key, value in entry.items()
+                              if key.split(":")[0] not in {"System", "ExifTool"}}
     return result
 
 
@@ -345,8 +382,9 @@ def complete(native):
     One taken where the renderer failed (in a sandbox, say) is taken again."""
     if native is None:  # no renderer on this system
         return True
+    fields = ("srgb",) if "tracks" in native else ("raw", "srgb", "p3")  # a video's fingerprint has tracks
     return (not native.get("error") and native.get("hdr", "") is not None
-            and all(not frame.get("error") and None not in (frame.get("raw"), frame.get("srgb"), frame.get("p3"))
+            and all(not frame.get("error") and None not in [frame.get(field) for field in fields]
                     for frame in native.get("frames", [])))
 
 
@@ -367,12 +405,14 @@ def input_fingerprints(corpus, samples, renderer, exiftool, workers):
     if missing:
         with concurrent.futures.ThreadPoolExecutor(workers) as pool:
             pillow = dict(zip(missing, pool.map(lambda i: pillow_fingerprint(paths[i]), missing)))
+            decoded = dict(zip(missing, pool.map(lambda i: decoded_fingerprint(paths[i]), missing)))
         native = renderer.fingerprints([paths[ident] for ident in missing])
         tags = exiftool_tags(exiftool, [paths[ident] for ident in missing])
         for ident in missing:
             cache["files"][hashes[ident]] = {
                 "structure": structure(paths[ident]),
                 "pillow": pillow[ident],
+                "decoded": decoded[ident],
                 "native": native.get(str(paths[ident])),
                 "tags": tags.get(str(paths[ident]), {}),
                 "probe": MARKER in paths[ident].read_bytes(),
@@ -382,15 +422,15 @@ def input_fingerprints(corpus, samples, renderer, exiftool, workers):
     return {ident: dict(cache["files"][hashes[ident]], sha256=hashes[ident]) for ident in paths}
 
 
-IMAGE_SUFFIXES = {".jpg", ".jpeg", ".jpe", ".png", ".apng", ".heic", ".heif", ".hif", ".avif",
-                  ".webp", ".gif", ".tif", ".tiff", ".bmp"}
+MEDIA_SUFFIXES = {".jpg", ".jpeg", ".jpe", ".png", ".apng", ".heic", ".heif", ".hif", ".avif",
+                  ".webp", ".gif", ".tif", ".tiff", ".bmp"} | VIDEO_SUFFIXES
 
 
 def load_manifest(corpus):
     """Read manifest.json, creating it from the folder's images on first use."""
     path = corpus / "manifest.json"
     if not path.exists():
-        images = sorted(p.name for p in corpus.iterdir() if p.suffix.lower() in IMAGE_SUFFIXES)
+        images = sorted(p.name for p in corpus.iterdir() if p.suffix.lower() in MEDIA_SUFFIXES)
         entries = [{"id": "F%02d" % n, "label": name, "file": name, "name": name}
                    for n, name in enumerate(images, 1)]
         path.write_text(json.dumps(entries, ensure_ascii=False, indent=2) + "\n")
@@ -416,6 +456,7 @@ def run(corpus, workers, keep, without_exiftool=False):
         tags = exiftool_tags(exiftool, outputs)
         with concurrent.futures.ThreadPoolExecutor(workers) as pool:
             pillow = dict(zip(outputs, pool.map(pillow_fingerprint, outputs)))
+            decoded = dict(zip(outputs, pool.map(decoded_fingerprint, outputs)))
         for record in records:
             record["input"] = inputs[record["id"]]
             if record["status"] != "cleaned":
@@ -428,6 +469,7 @@ def run(corpus, workers, keep, without_exiftool=False):
                 "size": len(data),
                 "structure": structure(path),
                 "pillow": pillow[path],
+                "decoded": decoded[path],
                 "native": native.get(str(path)),
                 "tags": tags.get(str(path), {}),
                 "marker": MARKER in data,
@@ -456,13 +498,53 @@ def check_against_input(record):
     jpeg = output["suffix"].lower() in {".jpg", ".jpeg", ".jpe"}
     if source["pillow"] and not same_frames(source["pillow"], output["pillow"], jpeg):
         problems.append("Pillow decodes different pixels or timing")
+    problems.extend(decoded_differences(source.get("decoded"), output.get("decoded")))
     before, after = source["native"], output["native"]
     if (before is None) != (after is None):
         problems.append("no macOS fingerprint of the " + ("input" if before is None else "output"))
+    elif before and after and output["suffix"].lower() in VIDEO_SUFFIXES:
+        problems.extend(native_video_differences(before, after))
     elif before and after:
         # BMP becomes PNG: the decoder's raw layout may differ, rendered pixels may not.
         converted = record["input_suffix"].lower() == ".bmp"
         problems.extend(native_differences(before, after, converted))
+    return problems
+
+
+def decoded_differences(before, after):
+    """A video must decode, in ffmpeg, to the same frames and streams. An input
+    ffmpeg cannot decode proves nothing either way, and is left to macOS."""
+    if not before or before["frames"] is None:
+        return []
+    problems = []
+    if not after or after["frames"] != before["frames"]:
+        problems.append("ffmpeg decodes different frames")
+    if not after or after["streams"] != before["streams"]:
+        problems.append("ffprobe sees different streams")
+    return problems
+
+
+def native_video_differences(before, after):
+    """A video must keep, in macOS, its video and sound tracks as they were,
+    and no other track, and frames macOS shows of the input must look the
+    same. Frames of codecs macOS does not decode are left to ffmpeg."""
+    if before.get("error"):
+        return []
+    if after.get("error"):
+        return ["macOS cannot open the output"]
+
+    def playing(native):
+        return [track for track in native.get("tracks", []) if track["type"] in ("vide", "soun")]
+
+    problems = []
+    if playing(before) != playing(after):
+        problems.append("macOS sees different video or sound tracks")
+    if len(playing(after)) != len(after.get("tracks", [])):
+        problems.append("output kept tracks other than video and sound")
+    if before.get("duration") != after.get("duration"):
+        problems.append("macOS duration %s -> %s" % (before.get("duration"), after.get("duration")))
+    if any(a != b for a, b in zip(before.get("frames", []), after.get("frames", [])) if a.get("srgb")):
+        problems.append("macOS shows different frames")
     return problems
 
 

@@ -1,7 +1,7 @@
 # Privacy and format details
 
 MagicDispel rebuilds each file from an allowlist: it copies only the parts a viewer needs to
-show the image and leaves everything else behind. It does not search for known metadata to
+show the image or play the video and leaves everything else behind. It does not search for known metadata to
 delete, so metadata it has never heard of is removed too, and the parts it keeps must match
 their exact layout, so they cannot carry anything else along. It does not promise forensic
 anonymization.
@@ -23,6 +23,10 @@ anonymization.
   items), ISO 21496-1 gain-map metadata, Apple gain curves, and recognized numeric gain-map XMP
   fields. Of the images in a JPEG multi-picture file, only the photo and gain maps with its
   proportions are kept.
+- **Video.** Video and sound tracks, with every sample copied byte for byte; their decoder
+  configurations, rotation and display sizes, edit lists, color and HDR (HDR10, HLG, Dolby
+  Vision); and Apple's spatial video information: which views there are, the cameras' baseline
+  and the projection.
 - **Structure.** Transparency, animation frames, timing and loop count, TIFF pages and page
   numbers, and the format's own headers.
 - **The file name**, with `_clean` added and without the dates, times and timestamps that
@@ -40,11 +44,17 @@ of JPEG multi-picture files, which may show an uncropped original; HEIF depth ma
 calibration, portrait and semantic mattes, style maps, Apple property lists, item names, and
 item properties such as descriptions, creation times and camera parameters; JPEG MPF image
 IDs; in image sequences, every box not needed to play them, and creation times, handler and
-encoder names; TIFF EXIF and GPS directories, descriptions, private tags and sub-images; and
-unknown or private data blocks and data after the end of an image.
+encoder names; in videos, the location, device, software and dates of user data and metadata
+boxes, timed metadata tracks (GPS and motion data, face detection, Live Photo and motion photo
+data), timecode and chapter tracks, maker data such as GoPro's serial numbers and Samsung's SEF
+data, creation times, handler, vendor and compressor names, and media data no remaining track
+uses; TIFF EXIF and GPS directories, descriptions, private tags and sub-images; and unknown or
+private data blocks and data after the end of an image or video.
 
 Removing auxiliary HEIF images limits later portrait, depth-of-field and photographic-style
-edits. Tested HEIC and HDR JPEG files render identically on macOS in SDR and HDR.
+edits. Tested HEIC and HDR JPEG files render identically on macOS in SDR and HDR. Removing a
+video's timed metadata likewise ends what only its maker's app draws from it, such as the
+pairing of a Live Photo's video with its photo, or Samsung's slow-motion sections.
 
 ## How nothing slips through
 
@@ -64,17 +74,31 @@ edits. Tested HEIC and HDR JPEG files render identically on macOS in SDR and HDR
   headers, tracks, edits and sample tables, and in each sample entry its decoder
   configuration and color and display properties. Readers skip boxes they do not know, so
   any other box, however it is named, is emptied rather than kept.
-- **HEIF in place.** HEIF files are cleaned without moving any image data, so every offset
-  stays valid: the item tables are rewritten in the space they had, removed items and boxes are
-  zero-filled, bytes that no remaining item or sample uses are zeroed, and boxes at the end of
-  the file are dropped. This is why HEIC files do not shrink much.
+- **Videos.** MP4 and QuickTime movies keep only the boxes on a fixed list: headers, tracks,
+  edits and sample tables, and in each sample entry its decoder configuration and its color,
+  HDR and spatial video boxes. Unlike an image sequence's, a sample entry holding a box not on
+  the list is refused rather than emptied, since a video may need it to play. Only video and
+  sound tracks stay; the samples of the tracks removed are zeroed with every other byte of the
+  media data that no remaining sample uses. Sample tables and headers must have exactly the
+  size their entries and version give them. The check compares every box of the result with
+  the original's and every kept sample byte for byte. A video is cleaned in a copy next to the
+  original, and neither is read into memory.
+- **HEIF and videos in place.** HEIF files and videos are cleaned without moving any image or
+  media data, so every offset stays valid: the item tables are rewritten in the space they had,
+  removed items and boxes are zero-filled, bytes that no remaining item or sample uses are
+  zeroed, and boxes at the end of the file are dropped. This is why HEIC files and videos do not
+  shrink much. An emptied box keeps its size, which shows how much metadata there was, though
+  not what it said.
 - **Fail closed.** Anything that cannot be handled safely is refused, not passed through: an
   unknown critical PNG chunk, an unknown HEIF item type or auxiliary image, a HEIF property of
   unknown meaning that readers may not ignore, an image that depends on a removed layer, image
   groups other than alternatives (such as the stereo pairs of spatial photos), JPEG
   multi-picture images other than previews and gain maps (such as stereo pairs), sequence
-  tracks other than pictures and their alpha, fragmented image sequences, media stored outside
-  the file, BigTIFF, old-style JPEG in TIFF, metadata inside JPEG-compressed TIFF strips,
+  tracks other than pictures and their alpha, fragmented image sequences and videos, encrypted
+  and audio-only videos, video tracks other than video, sound, timed metadata, timecode and
+  chapters (subtitles, for instance), video codecs and sample entry boxes not on the list
+  (Motion JPEG among them), a removed track that another needs to be shown, media stored
+  outside the file, BigTIFF, old-style JPEG in TIFF, metadata inside JPEG-compressed TIFF strips,
   unrecognized ICC tags and floating-point ICC transforms, gain-map metadata of an unknown
   version. RAW photos built on TIFF (DNG, CR2, NEF and others) are refused too: their TIFF
   pages hold only a preview.
@@ -83,7 +107,8 @@ edits. Tested HEIC and HDR JPEG files render identically on macOS in SDR and HDR
   byte-identical, XMP holds only gain-map fields, no editing image, thumbnail or item name
   remains, profiles are sanitized, and unused bytes are zero; for TIFF, that no byte of the
   file is unaccounted for. Pillow must then decode identical pixels, frames, timing and
-  transparency (all formats but HEIC; for JPEG, of the images kept). If ExifTool 12.73+ is
+  transparency (all formats but HEIC and videos, which are compared byte for byte; for JPEG,
+  of the images kept). If ExifTool 12.73+ is
   installed, it reads the result as a second opinion, and any warning, private field or data it
   cannot identify stops the save. The original's hash is compared before and after, so a file
   changed by another program during cleaning is not published.
@@ -91,8 +116,9 @@ edits. Tested HEIC and HDR JPEG files render identically on macOS in SDR and HDR
 ## Out of scope
 
 Data hidden inside the compressed image data itself, for example in JPEG scans, VP8 or HEVC
-frames, GIF LZW data or unused palette entries, is copied along with the image. Detecting such
-steganography is beyond this tool.
+frames, GIF LZW data or unused palette entries, is copied along with the image. So is data
+inside video and sound samples, such as the SEI messages some encoders write into H.264 and
+HEVC frames. Detecting such steganography is beyond this tool.
 
 A JPEG gain map that only an Ultra HDR GContainer directory points to, with no multi-picture
 index, is not recognized: it sits after the end of the image and is removed as trailing data,
@@ -142,6 +168,15 @@ vivo X200 Pro, OnePlus 13, OPPO Find X3 Pro, Canon EOS R5 and R6 Mark II, Nikon 
 Sony α7 IV, Fujifilm X100V, Panasonic S5II, OM System OM-1 and Leica Q2. It also holds Google's
 Ultra HDR samples from libultrahdr and Skia. All of them clean and render identically in macOS,
 in SDR and HDR, and no private field survives of the 5 to 90 each photo carried.
+
+Since 0.2.0 the corpus also holds 64 public sample videos: GoPro's HERO5, HERO7, HERO8,
+Fusion, MAX and Karma samples; AndroidX Media's test files, among them an iPhone 14 Pro Dolby
+Vision video, an Apple spatial video, Pixel motion photo and HLG videos and Samsung
+slow-motion videos; and ExifTool's. 48 clean: FFmpeg decodes identical frames from each, macOS
+AVFoundation sees the same video and sound tracks and shows the same frames, and ExifTool finds
+no private field. The other 16 are refused as designed: audio-only, fragmented and encrypted
+files, subtitles, a damaged file, Motion JPEG and a track needed to show the video. A 4.7 GB
+video is cleaned in under five seconds, with 24 MB of memory.
 
 On macOS, Windows and Linux, CI runs the unit tests with Python 3.10 and 3.13, with and without
 ExifTool, and installs MagicDispel with the install scripts. On Windows and Linux, MagicDispel

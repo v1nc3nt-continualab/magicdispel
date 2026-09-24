@@ -1,38 +1,44 @@
-"""Clean one photo: rebuild it, check the result, and save a copy next to it."""
+"""Clean one photo or video: rebuild it, check the result, and save a copy next to it."""
 import errno
 import hashlib
+import mmap
 import os
+import secrets
+import shutil
 import subprocess
 import sys
+from contextlib import contextmanager
 from pathlib import Path
 
 from . import exiftool, formats, names, pixels
 from .errors import FormatError, InputError, VerificationError
 
+HEAD = 4096  # enough of a file to tell a video from a photo
+
 
 def clean(argument, exiftool_path=None, naming="plain"):
-    """Save a cleaned copy of a photo next to it and return the copy's path.
+    """Save a cleaned copy of a photo or video next to it and return the copy's path.
 
     The format's module rebuilds the file from what is needed to show it and
     checks the result on its own; Pillow must decode identical frames where it
     can; ExifTool, when `exiftool_path` is given, reads it independently.
     Nothing is saved unless every check passes. `naming` is described in
-    names.candidates.
+    names.candidates. Videos are cleaned in a copy of themselves (clean_copy).
     """
     source = Path(os.path.abspath(os.path.expanduser(argument)))
     if not source.is_file():
         raise InputError("not_a_file", path=source)
+    with source.open("rb") as stream:
+        video = formats.video_format(stream.read(HEAD))
+    if video:
+        return clean_copy(source, video, exiftool_path, naming)
     data = source.read_bytes()
     kind = formats.identify(data)
     if kind is None:
         raise InputError("unsupported_format")
     module = formats.MODULES[kind]
     rebuilt = module.rebuild(data)
-    try:
-        module.verify(data, rebuilt)
-    except FormatError:
-        # The format's reader could not parse the result back.
-        raise VerificationError("verification_failed", detail="the result cannot be read back")
+    verify(module, data, rebuilt)
     if pixels.decodes(kind):
         # A file of several pictures is compared picture by picture.
         pictures = getattr(module, "pictures", lambda file: [file])
@@ -45,9 +51,72 @@ def clean(argument, exiftool_path=None, naming="plain"):
         exiftool.second_opinion(exiftool_path, rebuilt, kind)
     if hashlib.sha256(data).digest() != file_digest(source):
         raise VerificationError("source_changed")
+    return publish(rebuilt, source, output_suffix(source, kind), naming)
+
+
+def clean_copy(source, kind, exiftool_path=None, naming="plain"):
+    """Clean a video in a copy of itself next to it. Neither file is read into
+    memory: media data never moves, so only a few boxes and the unused media
+    bytes of the copy change. The copy is checked like any other result before
+    it gets its name, and removed if it fails."""
+    module = formats.MODULES[kind]
+    digest = file_digest(source)
+    suffix = output_suffix(source, kind)
+    partial = reserve(source, suffix)
+    try:
+        shutil.copyfile(source, partial)
+        with mapped(source) as original, mapped(partial, writable=True) as copy:
+            if len(copy) != len(original):
+                raise VerificationError("source_changed")
+            length = module.clean(original, copy)
+        os.truncate(partial, length)
+        with mapped(source) as original, mapped(partial) as rebuilt:
+            verify(module, original, rebuilt)
+        if exiftool_path:
+            exiftool.second_opinion(exiftool_path, None, kind, path=partial)
+        if file_digest(source) != digest:
+            raise VerificationError("source_changed")
+        return rename(partial, source, suffix, naming, "video")
+    finally:
+        partial.unlink(missing_ok=True)
+
+
+def verify(module, original, rebuilt):
+    try:
+        module.verify(original, rebuilt)
+    except FormatError:
+        # The format's reader could not parse the result back.
+        raise VerificationError("verification_failed", detail="the result cannot be read back")
+
+
+@contextmanager
+def mapped(path, writable=False):
+    """A file's bytes, mapped into memory rather than read."""
+    with path.open("r+b" if writable else "rb") as stream:
+        view = mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_WRITE if writable else mmap.ACCESS_READ)
+        try:
+            yield view
+            if writable:
+                view.flush()
+        finally:
+            view.close()
+
+
+def output_suffix(source, kind):
+    """The original's extension if it suits the format, else the format's own."""
     suffixes = formats.SUFFIXES[kind]
-    suffix = source.suffix if source.suffix.lower() in suffixes else suffixes[0]
-    return publish(rebuilt, source, suffix, naming)
+    return source.suffix if source.suffix.lower() in suffixes else suffixes[0]
+
+
+def reserve(source, suffix):
+    """A new, empty file next to the original, to clean a copy in."""
+    while True:
+        partial = source.with_name("%s.magicdispel-%s%s" % (source.stem, secrets.token_hex(4), suffix))
+        try:
+            partial.open("xb").close()
+            return partial
+        except FileExistsError:
+            continue
 
 
 def file_digest(path):
@@ -69,6 +138,23 @@ def publish(data, source, suffix, naming="plain"):
         try:
             with output:
                 output.write(data)
+            clear_attributes(destination)
+            return destination
+        except BaseException:
+            destination.unlink(missing_ok=True)
+            raise
+
+
+def rename(path, source, suffix, naming="plain", noun="photo"):
+    """Give a finished copy a new name next to source; never overwrite anything."""
+    for name in names.candidates(source.stem, suffix, naming, noun):
+        destination = source.with_name(name)
+        try:
+            destination.open("xb").close()  # claims the name, which the copy then takes
+        except FileExistsError:
+            continue
+        try:
+            os.replace(path, destination)
             clear_attributes(destination)
             return destination
         except BaseException:

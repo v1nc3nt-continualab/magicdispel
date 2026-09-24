@@ -22,7 +22,7 @@ class CommandLineTests(unittest.TestCase):
             with self.subTest(arguments=arguments):
                 result = run(*arguments)
                 self.assertEqual(result.returncode, 0)
-                self.assertIn("drag photos into the terminal", result.stdout)
+                self.assertIn("drag photos or videos into the terminal", result.stdout)
                 self.assertIn(__version__, result.stdout)
         self.assertIn("Designed by VincentC", run().stdout)
         self.assertIn("--keep-name", run("--help").stdout)

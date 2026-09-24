@@ -1,5 +1,31 @@
 # Changelog
 
+## Unreleased
+
+Videos: MP4 and QuickTime (MOV) files are cleaned too, without changing a single frame. Tested
+on 64 public sample videos, GoPro, iPhone (Dolby Vision, spatial video), Pixel and Samsung ones
+among them: 48 clean, FFmpeg decodes identical frames from each, and macOS plays each the same;
+the other 16 are refused as designed.
+
+- Kept: video and sound tracks with every sample, decoder configurations, rotation, edit lists,
+  color, HDR, Dolby Vision and Apple's spatial video information.
+- Removed: location, device, software and dates in user data and metadata boxes; timed
+  metadata tracks (GPS and motion, face detection, Live Photo and motion photo data), timecode
+  and chapter tracks, with their samples; maker data such as GoPro's serial numbers and
+  Samsung's SEF data; creation times, handler, vendor and compressor names; unused media data
+  and anything after the movie.
+- Refused: fragmented, encrypted and audio-only files, subtitle tracks, codecs and sample
+  entry boxes not on the list, and a removed track that another needs to be shown.
+- A video is cleaned in a copy next to the original, never read into memory: a 4.7 GB video
+  takes under five seconds. ExifTool's second check reads that copy from its path.
+- A video keeps its extension, .mp4 or .mov, whatever its content: players may read one file
+  differently by its extension. `--anonymous` names videos `video_<random>.mov`.
+- Image sequences (HEIF, AVIF) and videos share one cleaner, which also checks that headers and
+  sample tables have exactly their size, and that nothing in the movie box changed but the
+  cleared fields. The 95 test photos clean exactly as before.
+- The regression harness checks videos with FFmpeg (every decoded frame and stream) and macOS
+  AVFoundation (tracks, rotation, HDR, frames).
+
 ## 0.1.4 (2026-09-24)
 
 Tested on 27 photos from 21 current phones and cameras (Samsung, Google Pixel, Xiaomi, Huawei,

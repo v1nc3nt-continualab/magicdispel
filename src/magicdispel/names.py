@@ -33,14 +33,15 @@ TIMESTAMP = re.compile(r"(?<!\d)1\d{9}(?:\d{3})?(?!\d)")
 SEPARATORS = " _-."
 
 
-def candidates(stem, suffix, naming="plain"):
+def candidates(stem, suffix, naming="plain", noun="photo"):
     """Names for the cleaned copy, in order of preference: "plain" drops dates
     and times from the original's name, "original" keeps it, "anonymous" uses
-    random names that contain nothing about the original."""
+    random names that contain nothing about the original. `noun` names what is
+    left when nothing else is: a photo or a video."""
     if naming == "anonymous":
         while True:
-            yield "photo_" + secrets.token_hex(16) + suffix.lower()
-    base = stem if naming == "original" else without_dates(stem) or "photo"
+            yield noun + "_" + secrets.token_hex(16) + suffix.lower()
+    base = stem if naming == "original" else without_dates(stem) or noun
     yield base + "_clean" + suffix
     for index in itertools.count(1):
         yield base + "_clean_" + str(index) + suffix
