@@ -45,8 +45,8 @@ AVFoundation writes it into QuickTime, iLBC) clean with identical frames and sou
   and those of the other image codecs); others are cleared, and a second file type box is
   emptied. Item properties whose standards fix their layout (tols, iscl, rloc, amve, a1lx,
   cclv, colr, irot, imir, auxC) must have exactly it; a JPEG image item holding metadata
-  segments (EXIF, comments), a JPEG 2000 one holding comments, a second meta or moov box and
-  image groups naming no image are refused. An image's decoder configuration must end where it says, as in videos. An image
+  segments (EXIF, comments, ICC), read as a JPEG file is, JPEG 2000 image items, a second meta
+  or moov box and image groups naming no image are refused. An image's decoder configuration must end where it says, as in videos. An image
   sequence's thumbnail track goes, as thumbnail images do, and no removed image may share
   bytes with a kept sequence's frames (ImageIO's animated HEIC with thumbnails was refused). Checking which
   removed items share data with kept ones no longer takes time that grows with the square of

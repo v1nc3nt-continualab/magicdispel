@@ -559,7 +559,7 @@ class TableTests(VideoTests):
                      + struct.pack(">IIII", 1024, 0, 0, 2))
         ulaw = box(b"ulaw", bytes(6) + struct.pack(">HHH", 1, 2, 0) + b"appl" + struct.pack(">HHhHI", 3, 16, -2, 0, 1 << 16)
                    + struct.pack(">IdIIIIII", 72, 48000.0, 4, 0x7F000000, 8, 0, 4, 1))
-        lpcm = box(b"lpcm", ulaw[8:44] + struct.pack(">IIIII", 0x7F000000, 24, 1, 12, 1))  # 4 channels of 24-bit floats
+        lpcm = box(b"lpcm", ulaw[8:52] + struct.pack(">IIIII", 0x7F000000, 24, 1, 12, 1))  # 4 channels of 24-bit floats
         refused = {
             "more speakers than channels": ipcm(bytes([1, 0, 1, 2]) + b"+31.2304+121.4737/"),
             "channels left out": ipcm(bytes([1, 2]) + MARKER[:8]),
@@ -573,10 +573,39 @@ class TableTests(VideoTests):
                 b"frma", b"MDTM") + box(b"mp4a", bytes(4)) + esds() + bytes(8)))),
             "a byte order of no meaning": sound(box(b"mp4a", quicktime + box(b"wave", box(b"frma", b"mp4a") + box(
                 b"enda", b"MD") + esds() + bytes(8)))),
+            "a sample rate of no number": sound_movie(box(b"ulaw", ulaw[8:40] + struct.pack(">d", float("nan"))
+                                                          + ulaw[48:]), struct.pack(">III", 1, 4, 1),
+                                                      struct.pack(">II", 1, 4)),
+            "channels not interleaved": sound_movie(box(b"lpcm", ulaw[8:52] + struct.pack(">IIIII", 0x7F000000, 8, 0x2C,
+                                                                                         4, 1)),
+                                                    struct.pack(">III", 1, 4, 1), struct.pack(">II", 4, 4)),
         }
         for reason, data in refused.items():
             with self.subTest(reason):
                 self.assertRefused(data)
+
+    def test_channel_layouts_as_apple_writes_them(self):
+        video = (1, b"vide", visual_entry(b"avc1", box(b"avcC", bytes(7))), VIDEO, b"", b"vmhd")
+        fields = bytes(6) + struct.pack(">H", 1) + bytes(8) + struct.pack(">HHHHI", 2, 16, 0, 0, 48000 << 16)
+
+        def layout(tag, count=0, labels=(), extra=b""):
+            descriptions = b"".join(struct.pack(">II", label, 0) + bytes(12) for label in labels) + extra
+            entry = box(b"mp4a", fields + esds() + full(b"chan", 0, struct.pack(">III", tag, 0, count) + descriptions))
+            return movie_file(tracks=[video, (2, b"soun", entry, [AUDIO], b"", b"smhd")])
+
+        for reason, data in {"an unknown layout of 2 channels": layout(0xFFFF << 16 | 2),
+                             "headphones": layout(0, 2, (301, 302)),
+                             "two discrete channels": layout(0, 2, (0x10000, 0x10001))}.items():
+            with self.subTest(reason):
+                self.assertCleaned(data)
+        for reason, data in {"a layout of 3 channels for 2": layout(101 << 16 | 3),
+                             "a description too many": layout(0, 3, (1, 2, 3)),
+                             "coordinates": layout(0, 2, (1,), struct.pack(">II", 2, 1) + bytes(12))}.items():
+            with self.subTest(reason):
+                self.assertRefused(data)
+        # Parametric immersive video (macOS 26) keeps its projection.
+        prim = box(b"vexu", box(b"proj", full(b"prji", 0, b"prim")))
+        self.assertCleaned(plain_video(box(b"hvcC", HVCC) + prim, b"hvc1"))
 
     def test_chapter_pictures_go_with_the_chapters(self):
         video = (1, b"vide", visual_entry(b"avc1", box(b"avcC", bytes(7))), VIDEO,
@@ -643,6 +672,8 @@ class TableTests(VideoTests):
                                                                                    + bytes(19))),
             "two pixel aspect ratios": plain_video(box(b"avcC", bytes(7)) + box(b"pasp", bytes(8)) * 2),
             "a chroma location of no meaning": plain_video(box(b"avcC", bytes(7)) + box(b"chrm", b"\0\x40")),
+            "a hero eye of no meaning": plain_video(box(b"hvcC", HVCC) + box(b"vexu", box(b"eyes", full(
+                b"stri", 0, b"\3") + full(b"hero", 0, b"\3"))), b"hvc1"),
             "an alpha mode of no known meaning": plain_video(box(b"hvcC", HVCC) + box(b"almo", b"MDPV"), b"hvc1"),
             "a uuid box other than the iPod's": plain_video(box(b"avcC", bytes(7)) + box(b"uuid", bytes(16) + MARKER)),
             "an encoder's description elsewhere": plain_video(box(b"avcC", bytes(7)) + box(b"glbl", MARKER)),

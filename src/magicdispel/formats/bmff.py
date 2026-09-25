@@ -336,6 +336,9 @@ def read_properties(data, iprp, items):
             values = [int.from_bytes(data[q:q + index_width], "big") for q in range(p, p + count * index_width, index_width)]
             if any(value & ~flag and value & ~flag not in props for value in values):
                 raise StructureError("missing item property")
+            indices = [value & ~flag for value in values if value & ~flag]
+            if len(set(indices)) != len(indices):  # 0, "no property", may repeat
+                raise StructureError("a repeated item property association")
             p += count * index_width
             associations[ident] = [value & ~flag for value in values]
             essential[ident] = {value & ~flag for value in values if value & flag}

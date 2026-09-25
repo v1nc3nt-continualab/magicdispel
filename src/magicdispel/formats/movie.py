@@ -20,6 +20,7 @@ configurations (such as avcC and hvcC) are copied whole, as the samples are.
 """
 import bisect
 import itertools
+import math
 import struct
 from collections import Counter
 from dataclasses import dataclass
@@ -38,6 +39,10 @@ SAMPLE_FIELDS = 8          # of any other: reserved bytes and a data reference i
 QUICKTIME_SOUND = {1: 16, 2: 36}
 # QuickTime's sound entry of version 2: the fields that hold constants, and the size of its fields.
 V2_CONSTANTS, V2_MARK = struct.pack(">HHhHII", 3, 16, -2, 0, 0x10000, 72), struct.pack(">I", 0x7F000000)
+# Bounds of its other fields: the sample rate, lpcm's format flags (float,
+# big-endian, signed, packed), other types' (such as ALAC's source bits), the
+# bytes and frames of a packet.
+MAX_RATE, LPCM_FLAGS, MAX_FLAGS, MAX_PACKET = 1_000_000, 0x0F, 4, 1 << 16
 VISUAL_HANDLERS = {b"pict", b"vide", b"auxv"}
 VENDOR = (12, 16)          # within a visual or sound entry: QuickTime's vendor code
 DATA_SIZE = (36, 40)       # within a visual entry: reserved, or QuickTime's data size, always 0
@@ -86,10 +91,10 @@ ENTRY_SIZES = {b"pasp": 8, b"clap": 32, b"fiel": 2, b"clli": 4, b"mdcv": 24, b"a
                b"SmDm": 28, b"CoLL": 8,  # VP9's mastering display and light levels
                b"chrm": 2, b"ccst": 8,  # the chroma location of each field; coding constraints
                # spatial video: stereo views, hero eye, baseline, disparity, projection, packing
-               b"stri": 5, b"hero": 5, b"blin": 8, b"dadj": 8, b"prji": 8, b"pkin": 8}
+               b"stri": 5, b"blin": 8, b"dadj": 8, b"prji": 8, b"pkin": 8}
 # Sample entry boxes that are full boxes of version 0 and no flags.
-FULL_BOXES = {b"stri", b"hero", b"blin", b"dadj", b"prji", b"pkin", b"srat", b"pcmC", b"SmDm", b"CoLL", b"ccst",
-              b"chan", b"must"}
+FULL_BOXES = {b"stri", b"blin", b"dadj", b"prji", b"pkin", b"srat", b"pcmC", b"SmDm", b"CoLL", b"ccst", b"chan",
+              b"must"}
 # Sample entry boxes kept only with a payload their writers are known to give
 # them: Apple's alpha channel modes and log encoding, and the iPod marker
 # box that FFmpeg (0) and mp4v2 (1) write into H.264 entries.
@@ -98,9 +103,10 @@ KNOWN_PAYLOADS = {b"almo": {bytes.fromhex("00000100"), bytes.fromhex("00000102")
                   b"logs": {b"com.apple.rec2020.apple-log"},
                   b"uuid": {IPOD + bytes(4), IPOD + (1).to_bytes(4, "big")},
                   # in QuickTime's sound extension: byte order, and the AAC marker
-                  b"enda": {bytes(2), (1).to_bytes(2, "big")}, b"mp4a": {bytes(4)}}
+                  b"enda": {bytes(2), (1).to_bytes(2, "big")}, b"mp4a": {bytes(4)},
+                  b"hero": {bytes(4) + bytes([eye]) for eye in (0, 1, 2)}}  # none, left or right
 # Kinds a spatial video box names after its version and flags: projections, packings.
-KINDS = {b"prji": {b"rect", b"equi", b"hequ", b"fish"}, b"pkin": {b"side", b"over"}}
+KINDS = {b"prji": {b"rect", b"equi", b"hequ", b"fish", b"prim"}, b"pkin": {b"side", b"over"}}
 # (offset, reserved bits) of the byte after the version and flags: pcmC's
 # format flags but little-endian, stri's reserved bits before its eyes.
 RESERVED = {b"pcmC": (4, 0xFE), b"stri": (4, 0xF0)}
@@ -109,8 +115,12 @@ CODING_RESERVED = 0x03FFFFFF  # ccst: the bits after its intra-coding flags and 
 ALPHA = {b"urn:mpeg:mpegB:cicp:systems:auxiliary:alpha", b"urn:mpeg:hevc:2015:auxid:1"}  # auxi types kept
 # A QuickTime channel layout (chan): its tags that use a channel bitmap, or
 # descriptions of the channels, and the most channels described.
-USE_DESCRIPTIONS, USE_BITMAP, CHANNELS = 0, 0x10000, 24
-USE_COORDINATES, COORDINATE_FLAGS = 100, {1, 2, 5, 6}  # a channel placed by coordinates, and how they are given
+USE_DESCRIPTIONS, USE_BITMAP, UNKNOWN_LAYOUT, CHANNELS = 0, 0x10000, 0xFFFF, 24
+CHANNEL_BITS = (1 << 18) - 1  # the channels a layout bitmap may name
+# Channel labels besides those up to 255: headphones, click track, foreign
+# language, a discrete channel, and a numbered one (discrete, ambisonic, object).
+LABELS = {301, 302, 304, 305, 400, 500}
+NUMBERED_LABELS = range(1, 5)  # label >> 16
 COLOR_SIZES = {b"nclx": (11, 10), b"nclc": (10,)}  # some Android phones leave out nclx's range byte
 PROFILE_COLORS = {b"prof", b"rICC"}  # ICC profiles, sanitized
 DOLBY_VISION = {b"dvcC", b"dvvC", b"dvwC"}
@@ -411,12 +421,16 @@ def check_sound_constants(data, entry, fields):
     """A sound entry's fields of fixed values must hold them: QuickTime's
     compression ID and packet size (ISO's pre_defined and reserved) and,
     in version 2, its constants and the size of its fields."""
-    compression, packet = struct.unpack_from(">hH", data, entry.content + 20)
+    compression, packet, fraction = struct.unpack_from(">hHxxH", data, entry.content + 20)
     if fields == SOUND_FIELDS + QUICKTIME_SOUND[2]:
-        good = data[entry.content + 16:entry.content + 32] == V2_CONSTANTS and \
-            data[entry.content + 44:entry.content + 48] == V2_MARK
+        rate, _, _, bits, flags, packet_bytes, frames = struct.unpack_from(">dIIIIII", data, entry.content + 32)
+        good = (data[entry.content + 16:entry.content + 32] == V2_CONSTANTS
+                and data[entry.content + 44:entry.content + 48] == V2_MARK
+                and math.isfinite(rate) and rate.is_integer() and 0 < rate <= MAX_RATE
+                and (flags & ~LPCM_FLAGS == 0 if entry.kind == LPCM else flags <= MAX_FLAGS)
+                and bits <= 64 and packet_bytes <= MAX_PACKET and frames <= MAX_PACKET)
     else:
-        good = compression in (0, -1, -2) and not packet
+        good = compression in (0, -1, -2) and not packet and not fraction  # a rate of whole hertz
     if not good:
         raise unsupported("values of no known meaning in a sound sample entry")
 
@@ -478,7 +492,7 @@ def check_entry_box(data, found, children, siblings, entry):
             raise unsupported("colr box of type " + kind.decode("latin-1"))
         sizes = COLOR_SIZES.get(kind, (size,))
     elif found.kind == b"chan":
-        sizes = (size,) if channel_layout(data, found) else ()
+        sizes = (size,) if channel_layout(data, found, sound_fields(data, entry)[1]) else ()
     elif found.kind == b"auxi":  # the kind of auxiliary image, in a full box or, as Apple writes it, not: only alpha
         urn = bytes(data[found.content + (0 if any(data[found.content:found.content + 4]) else 4):found.end])
         sizes = (size,) if urn[-1:] == b"\0" and urn[:-1] in ALPHA else ()
@@ -515,25 +529,29 @@ def check_entry_box(data, found, children, siblings, entry):
             check_entry_box(data, child, children[child.kind], children, entry)
 
 
-def channel_layout(data, found):
-    """Whether a QuickTime channel layout (chan) holds only what its tag uses:
-    a tag of a known kind, a bitmap only with the bitmap tag, and only with
-    the descriptions tag descriptions of the channels, 20 bytes each: a label
-    of a known kind, and coordinates only for a channel placed by them."""
+def channel_layout(data, found, channels):
+    """Whether a QuickTime channel layout (chan) of sound of `channels`
+    describes just them: a tag of a known kind for that many channels, a
+    bitmap naming them, or a description of each, 20 bytes: a label of a known
+    kind, and no flags or coordinates."""
     size = found.end - found.content
-    if size < 16:
+    if size < 16 or not channels:
         return False
     tag, bitmap, count = struct.unpack_from(">III", data, found.content + 4)
-    if not (size == 16 + 20 * count and (not bitmap or tag == USE_BITMAP)
-            and (not count or tag == USE_DESCRIPTIONS and count <= CHANNELS)
-            and (tag in (USE_DESCRIPTIONS, USE_BITMAP) or 100 <= tag >> 16 <= 255)):
+    if tag == USE_BITMAP:
+        good = not count and not bitmap & ~CHANNEL_BITS and bin(bitmap).count("1") == channels
+    elif tag == USE_DESCRIPTIONS:
+        good = not bitmap and count == channels <= CHANNELS
+    else:  # a layout's tag, of how many channels it has
+        good = not bitmap and not count and (100 <= tag >> 16 <= 255 or tag >> 16 == UNKNOWN_LAYOUT) and \
+            tag & 0xFFFF == channels
+    if not good or size != 16 + 20 * count:
         return False
     for position in range(found.content + 16, found.end, 20):
-        label, flags = struct.unpack_from(">II", data, position)
-        if not (label <= 255 or label == 0xFFFFFFFF or 1 <= label >> 16 <= 2):  # named, discrete or ambisonic
-            return False
-        if (flags not in COORDINATE_FLAGS or label != USE_COORDINATES) and (flags or any(
-                data[position + 8:position + 20])):
+        label = int.from_bytes(data[position:position + 4], "big")
+        named = label <= 255 or label == 0xFFFFFFFF or label in LABELS
+        if not (named or label >> 16 in NUMBERED_LABELS and label & 0xFFFF < channels) or \
+                any(data[position + 4:position + 20]):  # flags and coordinates
             return False
     return True
 

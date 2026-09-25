@@ -24,9 +24,11 @@ them, and only picture tracks and their alpha (see SEQUENCE and movie.py).
 
 Media data never moves, so every item and sample offset stays valid.
 """
+import struct
+
 from .. import gainmap, icc, xmp
 from ..errors import FormatError, VerificationError
-from . import bmff, configs, movie
+from . import bmff, configs, jpeg, movie
 from .bmff import METADATA_ITEMS, StructureError, unsupported
 from .movie import empty, gaps, zeroed
 
@@ -62,7 +64,7 @@ SEQUENCE = movie.Policy(
 # Coded, derived and tiled images. Metadata items are removed (XMP is reduced);
 # any other item type is refused rather than guessed at.
 IMAGE_ITEMS = {b"hvc1", b"av01", b"grid", b"iden", b"iovl", b"tmap", b"jpeg", b"avc1", b"hvt1",
-               b"unci", b"vvc1", b"j2k1"}
+               b"unci", b"vvc1"}  # not JPEG 2000 (j2k1), whose codestream this module does not read
 DISPLAY_AUXILIARIES = {
     b"urn:mpeg:hevc:2015:auxid:1",                    # alpha
     b"urn:mpeg:mpegB:cicp:systems:auxiliary:alpha",
@@ -95,10 +97,15 @@ FULL_PROPERTIES = {b"ispe", b"pixi", b"tols", b"iscl", b"rloc"}  # of version 0 
 RESERVED_BITS = {b"irot": 0xFC, b"imir": 0xFE, b"a1lx": 0xFE, b"cclv": 0xC3}  # of the first byte
 COLORS = {b"nclx", b"prof", b"rICC"}  # coded primaries and transfer, or an ICC profile
 HEVC_ALPHA = b"urn:mpeg:hevc:2015:auxid:1"
-ALPHA_INFORMATION = 165  # the SEI message that may follow HEVC's alpha type in auxC
-# JPEG segments an image item may hold before its scan: tables and frames,
-# JFIF's without a thumbnail and Adobe's (color transform) application segments.
-JFIF, ADOBE = b"JFIF\0", b"Adobe"
+# What may follow HEVC's alpha type in auxC: a prefix SEI NAL unit's header
+# and its one message's type, alpha channel information, of at most 8 bytes.
+ALPHA_SEI, ALPHA_SIZE = bytes([0x4E, 0x01, 165]), 8
+# The application segments a JPEG image item may hold: JFIF's, without a
+# thumbnail, and Adobe's (its color transform), each of its size.
+JFIF, JFIF_SIZE, ADOBE, ADOBE_SIZE = b"JFIF\0", 14, b"Adobe", 12
+NCLX_CODES = 255  # the largest color primaries, transfer and matrix code
+OPERATING_POINTS = 31  # the largest AV1 operating point (a1op)
+PIXEL_CHANNELS, PIXEL_BITS = 4, 16  # pixi: channels and bits per channel of the images kept
 # Reference types that may point to or from a removed item.
 REMOVABLE_REFERENCES = {b"dimg", b"cdsc", b"auxl", b"thmb"}
 MAX_XMP = 16 * 1024 * 1024
@@ -194,6 +201,7 @@ def clean_items(data, layout, result, samples):
              | {ident for ident, item in layout.items.items() if item.xmp and without_hdr_fields(data, layout, ident)})
     deleted = removed_items(layout, seeds)
     live = set(layout.items) - deleted
+    check_jpeg_items(data, layout, live)
     retained = movie.merged([span for ident in live for span in layout.extents[ident]] + samples)
     for ident in deleted:
         for start, end in layout.extents[ident]:
@@ -236,13 +244,21 @@ def check_items(data, layout):
            for spans in layout.extents.values() for start, end in spans):
         raise unsupported("item data outside mdat and idat")
     check_tone_maps(data, layout)
-    for ident, item in layout.items.items():
-        if item.kind in (b"jpeg", b"j2k1"):
-            payload = b"".join(data[start:end] for start, end in layout.extents[ident])
-            if item.kind == b"jpeg" and not jpeg_segments(payload, 0, len(payload), whole=True) or \
-                    item.kind == b"j2k1" and codestream_comments(payload, 0, len(payload)):
-                raise unsupported("an image item holding metadata segments")
     return auxiliary
+
+
+def check_jpeg_items(data, layout, idents):
+    """The JPEG image items among `idents` hold only what decodes them (see
+    jpeg_stream), their jpgC header before their data."""
+    for ident in idents:
+        if layout.items[ident].kind == b"jpeg":
+            properties = (layout.props.get(index) for index in layout.associations.get(ident, []))
+            header = b"".join(bytes(data[prop.content:prop.end]) for prop in properties if prop and prop.kind == b"jpgC")
+            payload = b"".join(data[start:end] for start, end in layout.extents[ident])
+            if header and payload[:2] != b"\xff\xd8":  # the header lacks its SOI, then
+                header = (b"" if header[:2] == b"\xff\xd8" else b"\xff\xd8") + header
+            if not jpeg_stream(header + payload):
+                raise unsupported("an image item holding metadata segments")
 
 
 def check_tone_maps(data, layout):
@@ -381,7 +397,8 @@ def kept_properties(data, layout, live):
         for index in layout.associations.get(ident, []):
             prop = layout.props.get(index)  # index 0 means no property
             if prop and prop.kind in DISPLAY_PROPERTIES:
-                check_size(data, prop)
+                if index not in kept:  # a property may be many items'
+                    check_size(data, prop)
                 kept.add(index)
             elif prop and index in layout.essential[ident] and prop.kind not in DESCRIPTIVE_PROPERTIES:
                 raise unsupported("item property " + listed([prop.kind]))
@@ -395,10 +412,14 @@ def check_size(data, prop):
     size = prop.end - prop.content
     first = data[prop.content] if size else 0
     if prop.kind == b"pixi":  # a version and flags, the channel count, a depth per channel
-        expected = 5 + data[prop.content + 4] if size > 4 else 0
+        channels = data[prop.content + 4] if size > 4 else 0
+        depths = data[prop.content + 5:prop.end]
+        expected = 5 + channels if 1 <= channels <= PIXEL_CHANNELS and all(1 <= bits <= PIXEL_BITS
+                                                                              for bits in depths) else None
     elif prop.kind == b"colr":
         kind = bytes(data[prop.content:prop.content + 4])
-        if kind not in COLORS or kind == b"nclx" and size == 11 and data[prop.content + 10] & 0x7F:
+        if kind not in COLORS or kind == b"nclx" and size == 11 and (data[prop.content + 10] & 0x7F or max(
+                struct.unpack_from(">HHH", data, prop.content + 4)) > NCLX_CODES):
             raise unsupported("item property colr of type " + kind.decode("latin-1"))
         expected = 11 if kind == b"nclx" else size  # primaries, transfer, matrix and range
     elif prop.kind == b"a1lx":  # three layer sizes, of 16 bits or, when large, 32
@@ -407,72 +428,56 @@ def check_size(data, prop):
         expected = 1 + (24 if first & 0x20 else 0) + 4 * bin(first & 0x1C).count("1")
     elif prop.kind == b"auxC":
         expected = size if alpha_information(data, prop) else None
-    elif prop.kind in (b"jpgC",):
-        expected = size if jpeg_segments(data, prop.content, prop.end, whole=False) else None
+    elif prop.kind == b"jpgC":
+        expected = size if jpeg_header(data[prop.content:prop.end]) else None
     else:
         expected = PROPERTY_SIZES.get(prop.kind, size)
     if size != expected or prop.kind in FULL_PROPERTIES and any(data[prop.content:prop.content + 4]) or \
-            first & RESERVED_BITS.get(prop.kind, 0):
+            first & RESERVED_BITS.get(prop.kind, 0) or prop.kind == b"a1op" and first > OPERATING_POINTS:
         raise unsupported("extra data in item property " + listed([prop.kind]))
 
 
 def alpha_information(data, prop):
     """Whether an auxC holds its type and nothing after it but, for HEVC's
-    alpha, SEI messages of alpha channel information: their total size, then
-    NAL units each with its size."""
+    alpha, one SEI message of alpha channel information, as Apple writes it:
+    its total size, the NAL unit's size, then the NAL unit, a prefix SEI of
+    that one message of at most ALPHA_SIZE bytes."""
     terminator = data.find(b"\0", prop.content + 4, prop.end)
     if terminator < 0 or terminator + 1 == prop.end:
         return terminator >= 0
-    if bytes(data[prop.content + 4:terminator]) != HEVC_ALPHA:
+    tail = bytes(data[terminator + 1:prop.end])
+    if bytes(data[prop.content + 4:terminator]) != HEVC_ALPHA or len(tail) < 12:
         return False
-    position = terminator + 1
-    total = int.from_bytes(data[position:position + 4], "big")
-    position += 4
-    if position + total != prop.end:
+    total, size = struct.unpack_from(">II", tail)
+    nal = tail[8:]
+    return (total == 4 + size == len(tail) - 4 and nal[:3] == ALPHA_SEI and nal[3] <= ALPHA_SIZE
+            and size == 4 + nal[3])
+
+
+def jpeg_stream(stream, header=False):
+    """Whether a JPEG image item's stream (its jpgC header, then its data) holds
+    only what decodes it, read as jpeg.py reads a JPEG file: coding segments,
+    JFIF's without a thumbnail and Adobe's, and nothing after its end. A
+    header (jpgC alone) holds no scan."""
+    try:
+        found = list(jpeg.segments(stream))
+    except FormatError:
         return False
-    while position < prop.end:
-        size = int.from_bytes(data[position:position + 4], "big")
-        nal = data[position + 4:position + 4 + size]
-        if size < 3 or len(nal) != size or nal[0] >> 1 & 0x3F != 39 or nal[2] != ALPHA_INFORMATION:  # prefix SEI
+    if found[-1][2] != len(stream):
+        return False
+    for marker, _, _, payload in found:
+        if header and marker == jpeg.SOS or not (
+                marker in (jpeg.SOI, jpeg.EOI) or marker in jpeg.CODING or marker in jpeg.RESTART
+                or marker == jpeg.APP0 and payload[:5] == JFIF and len(payload) == JFIF_SIZE and not any(payload[12:])
+                or marker == jpeg.APP14 and payload[:5] == ADOBE and len(payload) == ADOBE_SIZE):
             return False
-        position += 4 + size
     return True
 
 
-def jpeg_segments(data, start, end, whole):
-    """Whether a JPEG stream (whole) or its header (jpgC) holds no segment of
-    metadata: no comment, and no application segment but JFIF's, without a
-    thumbnail, and Adobe's."""
-    position = start
-    if whole:
-        if data[start:start + 2] != b"\xff\xd8":
-            return False
-        position += 2
-    while position + 4 <= end and data[position] == 0xFF:
-        marker = data[position + 1]
-        if marker == 0xDA:  # the scan: image data to the end
-            return True
-        length = int.from_bytes(data[position + 2:position + 4], "big")
-        body = bytes(data[position + 4:position + 2 + length])
-        if marker == 0xFE or 0xE0 <= marker <= 0xEF and not (
-                marker == 0xE0 and body[:5] == JFIF and len(body) == 14 and body[12:14] == bytes(2)
-                or marker == 0xEE and body[:5] == ADOBE and len(body) == 10):
-            return False
-        position += 2 + length
-    return not whole and position == end
-
-
-def codestream_comments(data, start, end):
-    """Whether a JPEG 2000 codestream's main header holds a comment (COM)."""
-    position = start + 2  # after SOC
-    while position + 4 <= end and data[position] == 0xFF:
-        marker = data[position + 1]
-        if marker == 0x90:  # the first tile
-            return False
-        if marker == 0x64:
-            return True
-        position += 2 + int.from_bytes(data[position + 2:position + 4], "big")
-    return False
+def jpeg_header(payload):
+    """Whether a jpgC property holds only a JPEG header, with or without its SOI."""
+    body = bytes(payload[2:]) if payload[:2] == b"\xff\xd8" else bytes(payload)
+    return jpeg_stream(b"\xff\xd8" + body + b"\xff\xd9", header=True)
 
 
 def item_properties(data, layout, live, kept):
@@ -647,9 +652,11 @@ def check_cleaned_items(original, before, rebuilt, after):
     if not set(after.items) <= set(before.items):
         fail("unexpected item")
     check_tone_maps(rebuilt, after)
+    check_jpeg_items(rebuilt, after, set(after.items))
     auxiliary = bmff.auxiliary_types(rebuilt, after)
     if set(auxiliary.values()) - DISPLAY_AUXILIARIES or any(kind == b"thmb" for kind, _, _ in after.references):
         fail("editing image or thumbnail kept")
+    checked = set()
     for ident, item in after.items.items():
         content = b"".join(rebuilt[a:b] for a, b in after.extents[ident])
         if item.xmp:
@@ -666,8 +673,9 @@ def check_cleaned_items(original, before, rebuilt, after):
             prop = after.props.get(index)
             if prop and prop.kind not in DISPLAY_PROPERTIES:
                 fail("item property %r kept" % prop.kind)
-            if prop:
+            if prop and index not in checked:  # a property may be many items'
                 check_size(rebuilt, prop)
+                checked.add(index)
         # Item tables may be compacted, so item profiles are matched by item.
         if item_profiles(rebuilt, after, ident) != [icc.sanitize(profile)
                                                     for profile in item_profiles(original, before, ident)]:

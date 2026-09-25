@@ -122,7 +122,8 @@ silence at the start of the sound.
   and audio-only videos, video tracks other than video, sound, timed metadata, timecode and
   chapters (subtitles, for instance), video codecs and sample entry boxes not on the list
   (Motion JPEG among them, and Opus as AVFoundation writes it into QuickTime movies, in a form
-  with no public layout), Google's 360-degree videos, sample tables that disagree, decoder
+  with no public layout), JPEG images in HEIF holding EXIF, comment, ICC or other application
+  segments, JPEG 2000 images in HEIF, Google's 360-degree videos, sample tables that disagree, decoder
   configurations with data after them, uncompressed sound players could read in two ways, file
   types of unknown major brands, a removed track that another needs to be shown, media stored
   outside the file, BigTIFF, old-style JPEG in TIFF, metadata inside JPEG-compressed TIFF strips,
@@ -148,11 +149,12 @@ inside video and sound samples, such as the SEI messages some encoders write int
 HEVC frames: the frames of an iPhone's Live Photo video, for one, carry an 8-byte value of
 unknown meaning that other videos lack. Decoder configurations (such as hvcC and avcC) are
 copied whole too, as the samples are, up to their end; those of other codecs (VVC, APV, AC-4,
-MPEG-H, DTS, ALAC, MLP, IAMF and more, and HEIF's uncompressed and JPEG 2000 images) are not read
-at all. So are fields that players read and whose values a
+MPEG-H, DTS, ALAC, MLP, IAMF and more, and HEIF's uncompressed images) are not read at all. So are fields that players read and whose values a
 made-up file could choose freely: track IDs, display sizes and resolutions, the graphics mode,
 the composition offsets of cslg, roll distances, QuickTime's quality and revision fields in
-sample entries, which macOS reads, and a version 1 sound entry's bytes per packet and sample. Apple's positional audio configuration (dapa) is copied
+sample entries, which macOS reads, and a version 1 sound entry's bytes per packet and sample; in
+HEIF, image group IDs and the values of layout properties (scaling, position, AV1 layers, color
+volume, ambient light). Apple's positional audio configuration (dapa) is copied
 whole. Detecting such steganography is beyond this tool.
 
 If MagicDispel is killed, or the drive a video is on goes away while it is being cleaned, the

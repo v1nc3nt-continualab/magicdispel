@@ -231,10 +231,47 @@ class ItemTests(HeifTests):
         self.assertRefused(heif_file([PRIMARY], properties=[box(b"hvcC", hvcc + MARKER)], associations={1: [1, 2]}),
                            "unsupported_part")
 
+    def test_jpeg_images_are_read_as_jpeg_files_are(self):
+        scan = b"\xff\xda\0\2PIXELS"
+        comment = b"\xff\xfe" + struct.pack(">H", 2 + len(MARKER)) + MARKER
+        app1 = b"\xff\xe1" + struct.pack(">H", 2 + len(MARKER)) + MARKER
+        adobe = b"\xff\xee\0\x0eAdobe" + bytes(7)  # 12 bytes, as libjpeg writes it
+        kept = {"Adobe's segment": b"\xff\xd8" + adobe + scan + b"\xff\xd9"}
+        refused = {"a comment after the scan": b"\xff\xd8" + scan + comment + b"\xff\xd9",
+                   "data after the end": b"\xff\xd8" + scan + b"\xff\xd9" + MARKER,
+                   "EXIF behind a fill byte": b"\xff\xd8\xff" + app1 + scan + b"\xff\xd9",
+                   "EXIF behind TEM": b"\xff\xd8\xff\x01" + app1 + scan + b"\xff\xd9"}
+        for reason, image in kept.items():
+            with self.subTest(reason):
+                data = heif_file([(1, b"jpeg", image)])
+                heif.verify(data, heif.rebuild(data))
+        for reason, image in refused.items():
+            with self.subTest(reason):
+                self.assertRefused(heif_file([(1, b"jpeg", image)]), "unsupported_part")
+        # A header in jpgC (HEIF Annex H), the rest in the item.
+        header = box(b"jpgC", b"\xff\xdb\0\x43" + bytes(65))
+        split = heif_file([(1, b"jpeg", scan + b"\xff\xd9")], properties=[header], associations={1: [1, 2]})
+        heif.verify(split, heif.rebuild(split))
+        # A thumbnail goes, whatever it holds; a JPEG 2000 image is refused.
+        thumbnail = heif_file([PRIMARY, (2, b"jpeg", b"\xff\xd8" + app1 + scan + b"\xff\xd9")],
+                              [(b"thmb", 2, [1])])
+        self.assertNotIn(MARKER, self.assertRebuilt(thumbnail))
+        self.assertRefused(heif_file([(1, b"j2k1", b"\xff\x4f\xff\x51")]), "unsupported_part")
+
+    def test_properties_hold_only_values_of_meaning(self):
+        for prop in (full(b"pixi", 0, bytes([3, 8, 8, 99])), box(b"a1op", b"\x40"),
+                     box(b"colr", b"nclx" + struct.pack(">HHH", 1, 999, 1) + b"\0"),
+                     box(b"auxC", bytes(4) + b"urn:mpeg:hevc:2015:auxid:1\0"
+                         + bytes.fromhex("0000000c000000084e01a5040001fe40") + MARKER)):
+            with self.subTest(prop[4:8]):
+                self.assertRefused(heif_file([PRIMARY], properties=[prop], associations={1: [1, 2]}),
+                                   "unsupported_part")
+        self.assertRefused(heif_file([PRIMARY], associations={1: [1, 1]}), "damaged")  # a property twice
+
     def test_metadata_in_a_jpeg_image_and_made_up_groups_are_refused(self):
-        exif = b"\xff\xd8" + b"\xff\xe1" + struct.pack(">H", 2 + len(MARKER)) + MARKER + b"\xff\xda\0\2PIXELS"
+        exif = b"\xff\xd8" + b"\xff\xe1" + struct.pack(">H", 2 + len(MARKER)) + MARKER + b"\xff\xda\0\2PIXELS\xff\xd9"
         self.assertRefused(heif_file([(1, b"jpeg", exif)]), "unsupported_part")
-        plain = heif_file([(1, b"jpeg", b"\xff\xd8\xff\xda\0\2PIXELS")])
+        plain = heif_file([(1, b"jpeg", b"\xff\xd8\xff\xda\0\2PIXELS\xff\xd9")])
         heif.verify(plain, heif.rebuild(plain))
         self.assertRefused(heif_file([PRIMARY], group=[1, 0x4D445F54]), "damaged")  # a member that is no item
 

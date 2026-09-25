@@ -176,6 +176,7 @@ def channel_layout(reader, channels):
             if count != channels and not structure & OBJECTS_STRUCTURED or count > channels:
                 raise unsupported("the chnl box is not in its layout")
             for _ in range(count):
+                reader.item()
                 speaker(reader)
         elif version == 0 and any(reader.take(8)):  # the channels left out: none
             raise unsupported("a channel layout that leaves channels out")
