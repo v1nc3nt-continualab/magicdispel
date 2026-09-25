@@ -145,6 +145,8 @@ def illuminance(*millilux):
 
 
 INTENT = b"com.apple.quicktime.full-frame-rate-playback-intent"
+# ExifTool's name for it, and that of an older ExifTool, which names the keys it does not know after them.
+INTENT_TAGS = ("FullFrameRatePlaybackIntent", "Full-frame-rate-playback-intent")
 
 
 def apple_metadata(*items, handler_name=b"\0\0"):
@@ -327,7 +329,7 @@ class MovieTests(VideoTests):
                 self.assertEqual(mp4.rebuild(rebuilt), rebuilt)  # a clean copy cleans to itself
                 if SECOND_CHECK:
                     tags = exiftool.read(SECOND_CHECK, rebuilt)
-                    intents = [found for key, found in tags.items() if key.endswith(":FullFrameRatePlaybackIntent")]
+                    intents = [found for key, found in tags.items() if key.split(":")[-1] in INTENT_TAGS]
                     self.assertEqual(intents, [value])
                     exiftool.check_tags(tags, "MOV")
         # Another value, or data in the free box after it, fails verification.

@@ -63,7 +63,7 @@ DISPLAY_TAGS = re.compile(
     r"^(Orientation|[XY]Resolution|ResolutionUnit|PixelsPerUnit[XY]|PixelUnits|SRGBRendering|"
     r"Gamma|WhitePoint[XY]|(Red|Green|Blue)[XY]|ColorSpace|InteropIndex|BackgroundColor|"
     r"ColorPrimaries|TransferCharacteristics|MatrixCoefficients|VideoFullRangeFlag|JFIFVersion|"
-    r"FullFrameRatePlaybackIntent)$")
+    r"FullFrameRatePlaybackIntent|Full-frame-rate-playback-intent)$")  # the latter: older ExifTool
 # The handler type of the metadata box a kept playback intent is in.
 KEPT_STRUCTURE = {("HandlerType", "mdta")}
 # Values describing the file's own layout (positions, sizes, which optional parts
