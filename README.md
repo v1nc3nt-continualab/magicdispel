@@ -123,7 +123,7 @@ ICC profiles keep their color data. Their date becomes a fixed placeholder (`200
 their description `Clean`, and device and creator fields are cleared. Images up to 268
 megapixels are checked, enough for 200-megapixel phone photos; larger ones are refused.
 Videos are cleaned in a copy next to the original without being read into memory: a 4.7 GB
-video took under five seconds on a Mac. Fragmented and encrypted videos, videos with
+video takes about five seconds on a Mac. Fragmented and encrypted videos, videos with
 subtitles, Google's 360-degree videos, and codecs MagicDispel does not know are refused.
 Apple's 180- and 360-degree videos keep their projection.
 

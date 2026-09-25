@@ -1,66 +1,66 @@
 # Changelog
 
-## Unreleased
+## 0.2.0 (2026-09-25)
 
 Videos: MP4 and QuickTime (MOV) files are cleaned too, without changing a single frame. Tested
 on 64 public sample videos, GoPro, iPhone (Dolby Vision, spatial video), Pixel and Samsung ones
 among them: 47 clean, FFmpeg decodes identical frames from each, and macOS plays each the same;
 the other 17 are refused as designed. Three videos from an iPhone 16 on iOS 27 clean the same
 way. So do 394 small files made for the tests with FFmpeg, macOS (avconvert, AVAssetWriter,
-ImageIO) and ExifTool, of every codec, container and muxer option they offer: those not
+ImageIO) and ExifTool, of every codec, container and muxer option they offer, but for those
 refused by design (fragmented, audio-only, subtitles, Motion JPEG, MPEG-2, DNxHR, Opus as
-AVFoundation writes it into QuickTime, iLBC) clean with identical frames and sound.
+AVFoundation writes it into QuickTime, iLBC).
 
 - Kept: video and sound tracks with every sample, decoder configurations, rotation, edit lists,
   color, HDR, Dolby Vision, Apple Log, alpha, Apple's spatial video information and positional
-  audio (APAC), and Apple's per-frame scene illuminance, which iPhones mark as used to show their HDR
-  video. It is kept only in its exact layout; any other track another is shown with is refused.
+  audio (APAC), and Apple's per-frame scene illuminance, which iPhones mark as used to show
+  their HDR video. It is kept only in its exact layout; any other such track is refused.
 - Removed: location, device, software and dates in user data and metadata boxes; timed
   metadata tracks (GPS and motion, face detection, Live Photo and motion photo data), timecode
-  and chapter tracks (their pictures too), with their samples; maker data such as GoPro's serial numbers and
-  Samsung's SEF data; creation times, handler, vendor and compressor names; brands naming a
-  camera's maker; the extended language tag, which may name a region; unused media data and
-  anything after the movie.
+  and chapter tracks, chapter pictures too, with their samples; maker data such as GoPro's
+  serial numbers and Samsung's SEF data; creation times, handler, vendor and compressor names;
+  brands naming a camera's maker; the extended language tag, which may name a region; unused
+  media data and anything after the movie.
 - Refused: fragmented, encrypted and audio-only files, subtitle tracks, Google's 360-degree
   videos, codecs and sample entry boxes not on the list, and a removed track that another
   needs to be shown.
 - Every kept box has exactly its layout and appears once where the standard allows one, and a
-  kept track's sample tables must agree on its samples, chunks and descriptions; no two
-  chunks share bytes. Decoder configurations must end where they say (avcC, hvcC, esds, av1C,
-  vpcC, dOps), and FLAC's may hold no tags. Sample groups other than roll distances, sync and
+  kept track's sample tables must agree on its samples, chunks and descriptions; no two chunks
+  share bytes. Decoder configurations must end where they say (avcC, hvcC, esds, av1C, vpcC,
+  dOps, dec3), and FLAC's may hold no tags. Sample groups other than roll distances, sync and
   random access points and temporal layers are emptied, and descriptions no sample uses are
   cleared; so are reserved fields and QuickTime's poster and selection times. Seeking hints no
-  player needs (stsh, subs, padb) are emptied. Uncompressed sound is read by its sample entry,
-  as players read it, and sound they could read in two ways is refused. The codec maker's name
-  in H.263 and AMR configurations is cleared, and FFmpeg's copy of a ProRes encoder's
-  description (glbl), compressor name included, is emptied. The gapless playback note (iTunSMPB)
-  goes with the metadata.
+  player needs (stsh, subs, padb) are emptied. Sound is read by its sample entry, as FFmpeg and
+  AVFoundation read it; sound they could read in two ways is refused. The codec maker's name in
+  H.263 and AMR configurations is cleared, and FFmpeg's copy of a ProRes encoder's description
+  (glbl), compressor name included, is emptied. The gapless playback note (iTunSMPB) goes with
+  the metadata.
 - A video is cleaned in a copy next to the original, never read into memory: a 4.7 GB video
-  takes under five seconds. The copy, `magicdispel-<random>.unfinished.mov` until it is done,
-  is readable only by its owner, and gets the original's permissions once it is clean. Ctrl+C,
-  Ctrl+Break, closing the terminal (unless run with `nohup`) and stopping MagicDispel remove an
-  unfinished copy. ExifTool's second check reads that copy from its path, with the timed
-  metadata in its samples, and gives up after ten minutes.
-- Photos: a HEIF file keeps only the brands that say how to read it (HEIF's, MIAF's, AVIF's,
-  and those of the other image codecs); others are cleared, and a second file type box is
-  emptied. Item properties whose standards fix their layout (tols, iscl, rloc, amve, a1lx,
-  cclv, colr, irot, imir, auxC) must have exactly it; a JPEG image item holding metadata
-  segments (EXIF, comments, ICC), read as a JPEG file is, JPEG 2000 image items, a second meta
-  or moov box and image groups naming no image are refused. An image's decoder configuration must end where it says, as in videos. An image
-  sequence's thumbnail track goes, as thumbnail images do, and no removed image may share
-  bytes with a kept sequence's frames (ImageIO's animated HEIC with thumbnails was refused). Checking which
-  removed items share data with kept ones no longer takes time that grows with the square of
-  their number. Clean copies of photos also get
-  their original's permissions. Names and messages printed never carry a file's control
-  characters to the terminal.
+  takes about five seconds. The copy, named `magicdispel-<random>.unfinished` and the video's
+  extension until it is done, is readable only by its owner, and gets the original's permissions
+  once it is clean. Ctrl+C, Ctrl+Break, closing the terminal (unless run with `nohup`) and
+  stopping MagicDispel remove an unfinished copy. ExifTool's second check reads that copy from
+  its path, with the timed metadata in its samples, and gives up after ten minutes.
 - A video keeps its extension (.mp4, .mov, .m4v, .3gp, .f4v...), whatever its content: players
-  may read one file differently by its extension. A clean copy cleans to itself: cleaning it
-  again changes nothing. `--anonymous` names videos `video_<random>.mov`.
-- Image sequences (HEIF, AVIF) and videos share one cleaner, which also checks that headers and
-  sample tables have exactly their size, and that nothing in the movie box changed but the
-  cleared fields. The 95 test photos clean exactly as before.
+  may read one file differently by its extension. `--anonymous` names videos `video_<random>`
+  and their extension. A clean copy cleans to itself: cleaning it again changes nothing.
+- Photos: a HEIF file keeps only the brands that say how to read it (HEIF's, MIAF's, AVIF's and
+  those of the other image codecs); others are cleared, and a second file type box is emptied.
+  Item properties whose standards fix their layout (tols, iscl, rloc, amve, a1lx, cclv, colr,
+  irot, imir, auxC) must have exactly it, and an image's decoder configuration must end where
+  it says. A JPEG image item holding metadata segments (EXIF, comments, ICC), read as a JPEG
+  file is, JPEG 2000 image items, a second meta or moov box and image groups naming no image
+  are refused. An image sequence's thumbnail track goes, as thumbnail images do, and no removed
+  image may share bytes with a kept sequence's frames: ImageIO's animated HEIC with
+  thumbnails, refused before, is cleaned. Apple's stereo photos are refused as unsupported, no
+  longer as damaged. Checking which removed items share data with kept ones no longer takes
+  time that grows with the square of their number. Clean copies of photos also get their
+  original's permissions, and names and messages printed never carry a file's control
+  characters to the terminal.
+- Image sequences (HEIF, AVIF) and videos share one cleaner. The 96 test photos clean exactly as
+  before.
 - The regression harness checks videos with FFmpeg (every decoded frame and stream) and macOS
-  AVFoundation (tracks, rotation, HDR, frames).
+  AVFoundation (tracks, rotation, HDR, frames), and cleans every clean copy again.
 
 ## 0.1.5 (2026-09-24)
 

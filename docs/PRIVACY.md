@@ -13,10 +13,11 @@ anonymization.
 - **Color.** ICC profiles keep their color conversion data: matrices, curves, lookup tables,
   Apple's parametric curves in screenshot profiles, HDR adaptive curves (with their
   image-specific identifier cleared), and the headroom adaptive gain curves of HDR photos
-  (SMPTE ST 2094-50 tone-mapping data, which holds no identifier). Every profile is rebuilt with the fixed date
-  `2000-01-01 00:00:00` and description `Clean`; creator, maker, model, CMM, platform and profile
-  ID are cleared, and display calibration data is removed. Color declarations of the formats
-  themselves are kept: PNG sRGB, gAMA, cHRM, cICP and HDR chunks, HEIF color boxes.
+  (SMPTE ST 2094-50 tone-mapping data, which holds no identifier). Every profile is rebuilt
+  with the fixed date `2000-01-01 00:00:00` and description `Clean`; creator, maker, model,
+  CMM, platform and profile ID are cleared, and display calibration data is removed. Color
+  declarations of the formats themselves are kept: PNG sRGB, gAMA, cHRM, cICP and HDR chunks,
+  HEIF color boxes.
 - **Display fields.** Orientation, DPI, color space and the DCF interoperability index, written
   into a fresh EXIF block holding nothing else. For iPhone HDR photos, Apple's HDR headroom and
   gain, in a fresh maker note holding nothing else.
@@ -41,26 +42,27 @@ anonymization.
 
 Everything not listed above, including: EXIF capture time, camera, lens, serial numbers,
 location and maker notes; XMP (except gain-map fields); IPTC and Photoshop blocks; comments and
-text chunks; C2PA manifests; embedded thumbnails and previews, including the preview images
-of JPEG multi-picture files, which may show an uncropped original; HEIF depth maps, lens
+text chunks; C2PA manifests; embedded thumbnails and previews, including the preview images of
+JPEG multi-picture files, which may show an uncropped original; HEIF depth maps, lens
 calibration, portrait and semantic mattes, style maps, Apple property lists, item names, and
-item properties such as descriptions, creation times and camera parameters; JPEG MPF image
-IDs; in image sequences, every box not needed to play them, and creation times, handler and
-encoder names; in videos, the location, device, software and dates of user data and metadata
-boxes, timed metadata tracks (GPS and motion data, face detection, Live Photo and motion photo
-data, and any other than scene illuminance), timecode and chapter tracks, maker data such as GoPro's serial numbers and Samsung's SEF
-data, creation times, handler, vendor and compressor names, and media data no remaining track
-uses; TIFF EXIF and GPS directories, descriptions, private tags and sub-images; and unknown or
-private data blocks and data after the end of an image or video.
+item properties such as descriptions, creation times and camera parameters; JPEG MPF image IDs;
+in image sequences, every box not needed to play them, and creation times, handler and encoder
+names; in videos, the location, device, software and dates of user data and metadata boxes,
+timed metadata tracks (GPS and motion data, face detection, Live Photo and motion photo data,
+and any other than scene illuminance), timecode and chapter tracks, maker data such as GoPro's
+serial numbers and Samsung's SEF data, creation times, handler, vendor and compressor names,
+and media data no remaining track uses; TIFF EXIF and GPS directories, descriptions, private
+tags and sub-images; and unknown or private data blocks and data after the end of an image or
+video.
 
 Removing auxiliary HEIF images limits later portrait, depth-of-field and photographic-style
 edits. A HEIC photo's resolution in DPI goes with its EXIF, the only place HEIF has for it:
-readers then assume 72 DPI, which is what iPhones write anyway. Tested HEIC and HDR JPEG files render identically on macOS in SDR and HDR. Removing a
-video's timed metadata likewise ends what only its maker's app draws from it, such as the
-pairing of a Live Photo's video with its photo, or Samsung's slow-motion sections. The gapless
-playback note some encoders put in the metadata (iTunSMPB) goes too: a player that trims the
-encoder's delay by it rather than by the edit list may then play a few milliseconds of
-silence at the start of the sound.
+readers then assume 72 DPI, which is what iPhones write anyway. Tested HEIC and HDR JPEG files
+render identically on macOS in SDR and HDR. Removing a video's timed metadata likewise ends
+what only its maker's app draws from it, such as the pairing of a Live Photo's video with its
+photo, or Samsung's slow-motion sections. The gapless playback note some encoders put in the
+metadata (iTunSMPB) goes too: a player that trims the encoder's delay by it rather than by the
+edit list may then play a few milliseconds of silence at the start of the sound.
 
 ## How nothing slips through
 
@@ -83,30 +85,29 @@ silence at the start of the sound.
   configuration and color and display properties. Readers skip boxes they do not know, so
   any other box, however it is named, is emptied rather than kept.
 - **Videos.** MP4 and QuickTime movies keep only the boxes on a fixed list: headers, tracks,
-  edits and sample tables, and in each sample entry its decoder configuration and its color,
-  HDR and spatial video boxes. Unlike an image sequence's, a sample entry holding a box not on
-  the list is refused rather than emptied, since a video may need it to play. Only video and
-  sound tracks stay; the samples of the tracks removed are zeroed with every other byte of the
-  media data that no remaining sample uses. Every kept box has exactly the layout its type and
-  version give it, and appears once where the standard allows one; a kept track's sample
-  tables must agree on its samples, chunks and sample descriptions, and no two chunks may share
-  bytes, so that players read the samples MagicDispel keeps and nothing else. A decoder
-  configuration must end where it says it does (avcC, hvcC, lhvC, esds, av1C, vpcC, dOps);
-  FLAC's may hold only its stream information, not tags or pictures. Sample groups stay only
-  for roll distances, sync and random access points and temporal layers, and their
-  descriptions that no sample uses are cleared; others, which only help seeking, are emptied,
-  as are shadow sync, sub-sample and padding tables. Reserved fields, QuickTime's preview,
-  poster and selection times, and a visual entry's data size are cleared. The file type box
-  keeps the brands that say how to read the file, and its minor version, a number some
-  encoders set; brands such as those naming a camera's maker are cleared. The name of the
-  codec's maker in H.263 and AMR configurations is cleared, and so is the extended language
-  tag, which may name a region. Uncompressed sound is read by its sample entry, as players
-  read it; sound they could read in two ways is refused. The check compares every box of the
-  result with the original's and every kept sample byte for byte. A video is cleaned in a copy
-  next to the original, and neither is read into memory. FFmpeg's copy of a ProRes encoder's
-  description (glbl) is emptied, as its compressor name would be. Until it is clean, the copy is named
-  `magicdispel-<random>.unfinished` and readable only by its owner; it then gets the original's
-  permissions.
+  edits and sample tables, and in each sample entry its decoder configuration and its color, HDR
+  and spatial video boxes. Unlike an image sequence's, a sample entry holding a box not on the
+  list is refused rather than emptied, since a video may need it to play. Only video and sound
+  tracks stay; the samples of the tracks removed are zeroed with every other byte of the media
+  data that no remaining sample uses. Every kept box has exactly the layout its type and version
+  give it, and appears once where the standard allows one; a kept track's sample tables must
+  agree on its samples, chunks and sample descriptions, and no two chunks may share bytes, so
+  that players read the samples MagicDispel keeps and nothing else. A decoder configuration must
+  end where it says it does (avcC, hvcC, lhvC, esds, av1C, vpcC, dOps, dec3); FLAC's may hold
+  only its stream information, not tags or pictures. Sample groups stay only for roll distances,
+  sync and random access points and temporal layers, and their descriptions that no sample uses
+  are cleared; others, which only help seeking, are emptied, as are shadow sync, sub-sample and
+  padding tables. Reserved fields, QuickTime's preview, poster and selection times, and a visual
+  entry's data size are cleared. The file type box keeps the brands that say how to read the
+  file, and its minor version, a number some encoders set; brands such as those naming a
+  camera's maker are cleared. The name of the codec's maker in H.263 and AMR configurations is
+  cleared, and so is the extended language tag, which may name a region. Uncompressed sound is
+  read by its sample entry, as players read it; sound they could read in two ways is refused.
+  The check compares every box of the result with the original's and every kept sample byte for
+  byte. A video is cleaned in a copy next to the original, and neither is read into memory.
+  FFmpeg's copy of a ProRes encoder's description (glbl) is emptied, as its compressor name
+  would be. Until it is clean, the copy is named `magicdispel-<random>.unfinished` and the
+  video's extension, and is readable only by its owner; it then gets the original's permissions.
 - **HEIF and videos in place.** HEIF files and videos are cleaned without moving any image or
   media data, so every offset stays valid: the item tables are rewritten in the space they had,
   removed items and boxes are zero-filled, bytes that no remaining item or sample uses are
@@ -123,13 +124,13 @@ silence at the start of the sound.
   chapters (subtitles, for instance), video codecs and sample entry boxes not on the list
   (Motion JPEG among them, and Opus as AVFoundation writes it into QuickTime movies, in a form
   with no public layout), JPEG images in HEIF holding EXIF, comment, ICC or other application
-  segments, JPEG 2000 images in HEIF, Google's 360-degree videos, sample tables that disagree, decoder
-  configurations with data after them, uncompressed sound players could read in two ways, file
-  types of unknown major brands, a removed track that another needs to be shown, media stored
-  outside the file, BigTIFF, old-style JPEG in TIFF, metadata inside JPEG-compressed TIFF strips,
-  unrecognized ICC tags and floating-point ICC transforms, gain-map metadata of an unknown
-  version. RAW photos built on TIFF (DNG, CR2, NEF and others) are refused too: their TIFF
-  pages hold only a preview.
+  segments, JPEG 2000 images in HEIF, Google's 360-degree videos, sample tables that disagree,
+  decoder configurations with data after them, uncompressed sound players could read in two
+  ways, file types of unknown major brands, a removed track that another needs to be shown,
+  media stored outside the file, BigTIFF, old-style JPEG in TIFF, metadata inside
+  JPEG-compressed TIFF strips, unrecognized ICC tags and floating-point ICC transforms,
+  gain-map metadata of an unknown version. RAW photos built on TIFF (DNG, CR2, NEF and others)
+  are refused too: their TIFF pages hold only a preview.
 - **Checked before saving.** The rebuilder parses its own result independently and compares it
   with what the original should yield: for HEIF, for instance, that every retained image item is
   byte-identical, XMP holds only gain-map fields, no editing image, thumbnail or item name
@@ -149,18 +150,19 @@ inside video and sound samples, such as the SEI messages some encoders write int
 HEVC frames: the frames of an iPhone's Live Photo video, for one, carry an 8-byte value of
 unknown meaning that other videos lack. Decoder configurations (such as hvcC and avcC) are
 copied whole too, as the samples are, up to their end; those of other codecs (VVC, APV, AC-4,
-MPEG-H, DTS, ALAC, MLP, IAMF and more, and HEIF's uncompressed images) are not read at all. So are fields that players read and whose values a
-made-up file could choose freely: track IDs, display sizes and resolutions, the graphics mode,
-the composition offsets of cslg, roll distances, QuickTime's quality and revision fields in
-sample entries, which macOS reads, and a version 1 sound entry's bytes per packet and sample; in
-HEIF, image group IDs and the values of layout properties (scaling, position, AV1 layers, color
-volume, ambient light). Apple's positional audio configuration (dapa) is copied
-whole. Detecting such steganography is beyond this tool.
+MPEG-H, DTS, ALAC, MLP, IAMF and more, and HEIF's uncompressed images) are not read at all. So
+are fields that players read and whose values a made-up file could choose freely: track IDs,
+display sizes and resolutions, the graphics mode, the composition offsets of cslg, roll
+distances, QuickTime's quality and revision fields in sample entries, which macOS reads, and a
+version 1 sound entry's bytes per packet and sample; in HEIF, image group IDs and the values of
+layout properties (scaling, position, AV1 layers, color volume, ambient light). Apple's
+positional audio configuration (dapa) is copied whole. Detecting such steganography is beyond
+this tool.
 
 If MagicDispel is killed, or the drive a video is on goes away while it is being cleaned, the
-unfinished copy may stay next to it, named `magicdispel-<random>.unfinished`: it may still hold
-everything the original does, and can be deleted. Closing the console window on Windows kills
-MagicDispel the same way.
+unfinished copy may stay next to it, named `magicdispel-<random>.unfinished` and the video's
+extension (`.unfinished.mov`, for instance): it may still hold everything the original does, and
+can be deleted. Closing the console window on Windows kills MagicDispel the same way.
 
 A JPEG gain map that only an Ultra HDR GContainer directory points to, with no multi-picture
 index, is not recognized: it sits after the end of the image and is removed as trailing data,
@@ -219,8 +221,11 @@ AVFoundation sees the same video and sound tracks and shows the same frames, and
 no private field. The other 17 are refused as designed: audio-only, fragmented and encrypted
 files, subtitles, two damaged files, Motion JPEG and a track needed to show the video. Three
 videos from an iPhone 16 on iOS 27 (a Live Photo's video, an HDR video and an H.264 one)
-clean the same way, keeping their scene illuminance. A 4.7 GB video is cleaned in under five
-seconds, with 24 MB of memory.
+clean the same way, keeping their scene illuminance. It also holds 394 small files made for the
+tests with FFmpeg, macOS's avconvert, AVAssetWriter and ImageIO, and ExifTool, of every codec,
+container and muxer option they offer: all but those refused by design clean with identical
+frames and sound, and every clean copy cleans to itself. A 4.7 GB video is cleaned in about five
+seconds, with 25 MB of memory.
 
 On macOS, Windows and Linux, CI runs the unit tests with Python 3.10 and 3.13, with and without
 ExifTool, and installs MagicDispel with the install scripts. On Windows and Linux, MagicDispel
