@@ -1,6 +1,10 @@
 # Changelog
 
-## Unreleased
+## 0.2.2 (2026-09-26)
+
+A clean copy of an iPhone video of 120 fps or more no longer risks playing in slow motion:
+Apple's full frame rate playback intent, the one item of a video's metadata that says how to
+play it, is kept. Upgrading is recommended if you clean such videos.
 
 - Videos keep Apple's full frame rate playback intent, which iOS 18 and macOS 15 write to say
   whether a video of 120 fps or more plays at its full rate (1) or in slow motion (0), and which
@@ -8,6 +12,8 @@
   slow motion. It is the one item of a video's metadata kept. The metadata box is rewritten with
   it alone, as iPhones write it, and the rest of the box is zeroed; a value other than 0 or 1,
   or one stored otherwise, goes with the rest of the metadata.
+- A metadata box of more than 256 boxes, keys or items, as one made to exhaust memory would
+  hold, is emptied without being read.
 - Checked with the three videos from an iPhone 16 on iOS 27 (intents 1, 1 and 0): macOS reads
   the same intent before and after cleaning, and their clean copies differ from 0.2.1's only in
   the metadata box. The regression harness now compares the intent macOS reads.
