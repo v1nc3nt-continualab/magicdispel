@@ -116,7 +116,7 @@ describe every check.
 | GIF | images, palettes, frame timing, transparency, loop count, ICC profile | comments, text overlays, XMP, other extensions |
 | TIFF | image data, decoding tags, DPI, orientation, page numbers, ICC profile | EXIF and GPS directories, XMP, IPTC, Photoshop, descriptions, private tags, sub-images |
 | BMP | converted to lossless PNG with the same pixels, DPI and profile | everything else |
-| MP4, MOV | video and sound tracks with every sample, decoder settings, rotation, edit lists, color, HDR (HDR10, HLG, Dolby Vision), Apple spatial video, the scene illuminance iPhones show HDR video with | location, device, software and dates, timed metadata tracks (GPS, motion, faces, Live Photo data), timecode and chapter tracks, maker data (GoPro serial numbers, Samsung SEF data), unused media data, trailing data |
+| MP4, MOV | video and sound tracks with every sample, decoder settings, rotation, edit lists, color, HDR (HDR10, HLG, Dolby Vision), Apple spatial video, the scene illuminance iPhones show HDR video with, whether a video of 120 fps or more plays at full speed | location, device, software and dates, timed metadata tracks (GPS, motion, faces, Live Photo data), timecode and chapter tracks, maker data (GoPro serial numbers, Samsung SEF data), unused media data, trailing data |
 | RAW, PDF, stereo photos, audio files | not supported; RAW files built on TIFF (DNG, CR2, NEF...) and stereo JPEG and HEIC photos are recognized and refused | |
 
 ICC profiles keep their color data. Their date becomes a fixed placeholder (`2000-01-01`),

@@ -93,14 +93,15 @@ def track(ident, kind, entry, offset, sizes, references=b"", extra=b"", header=b
                + box(b"edts", full(b"elst", 0, struct.pack(">IIII", 1, 1200, 0, 0x10000))) + mdia + extra)
 
 
-def movie_file(quicktime=True, typed=True, tracks=None, movie_extra=b"", top_extra=b"", fragmented=False, ftyp=None):
+def movie_file(quicktime=True, typed=True, tracks=None, movie_extra=b"", top_extra=b"", fragmented=False, ftyp=None,
+               meta=None):
     """A small video, QuickTime-style or MP4, with a video and a sound track,
     and metadata to remove: an Apple-style metadata track, a timecode track, a
     chapter track, user data, QuickTime metadata keys, a uuid box before mdat
     and Samsung-style SEF data and junk after moov. The movie box comes after
     the media, so it can be edited without moving any sample (see edited).
     `tracks` replaces the default tracks: [(id, handler, sample entry,
-    [samples], references, media header)]."""
+    [samples], references, media header)]; `meta`, the metadata box."""
     ftyp = ftyp or (box(b"ftyp", b"qt  \0\0\0\0qt  ") if quicktime else box(b"ftyp", b"mp42\0\0\0\0isommp42"))
     head = (ftyp if typed else b"") + box(b"wide", b"") + box(b"uuid", bytes(16) + MARKER) + top_extra
     samples = tracks or [
@@ -125,8 +126,8 @@ def movie_file(quicktime=True, typed=True, tracks=None, movie_extra=b"", top_ext
     moov = box(b"moov", full(b"mvhd", 0, TIMES + struct.pack(">IIIH", 600, 1200, 0x10000, 0x100) + bytes(10)
                             + struct.pack(">9I", 0x10000, 0, 0, 0, 0x10000, 0, 0, 0, 0x40000000) + bytes(24)
                             + struct.pack(">I", 6))
-               + traks + box(b"udta", box(b"\xa9xyz", MARKER)) + box(b"meta", handler(b"mdta", b"") + keys + ilst)
-               + movie_extra)
+               + traks + box(b"udta", box(b"\xa9xyz", MARKER))
+               + (meta or box(b"meta", handler(b"mdta", b"") + keys + ilst)) + movie_extra)
     tail = box(b"moof", MARKER) if fragmented else b""
     return head + box(b"mdat", media) + moov + tail + box(b"sefd", MARKER) + b"TRAILING " + MARKER
 
@@ -141,6 +142,26 @@ def scene_illuminance(key=b"com.apple.quicktime.scene-illuminance", unit=b"com.a
 
 def illuminance(*millilux):
     return [struct.pack(">III", 12, 1, value) for value in millilux]
+
+
+INTENT = b"com.apple.quicktime.full-frame-rate-playback-intent"
+
+
+def apple_metadata(*items, handler_name=b"\0\0"):
+    """A movie's metadata box as iPhones write it: an mdta handler, the keys,
+    and an item of one value for each: (key, well-known type, value)."""
+    keys = full(b"keys", 0, struct.pack(">I", len(items)) + b"".join(box(b"mdta", key) for key, _, _ in items))
+    values = b"".join(box(struct.pack(">I", index), box(b"data", struct.pack(">II", kind, 0) + value))
+                      for index, (_, kind, value) in enumerate(items, 1))
+    return box(b"meta", full(b"hdlr", 0, bytes(4) + b"mdta" + bytes(12) + handler_name) + keys + box(b"ilst", values))
+
+
+def intent(value, kind=21, size=8):
+    return INTENT, kind, value.to_bytes(size, "big", signed=kind == 21)
+
+
+PRIVATE_KEYS = [(b"com.apple.quicktime.make", 1, b"Apple " + MARKER), (b"com.apple.quicktime.creationdate", 1,
+                 b"2026-09-26T03:19:09+0800"), (b"com.apple.quicktime.location.ISO6709", 1, b"+31.23+121.47/")]
 
 
 def plain_video(boxes=box(b"avcC", bytes(7)), kind=b"avc1", references=b""):
@@ -288,6 +309,66 @@ class MovieTests(VideoTests):
         # Without the reference it shows nothing, and goes like any metadata track.
         plain = self.assertCleaned(movie_file(tracks=[video, (2, b"meta", scene_illuminance(), lux, b"", b"gmin")]))
         self.assertEqual(len(boxes_at(plain, [b"moov", b"trak"])), 1)
+
+    def test_a_fast_videos_playback_intent_is_the_only_metadata_kept(self):
+        # Since iOS 18, whether a video of 120 fps or more plays at its full
+        # rate (1) or in slow motion (0), which some players decide by.
+        for value, kind, size in ((1, 21, 8), (0, 21, 8), (1, 22, 1), (1, 21, 4)):
+            with self.subTest(value=value, kind=kind, size=size):
+                data = movie_file(meta=apple_metadata(*PRIVATE_KEYS[:2], intent(value, kind, size), PRIVATE_KEYS[2]))
+                rebuilt = self.assertCleaned(data)
+                self.assertNotIn(b"+31.23", rebuilt)
+                self.assertNotIn(b"2026-09-26", rebuilt)
+                # Rewritten as iPhones write it, in the space the metadata had, and a free box after it.
+                meta = boxes_at(data, [b"moov", b"meta"])[0]
+                self.assertEqual(rebuilt[meta.start:meta.end], mp4.playback_metadata(value) + struct.pack(
+                    ">I", meta.end - meta.start - len(mp4.playback_metadata(value))) + b"free"
+                    + bytes(meta.end - meta.start - len(mp4.playback_metadata(value)) - 8))
+                self.assertEqual(mp4.rebuild(rebuilt), rebuilt)  # a clean copy cleans to itself
+                if SECOND_CHECK:
+                    tags = exiftool.read(SECOND_CHECK, rebuilt)
+                    intents = [found for key, found in tags.items() if key.endswith(":FullFrameRatePlaybackIntent")]
+                    self.assertEqual(intents, [value])
+                    exiftool.check_tags(tags, "MOV")
+        # Another value, or data in the free box after it, fails verification.
+        data = movie_file(meta=apple_metadata(intent(1), *PRIVATE_KEYS))
+        rebuilt = self.assertCleaned(data)
+        after = rebuilt.index(mp4.playback_metadata(1)) + len(mp4.playback_metadata(1)) + 8
+        for result in (rebuilt.replace(mp4.playback_metadata(1), mp4.playback_metadata(0)),
+                       rebuilt[:after] + MARKER + rebuilt[after + len(MARKER):]):
+            with self.subTest(size=len(result)), self.assertRaises(VerificationError):
+                mp4.verify(data, result)
+
+    def test_other_playback_intents_go_with_the_metadata(self):
+        dropped = {
+            "no intent": apple_metadata(intent(2), *PRIVATE_KEYS),
+            "as text": apple_metadata((INTENT, 1, b"1"), *PRIVATE_KEYS),
+            "a float": apple_metadata((INTENT, 23, struct.pack(">f", 1)), *PRIVATE_KEYS),
+            "three bytes": apple_metadata(intent(1, size=3), *PRIVATE_KEYS),
+            "twice": apple_metadata(intent(1), intent(1), *PRIVATE_KEYS),
+            "two values": box(b"meta", full(b"hdlr", 0, bytes(4) + b"mdta" + bytes(14))
+                              + full(b"keys", 0, struct.pack(">I", 1) + box(b"mdta", INTENT))
+                              + box(b"ilst", box(struct.pack(">I", 1), box(b"data", struct.pack(">IIq", 21, 0, 1)) * 2))
+                              + box(b"free", bytes(64))),
+            "another handler": apple_metadata(intent(1), *PRIVATE_KEYS).replace(b"mdta" + bytes(14),
+                                                                                b"mdir" + bytes(14)),
+            # With a version, as ISO metadata boxes have: not as Apple writes them.
+            "a version": box(b"meta", bytes(4) + apple_metadata(intent(1), *PRIVATE_KEYS)[8:]),
+            # The rewrite and a free box do not fit: 4 bytes are left.
+            "no room": apple_metadata(intent(1), handler_name=bytes(6)),
+            # More keys than any writer uses, made to exhaust memory: not read.
+            "too many keys": apple_metadata(intent(1), *[(b"k", 1, b"")] * 256),
+        }
+        for reason, meta in dropped.items():
+            with self.subTest(reason):
+                rebuilt = self.assertCleaned(movie_file(meta=meta))
+                self.assertEqual(boxes_at(rebuilt, [b"moov", b"meta"]), [])
+        # Two metadata boxes: neither is kept.
+        twice = movie_file(meta=apple_metadata(intent(1)), movie_extra=apple_metadata(intent(1), *PRIVATE_KEYS))
+        self.assertEqual(boxes_at(self.assertCleaned(twice), [b"moov", b"meta"]), [])
+        # One holding just the intent, as a clean copy does, is kept as it is.
+        exact = movie_file(meta=mp4.playback_metadata(1))
+        self.assertIn(mp4.playback_metadata(1), self.assertCleaned(exact))
 
     def test_what_cannot_be_cleaned_safely_is_refused(self):
         video = (1, b"vide", visual_entry(b"avc1", box(b"avcC", bytes(7))), VIDEO, b"", b"vmhd")

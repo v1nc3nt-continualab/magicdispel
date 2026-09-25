@@ -30,9 +30,13 @@ anonymization.
   proportions are kept.
 - **Video.** Video and sound tracks, with every sample copied byte for byte; their decoder
   configurations, rotation and display sizes, edit lists, color and HDR (HDR10, HLG, Dolby
-  Vision); Apple's spatial video information: which views there are, the cameras' baseline
-  and the projection; and Apple's per-frame scene illuminance, which iPhones mark as used to
-  show their HDR video, and which says how bright the scene was, as the video itself shows.
+  Vision); Apple's spatial video information: which views there are, the cameras' baseline and
+  the projection; and Apple's per-frame scene illuminance, which iPhones mark as used to show
+  their HDR video, and which says how bright the scene was, as the video itself shows; and
+  Apple's full frame rate playback intent, which says whether a video of 120 fps or more plays
+  at its full rate or in slow motion, as some players would otherwise play it: the one item of a
+  video's metadata kept, as 0 or 1, in a metadata box rewritten with it alone, as iPhones write
+  it.
 - **Structure.** Transparency, animation frames, timing and loop count, TIFF pages and page
   numbers, and the format's own headers.
 - **The file name**, with `_clean` added and without the dates, times and timestamps that
@@ -50,13 +54,13 @@ JPEG multi-picture files, which may show an uncropped original; HEIF depth maps,
 calibration, portrait and semantic mattes, style maps, Apple property lists, item names, and
 item properties such as descriptions, creation times and camera parameters; JPEG MPF image IDs;
 in image sequences, every box not needed to play them, and creation times, handler and encoder
-names; in videos, the location, device, software and dates of user data and metadata boxes,
-timed metadata tracks (GPS and motion data, face detection, Live Photo and motion photo data,
-and any other than scene illuminance), timecode and chapter tracks, maker data such as GoPro's
-serial numbers and Samsung's SEF data, creation times, handler, vendor and compressor names,
-and media data no remaining track uses; TIFF EXIF and GPS directories, descriptions, private
-tags and sub-images; and unknown or private data blocks and data after the end of an image or
-video.
+names; in videos, the location, device, software and dates of user data and metadata boxes (all
+they hold but the playback intent), timed metadata tracks (GPS and motion data, face detection,
+Live Photo and motion photo data, and any other than scene illuminance), timecode and chapter
+tracks, maker data such as GoPro's serial numbers and Samsung's SEF data, creation times,
+handler, vendor and compressor names, and media data no remaining track uses; TIFF EXIF and GPS
+directories, descriptions, private tags and sub-images; and unknown or private data blocks and
+data after the end of an image or video.
 
 Removing auxiliary HEIF images limits later portrait, depth-of-field and photographic-style
 edits. A HEIC photo's resolution in DPI goes with its EXIF, the only place HEIF has for it:

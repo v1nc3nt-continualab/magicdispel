@@ -7,7 +7,8 @@ Apple's face and Live Photo data, GoPro's GPS and motion data and Google's
 motion photo data), timecode and chapter tracks go with their samples; any
 other track, subtitles for instance, is refused, and so is a sample entry
 holding a box not listed here. User data and metadata boxes (location,
-device, dates, software) are emptied.
+device, dates, software) are emptied, but for Apple's full frame rate
+playback intent (see PLAYBACK_INTENT).
 
 Top-level boxes other than ftyp, moov and mdat, such as Samsung's SEF data,
 are emptied too, and dropped at the end of the file with anything else there.
@@ -18,6 +19,7 @@ copy of itself (see clean) without being read into memory.
 Data inside the compressed samples, such as the SEI messages of H.264 and
 HEVC, is copied with them, as image data is.
 """
+import itertools
 import struct
 
 from .. import icc
@@ -84,6 +86,14 @@ SCENE_ILLUMINANCE = bytes(6) + struct.pack(">H", 1) + bmff.box(b"keys", bmff.box
     + bmff.box(b"ctps", bmff.box(b"dtyp", struct.pack(">II", 0, 77))))))
 ILLUMINANCE_SAMPLE = struct.pack(">II", 12, 1)  # a 12-byte item of key 1, then its value
 MAX_MILLILUX = 100_000_000
+# Apple's full frame rate playback intent (iOS 18, macOS 15), the one item of
+# a movie's metadata kept: whether a video of 120 fps or more plays at its
+# full rate (1) or in slow motion (0), as some players would otherwise play
+# it. The metadata box is rewritten with it alone, as iPhones write it: an
+# mdta handler, the key, and its value as a 64-bit integer.
+PLAYBACK_INTENT = b"com.apple.quicktime.full-frame-rate-playback-intent"
+INTEGERS = {21: True, 22: False}  # QuickTime's well-known types of big-endian integers: signed or not
+METADATA_ITEMS = 256  # boxes, keys or items in one box of the metadata: iPhones write a few
 
 
 def scene_illuminance(data, track):
@@ -100,6 +110,57 @@ def scene_illuminance(data, track):
     return all(data[position:position + 8] == ILLUMINANCE_SAMPLE
                and int.from_bytes(data[position + 8:position + 12], "big") <= MAX_MILLILUX
                for start, end in table.ranges for position in range(start, end, 12))
+
+
+def playback_intent(data, meta):
+    """The playback intent, 0 or 1, of a movie's metadata box that holds it as
+    Apple writes one: an mdta handler, then the key once among the keys, and
+    one integer item for it; else None."""
+    if data[meta.content + 4:meta.content + 8] != b"hdlr":  # an ISO metadata box starts with a version
+        return None
+    try:
+        parts = {}
+        for found in listed(data, meta):
+            parts.setdefault(found.kind, []).append(found)
+        (hdlr,), (keys,), (ilst,) = parts.get(b"hdlr", ()), parts.get(b"keys", ()), parts.get(b"ilst", ())
+        entries = listed(data, keys, 8)  # after the version, flags and count
+        indices = [index for index, entry in enumerate(entries, 1)
+                   if entry.kind == b"mdta" and data[entry.content:entry.end] == PLAYBACK_INTENT]
+        if (data[hdlr.content + 8:hdlr.content + 12] != b"mdta" or len(indices) != 1
+                or int.from_bytes(data[keys.content + 4:keys.content + 8], "big") != len(entries)):
+            return None
+        (item,) = [found for found in listed(data, ilst) if int.from_bytes(found.kind, "big") == indices[0]]
+        (value,) = listed(data, item)
+    except (StructureError, ValueError):  # none or several of a box, or too many boxes
+        return None
+    kind, number = int.from_bytes(data[value.content:value.content + 4], "big"), data[value.content + 8:value.end]
+    if value.kind != b"data" or kind not in INTEGERS or len(number) not in (1, 2, 4, 8):
+        return None
+    intent = int.from_bytes(number, "big", signed=INTEGERS[kind])
+    return intent if intent in (0, 1) else None
+
+
+def listed(data, container, skip=0):
+    """The boxes in a box of the metadata, after `skip` bytes; ValueError for
+    more than METADATA_ITEMS, which a metadata box made to exhaust memory holds."""
+    found = list(itertools.islice(bmff.boxes(data, container.content + skip, container.end), METADATA_ITEMS + 1))
+    if len(found) > METADATA_ITEMS:
+        raise ValueError("too many boxes")
+    return found
+
+
+def playback_metadata(intent):
+    """A movie's metadata box holding only the playback intent, as iPhones write it."""
+    handler = bmff.box(b"hdlr", bytes(8) + b"mdta" + bytes(14))
+    keys = bmff.box(b"keys", struct.pack(">II", 0, 1) + bmff.box(b"mdta", PLAYBACK_INTENT))
+    item = bmff.box(struct.pack(">I", 1), bmff.box(b"data", struct.pack(">IIq", 21, 0, intent)))
+    return bmff.box(b"meta", handler + keys + bmff.box(b"ilst", item))
+
+
+def rewritten_metadata(data, found):
+    """A box of the movie box that goes, rewritten: its metadata box, with the playback intent alone."""
+    intent = playback_intent(data, found) if found.kind == b"meta" else None
+    return None if intent is None else playback_metadata(intent)
 
 
 MOVIE = movie.Policy(
@@ -127,7 +188,8 @@ MOVIE = movie.Policy(
     # FFmpeg's copy of a ProRes encoder's own description, compressor name
     # included, which the ProRes decoder does not read.
     emptied=dict.fromkeys(PRORES, {b"glbl"}),
-    rendering=scene_illuminance)
+    rendering=scene_illuminance,
+    rewritten={b"moov": rewritten_metadata})
 
 
 def box_types(boxes):

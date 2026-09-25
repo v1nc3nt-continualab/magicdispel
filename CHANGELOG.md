@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+- Videos keep Apple's full frame rate playback intent, which iOS 18 and macOS 15 write to say
+  whether a video of 120 fps or more plays at its full rate (1) or in slow motion (0), and which
+  some players decide by: without it, a clean copy of an iPhone's 120 fps video could play in
+  slow motion. It is the one item of a video's metadata kept. The metadata box is rewritten with
+  it alone, as iPhones write it, and the rest of the box is zeroed; a value other than 0 or 1,
+  or one stored otherwise, goes with the rest of the metadata.
+- Checked with the three videos from an iPhone 16 on iOS 27 (intents 1, 1 and 0): macOS reads
+  the same intent before and after cleaning, and their clean copies differ from 0.2.1's only in
+  the metadata box. The regression harness now compares the intent macOS reads.
+
 ## 0.2.1 (2026-09-26)
 
 ICC color profiles, in photos and videos alike, keep only what the standard defines of their

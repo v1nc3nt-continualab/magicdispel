@@ -62,7 +62,10 @@ STREAM_FIELDS = ("codec_type", "codec_name", "codec_tag_string", "profile", "wid
 DISPLAY_TAGS = re.compile(
     r"^(Orientation|[XY]Resolution|ResolutionUnit|PixelsPerUnit[XY]|PixelUnits|SRGBRendering|"
     r"Gamma|WhitePoint[XY]|(Red|Green|Blue)[XY]|ColorSpace|InteropIndex|BackgroundColor|"
-    r"ColorPrimaries|TransferCharacteristics|MatrixCoefficients|VideoFullRangeFlag|JFIFVersion)$")
+    r"ColorPrimaries|TransferCharacteristics|MatrixCoefficients|VideoFullRangeFlag|JFIFVersion|"
+    r"FullFrameRatePlaybackIntent)$")
+# The handler type of the metadata box a kept playback intent is in.
+KEPT_STRUCTURE = {("HandlerType", "mdta")}
 # Values describing the file's own layout (positions, sizes, which optional parts
 # are present, and so whether ExifTool calls it e.g. "Extended WEBP"; emptied
 # free space), which change whenever other parts are dropped or emptied. They
@@ -546,8 +549,9 @@ def decoded_differences(before, after):
 def native_video_differences(before, after):
     """A video must keep, in macOS, its video and sound tracks as they were;
     any other track it keeps (Apple's scene illuminance) must be one of the
-    input's, unchanged; and frames macOS shows of the input must look the same.
-    Frames of codecs macOS does not decode are left to ffmpeg."""
+    input's, unchanged; macOS must read the same full frame rate playback
+    intent; and frames macOS shows of the input must look the same. Frames of
+    codecs macOS does not decode are left to ffmpeg."""
     if before.get("error"):
         return []
     if after.get("error"):
@@ -566,6 +570,8 @@ def native_video_differences(before, after):
         problems.append("output has a track that differs from the input's")
     if before.get("duration") != after.get("duration"):
         problems.append("macOS duration %s -> %s" % (before.get("duration"), after.get("duration")))
+    if before.get("playbackIntent") != after.get("playbackIntent"):
+        problems.append("macOS playback intent %s -> %s" % (before.get("playbackIntent"), after.get("playbackIntent")))
     if any(a != b for a, b in zip(before.get("frames", []), after.get("frames", [])) if a.get("srgb")):
         problems.append("macOS shows different frames")
     return problems
@@ -653,7 +659,8 @@ def check_against_baseline(record, old, identical, expected_changes):
     converted = record["input_suffix"].lower() == ".bmp"
 
     def kept_display_field(item):
-        return DISPLAY_TAGS.match(item[0].split(":")[-1]) and (converted or source[item])
+        name = item[0].split(":")[-1]
+        return (DISPLAY_TAGS.match(name) or (name, item[1]) in KEPT_STRUCTURE) and (converted or source[item])
 
     gained = now - then
     restored = sorted(key for key, value in gained.elements() if kept_display_field((key, value)))

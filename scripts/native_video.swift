@@ -9,6 +9,8 @@ import CryptoKit
 import Foundation
 
 let srgb = CGColorSpace(name: CGColorSpace.sRGB)!
+// The one metadata item a clean video keeps: whether it plays at its full frame rate.
+let playbackIntent = AVMetadataIdentifier(rawValue: "mdta/com.apple.quicktime.full-frame-rate-playback-intent")
 // Format description extensions that hold what MagicDispel clears, a sample
 // entry's compressor name and vendor, or all of its bytes.
 let clearedExtensions = [
@@ -75,6 +77,16 @@ func fingerprint(_ path: String) async -> [String: Any] {
             ])
         }
         result["tracks"] = described
+        do {
+            var intents: [Any] = []
+            for item in AVMetadataItem.metadataItems(from: try await asset.load(.metadata),
+                                                     filteredByIdentifier: playbackIntent) {
+                intents.append(try await item.load(.numberValue) ?? NSNull())
+            }
+            result["playbackIntent"] = intents
+        } catch {
+            result["playbackIntent"] = "error: " + error.localizedDescription
+        }
         // Frames as QuickTime Player shows them: rotated and cropped, at exact times.
         let generator = AVAssetImageGenerator(asset: asset)
         generator.appliesPreferredTrackTransform = true

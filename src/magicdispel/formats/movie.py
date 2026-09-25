@@ -3,8 +3,9 @@
 A movie keeps only the boxes that play it, from a fixed list per container
 (Policy.boxes): headers, tracks and their edits, and the sample tables.
 Readers skip boxes they do not know, so any other box becomes a zero-filled
-free box of the same size, and nothing moves; a box that belongs in another
-part of the movie means the file is damaged. A track is kept, removed or
+free box of the same size, or is rewritten smaller with one after it
+(Policy.rewritten), and nothing moves; a box that belongs in another part of
+the movie means the file is damaged. A track is kept, removed or
 refused by its handler type. A removed track is emptied, and its samples,
 which no remaining table points to, are zeroed with the rest of the unused
 media (see uncovered). A kept track keeps sample entries of known types, and
@@ -169,6 +170,11 @@ class Policy:
         handler type is one that another track is shown with ('rndr'), and
         that the policy recognizes exactly; such a track is kept. A removed
         track that another is shown with is refused otherwise.
+    rewritten: {container type: a function (data, box) giving the box that a
+        box of it the policy does not keep is rewritten as, at its start, or
+        None}. A free box fills the rest, so the rewrite is of the same size
+        or smaller by at least a free box's header, or the box is emptied;
+        so is a box of a type found more than once in its container.
     """
     boxes: dict
     entries: dict
@@ -180,6 +186,7 @@ class Policy:
     strict: bool = False
     emptied: dict = None
     rendering: object = None
+    rewritten: dict = None
 
 
 class Track(NamedTuple):
@@ -317,7 +324,10 @@ def clean_container(buffer, container, policy, track_handler, removed):
         if found.kind not in allowed:
             if found.kind in PLACED:
                 raise StructureError("misplaced %s box" % found.kind.decode("latin-1"))
+            replacement = rewrite(buffer, container, children, found, policy)
             empty(buffer, found)
+            if replacement:
+                place(buffer, found, replacement)
         elif found.kind in (b"sgpd", b"sbgp") and grouping(buffer, found) not in groups:
             empty(buffer, found)  # a seeking hint this module cannot check
         elif found.kind in policy.boxes:
@@ -637,6 +647,25 @@ def empty(buffer, found):
     """Turn a box into a zero-filled free box of the same size, in place."""
     buffer[found.start + 4:found.start + 8] = b"free"
     zero(buffer, found.content, found.end)
+
+
+def rewrite(data, container, children, found, policy):
+    """The box that a box the policy does not keep is rewritten as, or None
+    (see Policy.rewritten)."""
+    rewriter = (policy.rewritten or {}).get(container.kind)
+    if not rewriter or sum(child.kind == found.kind for child in children) != 1:
+        return None
+    replacement = rewriter(data, found)
+    room = found.end - found.start - len(replacement or b"")
+    return replacement if replacement and (room == 0 or 8 <= room < 1 << 32) else None
+
+
+def place(buffer, found, replacement):
+    """Write a rewritten box over an emptied one, and a free box over the rest."""
+    end = found.start + len(replacement)
+    buffer[found.start:end] = replacement
+    if end < found.end:
+        buffer[end:end + 8] = struct.pack(">I", found.end - end) + b"free"
 
 
 def zero(buffer, start, end):
@@ -1059,6 +1088,8 @@ def check_container(original, rebuilt, container, policy, track_handler, spare):
     for found in children:
         if found.kind == b"free" and zeroed(rebuilt, [(found.content, found.end)]):
             continue
+        if found.kind not in allowed and rewritten(original, rebuilt, container, found, policy):
+            continue
         if found.kind not in allowed or found.kind in (b"sgpd", b"sbgp") and grouping(rebuilt, found) not in groups:
             fail("box %r kept" % found.kind)
         if rebuilt[found.start:found.content] != original[found.start:found.content]:
@@ -1080,6 +1111,14 @@ def check_container(original, rebuilt, container, policy, track_handler, spare):
             cleared = cleared_fields(rebuilt, found) + [span for span in spare if found.content <= span[0] < found.end]
             if not matches(original, rebuilt, found, cleared):
                 fail("box %r changed, or names or times kept" % found.kind)
+
+
+def rewritten(original, rebuilt, container, found, policy):
+    """Whether a box of the result is what the original's box at its place is rewritten as."""
+    before = list(bmff.boxes(original, container.content, container.end))
+    source = next((box for box in before if box.start == found.start), None)
+    replacement = source and rewrite(original, container, before, source, policy)
+    return bool(replacement) and rebuilt[found.start:found.end] == replacement
 
 
 def check_entries(original, rebuilt, stsd, policy, track_handler):
