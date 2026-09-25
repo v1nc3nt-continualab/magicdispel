@@ -1,16 +1,20 @@
 # Changelog
 
-## Unreleased
+## 0.2.1 (2026-09-26)
 
-- ICC color profiles, in photos and videos alike, keep only what the standard defines of their
-  header: the version's reserved bytes, the reserved and vendor bits of the flags and device
-  attributes and the rendering intent's reserved half are zeroed, and the illuminant is written
-  as the standard encodes D50. A profile whose classes, spaces, version digits, rendering intent
-  or illuminant the standard does not define is refused, and so is one whose technology, image
-  state or gamut signature, or measurement, viewing conditions, chromaticity or cicp
-  enumeration, is not in the standard's lists. Color tags are written in one order, not the
-  original's. Before, a profile made for it could carry about 90 bytes through these fields and
-  the order of its tags.
+ICC color profiles, in photos and videos alike, keep only what the standard defines of their
+header, and only the values the standard lists in their tags; their tags are written in one
+order. Before, a profile made for it could carry about 90 bytes through these fields and the
+order of its tags. Colors convert exactly as before.
+
+- Of the header: the version's reserved bytes, the reserved and vendor bits of the flags and
+  device attributes and the rendering intent's reserved half are zeroed, and the illuminant is
+  written as the standard encodes D50. A profile whose classes, spaces, version digits,
+  rendering intent or illuminant the standard does not define is refused.
+- A technology, image state or gamut signature, or a measurement, viewing conditions,
+  chromaticity or cicp enumeration, that is not in the standard's lists gets the profile
+  refused.
+- Color tags are written in order of their signatures, not in the original's order.
 - Adobe RGB, Apple RGB and HP's sRGB profiles, as some images embed them, write a value in the
   rendering intent's reserved half; it is zeroed, and colors convert the same.
 - Checked on the 124 distinct profiles found in macOS and the corpus: the same ones are refused
