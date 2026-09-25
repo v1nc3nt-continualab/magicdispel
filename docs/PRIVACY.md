@@ -12,12 +12,15 @@ anonymization.
   re-encoded, losslessly, as PNG.
 - **Color.** ICC profiles keep their color conversion data: matrices, curves, lookup tables,
   Apple's parametric curves in screenshot profiles, HDR adaptive curves (with their
-  image-specific identifier cleared), and the headroom adaptive gain curves of HDR photos
-  (SMPTE ST 2094-50 tone-mapping data, which holds no identifier). Every profile is rebuilt
-  with the fixed date `2000-01-01 00:00:00` and description `Clean`; creator, maker, model,
-  CMM, platform and profile ID are cleared, and display calibration data is removed. Color
-  declarations of the formats themselves are kept: PNG sRGB, gAMA, cHRM, cICP and HDR chunks,
-  HEIF color boxes.
+  image-specific identifier cleared), and the headroom adaptive gain curves of HDR photos (SMPTE
+  ST 2094-50 tone-mapping data, which holds no identifier). Every profile is rebuilt with the
+  fixed date `2000-01-01 00:00:00` and description `Clean`; creator, maker, model, CMM, platform
+  and profile ID are cleared, and display calibration data is removed. Of the header, only the
+  fields the standard defines are kept (version, classes and spaces, rendering intent, and the
+  defined flag and device attribute bits): reserved and vendor bits are zeroed, and the
+  illuminant is written as the standard encodes D50. Color tags are written in one order, not
+  the original's. Color declarations of the formats themselves are kept: PNG sRGB, gAMA, cHRM,
+  cICP and HDR chunks, HEIF color boxes.
 - **Display fields.** Orientation, DPI, color space and the DCF interoperability index, written
   into a fresh EXIF block holding nothing else. For iPhone HDR photos, Apple's HDR headroom and
   gain, in a fresh maker note holding nothing else.
@@ -67,19 +70,23 @@ edit list may then play a few milliseconds of silence at the start of the sound.
 ## How nothing slips through
 
 - **Rebuild, not delete.** Each format has its own rebuilder (`src/magicdispel/formats/`). Parts
-  with a fixed size must have exactly that size, so they cannot carry extra bytes. PNG image data
-  must inflate to exactly the scanlines the header describes, with nothing after the compressed
-  stream, and its palette and transparency hold exactly what the color type allows. A TIFF page
-  holds exactly the strips or tiles its image needs, uncompressed ones at exactly their size, and
-  every kept tag has exactly the number of values the specification gives it. HEIF item
-  properties are kept only if they say how to decode and show an image. JPEG multi-picture
-  indexes are written fresh. Every kept ICC color tag and Apple HDR curve must match its type's
-  layout: a byte outside it that is not zero, after a curve, in a reserved field or between
-  the parts of a lookup table, gets the file refused. A headroom adaptive gain curve is read
-  bit by bit: a reserved bit that is set, a number outside its range or anything after it gets
-  the file refused. ISO 21496-1 gain-map metadata keeps only
-  the fields its standard defines, which are all a decoder reads: in JPEG anything after them
-  is dropped, and in HEIF, where an item cannot be shortened in place, it gets the file refused.
+  with a fixed size must have exactly that size, so they cannot carry extra bytes. PNG image
+  data must inflate to exactly the scanlines the header describes, with nothing after the
+  compressed stream, and its palette and transparency hold exactly what the color type allows. A
+  TIFF page holds exactly the strips or tiles its image needs, uncompressed ones at exactly
+  their size, and every kept tag has exactly the number of values the specification gives it.
+  HEIF item properties are kept only if they say how to decode and show an image. JPEG
+  multi-picture indexes are written fresh. Every kept ICC color tag and Apple HDR curve must
+  match its type's layout: a byte outside it that is not zero, after a curve, in a reserved
+  field or between the parts of a lookup table, gets the file refused, and so does a field the
+  standard gives a list of values holding another: an ICC profile's classes and spaces, version
+  digits and rendering intent, a non-D50 illuminant, the signatures of its technology, image
+  state and gamut tags, the enumerations of its measurement, viewing conditions, chromaticity
+  and cicp tags. A headroom adaptive gain curve is read bit by bit: a reserved bit that is set,
+  a number outside its range or anything after it gets the file refused. ISO 21496-1 gain-map
+  metadata keeps only the fields its standard defines, which are all a decoder reads: in JPEG
+  anything after them is dropped, and in HEIF, where an item cannot be shortened in place, it
+  gets the file refused.
 - **Image sequences.** Animated AVIF and HEIF files keep only the boxes on a fixed list:
   headers, tracks, edits and sample tables, and in each sample entry its decoder
   configuration and color and display properties. Readers skip boxes they do not know, so
@@ -146,18 +153,19 @@ edit list may then play a few milliseconds of silence at the start of the sound.
 
 Data hidden inside the compressed image data itself, for example in JPEG scans, VP8 or HEVC
 frames, GIF LZW data or unused palette entries, is copied along with the image. So is data
-inside video and sound samples, such as the SEI messages some encoders write into H.264 and
-HEVC frames: the frames of an iPhone's Live Photo video, for one, carry an 8-byte value of
-unknown meaning that other videos lack. Decoder configurations (such as hvcC and avcC) are
-copied whole too, as the samples are, up to their end; those of other codecs (VVC, APV, AC-4,
-MPEG-H, DTS, ALAC, MLP, IAMF and more, and HEIF's uncompressed images) are not read at all. So
-are fields that players read and whose values a made-up file could choose freely: track IDs,
-display sizes and resolutions, the graphics mode, the composition offsets of cslg, roll
-distances, QuickTime's quality and revision fields in sample entries, which macOS reads, and a
-version 1 sound entry's bytes per packet and sample; in HEIF, image group IDs and the values of
-layout properties (scaling, position, AV1 layers, color volume, ambient light). Apple's
-positional audio configuration (dapa) is copied whole. Detecting such steganography is beyond
-this tool.
+inside video and sound samples, such as the SEI messages some encoders write into H.264 and HEVC
+frames: the frames of an iPhone's Live Photo video, for one, carry an 8-byte value of unknown
+meaning that other videos lack. Decoder configurations (such as hvcC and avcC) are copied whole
+too, as the samples are, up to their end; those of other codecs (VVC, APV, AC-4, MPEG-H, DTS,
+ALAC, MLP, IAMF and more, and HEIF's uncompressed images) are not read at all. So are fields
+that players read and whose values a made-up file could choose freely: track IDs, display sizes
+and resolutions, the graphics mode, the composition offsets of cslg, roll distances, QuickTime's
+quality and revision fields in sample entries, which macOS reads, and a version 1 sound entry's
+bytes per packet and sample; in HEIF, image group IDs and the values of layout properties
+(scaling, position, AV1 layers, color volume, ambient light). Apple's positional audio
+configuration (dapa) is copied whole. So are the numbers in kept ICC tags (curves, matrices,
+lookup tables, measurement and viewing values), which a made-up profile could also choose
+freely. Detecting such steganography is beyond this tool.
 
 If MagicDispel is killed, or the drive a video is on goes away while it is being cleaned, the
 unfinished copy may stay next to it, named `magicdispel-<random>.unfinished` and the video's

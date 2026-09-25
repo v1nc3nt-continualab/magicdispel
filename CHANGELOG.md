@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased
+
+- ICC color profiles, in photos and videos alike, keep only what the standard defines of their
+  header: the version's reserved bytes, the reserved and vendor bits of the flags and device
+  attributes and the rendering intent's reserved half are zeroed, and the illuminant is written
+  as the standard encodes D50. A profile whose classes, spaces, version digits, rendering intent
+  or illuminant the standard does not define is refused, and so is one whose technology, image
+  state or gamut signature, or measurement, viewing conditions, chromaticity or cicp
+  enumeration, is not in the standard's lists. Color tags are written in one order, not the
+  original's. Before, a profile made for it could carry about 90 bytes through these fields and
+  the order of its tags.
+- Adobe RGB, Apple RGB and HP's sRGB profiles, as some images embed them, write a value in the
+  rendering intent's reserved half; it is zeroed, and colors convert the same.
+- Checked on the 124 distinct profiles found in macOS and the corpus: the same ones are refused
+  as before, and colors convert exactly as before, in LittleCMS and in macOS ColorSync, through
+  each of the 107 an image can use. The clean copies of 69 corpus samples differ from 0.2.0's
+  only in the order of their profiles' tags; the others are identical.
+
 ## 0.2.0 (2026-09-25)
 
 Videos: MP4 and QuickTime (MOV) files are cleaned too, without changing a single frame. Tested

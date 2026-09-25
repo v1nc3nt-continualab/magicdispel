@@ -1,11 +1,14 @@
 """ICC color profiles: keep the color conversion data, drop where the profile came from.
 
 `sanitize` rebuilds a profile at the same byte length with only its color
-tags, a neutral description and copyright, a fixed date and no creator,
-maker, model, CMM, platform or profile ID. It checks that the color data is
-unchanged, and refuses tags it does not know rather than copying them. A kept
-tag is copied as it is, so every byte of it must be part of its type's layout
-(ICC.1 section 10), or zero: reserved fields, padding and unused space.
+tags, in one order, a neutral description and copyright, a fixed date and no
+creator, maker, model, CMM, platform or profile ID. Of the header it keeps
+the bits the standard defines, and zeroes its reserved and vendor bits. It
+checks that the color data is unchanged, and refuses tags it does not know
+rather than copying them. A kept tag is copied as it is, so every byte of it
+must be part of its type's layout (ICC.1 section 10), or zero: reserved
+fields, padding and unused space; a field the standard gives a list of
+values must hold one of them.
 """
 import struct
 
@@ -15,13 +18,29 @@ class ProfileError(ValueError):
 
 
 MAX_SIZE = 64 * 1024 * 1024
-# Header fields (ICC.1 section 7.2) copied into a sanitized profile. Everything
-# else in the header - CMM, platform, maker, model, creator, profile ID - stays zero.
-CLASS_AND_SPACES = slice(8, 24)    # version, device class, color space, connection space
+# Header fields (ICC.1 section 7.2) kept in a sanitized profile: the version,
+# the classes and spaces, the bits the standard defines of the flags, device
+# attributes and rendering intent, and the D50 illuminant. The version's two
+# reserved bytes, the other bits of those fields, reserved or for vendors, and
+# everything else in the header - CMM, platform, maker, model, creator,
+# profile ID - are zero.
+CLASS_AND_SPACES = slice(12, 24)   # device class, color space, connection space
 DATE = slice(24, 36)
 SIGNATURE = slice(36, 40)          # "acsp"
 FLAGS = slice(44, 48)
-RENDERING = slice(56, 80)          # device attributes, rendering intent, illuminant
+ATTRIBUTES = slice(56, 64)
+INTENT = slice(64, 68)
+ILLUMINANT = slice(68, 80)
+FLAG_BITS = 0x3                    # embedded, not to be used apart from its image (7.2.11)
+ATTRIBUTE_BITS = 0xF               # transparency, matte, negative, black and white (7.2.14)
+INTENT_BITS = 0xFFFF               # the upper half is reserved (7.2.15)
+INTENTS = range(4)                 # perceptual, relative colorimetric, saturation, absolute
+D50 = (0.9642, 1.0, 0.8249)        # the connection space's illuminant, to four decimals (7.2.16)
+D50_ILLUMINANT = struct.pack(">3i", 0xF6D6, 0x10000, 0xD32D)
+CLASSES = {b"scnr", b"mntr", b"prtr", b"link", b"spac", b"abst", b"nmcl"}
+SPACES = {b"XYZ ", b"Lab ", b"Luv ", b"YCbr", b"Yxy ", b"RGB ", b"GRAY", b"HSV ", b"HLS ", b"CMYK",
+          b"CMY "} | {b"%cCLR" % digit for digit in b"23456789ABCDEF"}
+CONNECTION_SPACES = {b"XYZ ", b"Lab "}  # a device link names its output space there instead
 TAG_COUNT, TAG_TABLE = 128, 132
 PLACEHOLDER_DATE = struct.pack(">6H", 2000, 1, 1, 0, 0, 0)
 
@@ -57,6 +76,20 @@ for _n in range(3):
 # Floating-point transforms (D2Bx/B2Dx, multiProcessElementsType) are not
 # accepted: their elements are not checked byte for byte.
 APPLE_CURVES = {b"aarg", b"aagg", b"aabg"}
+# The signatures the standard lists for tags of signatureType: the technology,
+# the image state of the colorimetric intents, the perceptual and saturation
+# intents' reference medium gamut.
+SIGNATURES = {
+    b"tech": {b"fscn", b"dcam", b"rscn", b"ijet", b"twax", b"epho", b"esta", b"dsub", b"rpho", b"fprn", b"vidm",
+              b"vidc", b"pjtv", b"CRT ", b"PMD ", b"AMD ", b"KPCD", b"imgs", b"grav", b"offs", b"silk", b"flex",
+              b"mpfs", b"mpfr", b"dmpc", b"dcpj"},
+    b"ciis": {b"scoe", b"sape", b"fpce", b"rhoc", b"rpoc"},
+    b"rig0": {b"prmg"}, b"rig2": {b"prmg"},
+}
+OBSERVERS = GEOMETRIES = 3  # unknown, then two of each (measurementType)
+ILLUMINANTS = 9             # unknown, D50, D65, D93, F2, D55, A, E, F8
+FULL_FLARE = 0x10000        # 100%, as a u16Fixed16Number
+COLORANTS = 5               # unknown, BT.709, SMPTE RP 145, EBU Tech 3213, P22 (chromaticityType)
 # parametricCurveType: number of parameters for each function type.
 PARAMETRIC_FUNCTIONS = {0: 1, 1: 3, 2: 4, 3: 5, 4: 7}
 # Types of a fixed size: the type signature, 4 reserved bytes, then data up to here.
@@ -83,15 +116,12 @@ ALTERNATE_IMAGES = 4
 
 def sanitize(profile):
     """The profile rebuilt at the same length; dropped text and dead space are zero."""
-    color = color_signature(profile)[3]
+    head, color = color_signature(profile)
     version = profile[8]
     tags = {b"desc": text_tag("Clean", version, description=True), b"cprt": text_tag("", version)}
-    tags.update(color)
+    tags.update(sorted(color.items()))  # in one order: the original's could carry data
     clean = bytearray(len(profile))
-    for field in (CLASS_AND_SPACES, FLAGS, RENDERING):
-        clean[field] = profile[field]
-    clean[DATE] = PLACEHOLDER_DATE
-    clean[SIGNATURE] = b"acsp"
+    clean[:TAG_COUNT] = head
     struct.pack_into(">I", clean, 0, len(clean))
     struct.pack_into(">I", clean, TAG_COUNT, len(tags))
     offset, placed = TAG_TABLE + 12 * len(tags), {}
@@ -110,7 +140,7 @@ def sanitize(profile):
 
 
 def color_signature(profile):
-    """Everything that determines color conversion: header fields and color tags."""
+    """Everything that determines color conversion: the header and color tags."""
     kept = {}
     for tag, value in entries(profile).items():
         if tag in DROPPED_TAGS:
@@ -126,8 +156,58 @@ def color_signature(profile):
             kept[tag] = value
         else:
             check_layout(value)
+            check_values(tag, value)
             kept[tag] = value
-    return profile[CLASS_AND_SPACES], profile[FLAGS], profile[RENDERING], kept
+    return header(profile), kept
+
+
+def header(profile):
+    """The sanitized profile's header, but for its size: the version, classes
+    and spaces, and the defined bits of the flags, device attributes and
+    rendering intent, with a fixed date and the D50 illuminant as the standard
+    encodes it. A field the standard gives a list of values must hold one of
+    them, and the illuminant must be D50 to four decimals."""
+    device, space, connection = profile[12:16], profile[16:20], profile[20:24]
+    digits = divmod(profile[9], 16)  # the minor and bug-fix version, a decimal digit each
+    intent = int.from_bytes(profile[INTENT], "big") & INTENT_BITS
+    if (max(digits) > 9 or device not in CLASSES or space not in SPACES or intent not in INTENTS
+            or connection not in (SPACES if device == b"link" else CONNECTION_SPACES)):
+        raise ProfileError("ICC profile header holds a value the standard does not define")
+    illuminant = struct.unpack_from(">3i", profile, ILLUMINANT.start)
+    if tuple(round(value / 65536, 4) for value in illuminant) != D50:
+        raise ProfileError("ICC profile connection space is not D50")
+    clean = bytearray(TAG_COUNT)  # the header ends where the tag count begins
+    clean[8:10] = profile[8:10]  # the major version, then the minor and bug-fix one
+    clean[CLASS_AND_SPACES] = profile[CLASS_AND_SPACES]
+    clean[DATE], clean[SIGNATURE] = PLACEHOLDER_DATE, b"acsp"
+    for field, bits in ((FLAGS, FLAG_BITS), (ATTRIBUTES, ATTRIBUTE_BITS)):
+        clean[field] = (int.from_bytes(profile[field], "big") & bits).to_bytes(field.stop - field.start, "big")
+    clean[INTENT] = struct.pack(">I", intent)
+    clean[ILLUMINANT] = D50_ILLUMINANT
+    return bytes(clean)
+
+
+def check_values(tag, value):
+    """Refuse a field of a color tag whose values the standard lists that
+    holds another: a signature, a measurement's observer, geometry, flare and
+    illuminant, the viewing conditions' illuminant, the chromaticities'
+    colorant type, cicp's full range flag."""
+    kind = value[:4]
+    if kind == b"sig ":
+        valid = value[8:12] in SIGNATURES[tag]
+    elif kind == b"meas":  # the backing's XYZ comes after the observer
+        observer, geometry, flare, illuminant = struct.unpack_from(">I12xIII", value, 8)
+        valid = observer < OBSERVERS and geometry < GEOMETRIES and flare <= FULL_FLARE and illuminant < ILLUMINANTS
+    elif kind == b"view":  # after the illuminant's and the surround's XYZ
+        valid = struct.unpack_from(">I", value, 32)[0] < ILLUMINANTS
+    elif kind == b"chrm":  # after the channel count
+        valid = struct.unpack_from(">H", value, 10)[0] < COLORANTS
+    elif kind == b"cicp":
+        valid = value[11] < 2
+    else:
+        return
+    if not valid:
+        raise ProfileError("ICC %s tag holds a value the standard does not define" % tag.decode("latin-1"))
 
 
 def check_layout(value):

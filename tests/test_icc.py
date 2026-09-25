@@ -221,6 +221,63 @@ class SanitizeTests(unittest.TestCase):
                 self.assertEqual(len(cleaned), len(profile))
                 self.assertNotIn(b"calt", tag_table(cleaned))
 
+    def test_header_keeps_only_the_bits_the_standard_defines(self):
+        profile = bytearray(user_profile())
+        profile[10:12] = b"US"                                  # the version's reserved bytes
+        profile[44:48] = struct.pack(">I", 0xFFFFFFFE)          # flags: vendor, reserved, "not independent"
+        profile[56:64] = struct.pack(">Q", 0xFFFFFFFFFFFFFFF5)  # attributes: vendor, reserved, transparency, negative
+        profile[64:68] = struct.pack(">HH", 0x5553, 2)          # the rendering intent's reserved half
+        profile[68:80] = s15(0.96418, 1.00004, 0.82486)         # D50, to four decimals
+        cleaned = icc.sanitize(bytes(profile))
+        self.assertClean(bytes(profile), cleaned)
+        self.assertEqual(cleaned[8:24], profile[8:10] + bytes(2) + profile[12:24])
+        self.assertEqual(struct.unpack_from(">I", cleaned, 44)[0], 2)
+        self.assertEqual(struct.unpack_from(">Q", cleaned, 56)[0], 5)
+        self.assertEqual(struct.unpack_from(">I", cleaned, 64)[0], 2)
+        self.assertEqual(cleaned[68:80], bytes.fromhex("0000f6d6 00010000 0000d32d"))
+        self.assertEqual(cleaned[100:128], bytes(28))
+        # Adobe's and HP's profiles in many images put the intent in the reserved half.
+        profile[64:68] = struct.pack(">I", 0x01000000)
+        self.assertEqual(struct.unpack_from(">I", icc.sanitize(bytes(profile)), 64)[0], 0)
+
+    def test_header_values_the_standard_does_not_define_are_refused(self):
+        profile = user_profile()
+        for offset, value in ((9, b"\x4a"), (12, b"USER"), (16, b"USER"), (20, b"RGB "), (64, struct.pack(">I", 4)),
+                              (68, s15(0.9505, 1.0, 1.089))):  # a D65 illuminant
+            broken = bytearray(profile)
+            broken[offset:offset + len(value)] = value
+            with self.subTest(offset=offset), self.assertRaises(icc.ProfileError):
+                icc.sanitize(bytes(broken))
+
+    def test_tags_are_kept_in_one_order(self):
+        tags = tag_table(user_profile())
+        shuffled = dict(reversed(tags.items()))
+        header = user_profile()[:128]
+        self.assertEqual(icc.sanitize(bytes(assemble(header, shuffled))), icc.sanitize(bytes(assemble(header, tags))))
+
+    def test_listed_values_of_color_tags(self):
+        tags = tag_table(SRGB)
+        signature = b"sig " + bytes(4)
+        measurement = b"meas" + bytes(4) + struct.pack(">I12xIII", 1, 2, 0x28F, 2)
+        viewing = b"view" + bytes(4) + s15(19.6, 20.4, 16.8, 3.9, 4.1, 3.4) + struct.pack(">I", 1)
+        exact = {b"tech": signature + b"CRT ", b"ciis": signature + b"scoe", b"rig0": signature + b"prmg",
+                 b"meas": measurement, b"view": viewing, b"cicp": b"cicp" + bytes(4) + bytes([9, 16, 0, 1]),
+                 b"chrm": tags[b"chrm"][:10] + struct.pack(">H", 1) + tags[b"chrm"][12:]}  # BT.709
+        cleaned = tag_table(icc.sanitize(bytes(assemble(SRGB, {**tags, **exact}))))
+        self.assertEqual({tag: cleaned[tag] for tag in exact}, exact)
+        refused = {b"tech": signature + b"USER", b"ciis": signature + b"USER", b"rig2": signature + b"USER",
+                   b"meas": measurement[:8] + struct.pack(">I", 3) + measurement[12:],   # observer
+                   b"view": viewing[:32] + struct.pack(">I", 9),                         # illuminant
+                   b"cicp": b"cicp" + bytes(4) + bytes([9, 16, 0, 2]),                    # full range flag
+                   b"chrm": tags[b"chrm"][:10] + struct.pack(">H", 5) + tags[b"chrm"][12:]}  # colorant type
+        refused_measurements = [measurement[:24] + struct.pack(">I", 3) + measurement[28:],  # geometry
+                                measurement[:28] + struct.pack(">I", 0x10001) + measurement[32:],  # flare
+                                measurement[:32] + struct.pack(">I", 9)]                 # illuminant
+        cases = list(refused.items()) + [(b"meas", value) for value in refused_measurements]
+        for tag, value in cases:
+            with self.subTest(tag=tag, value=value[8:]), self.assertRaises(icc.ProfileError):
+                icc.sanitize(bytes(assemble(SRGB, {**tags, tag: value})))
+
     def test_display_profile_keeps_curves_and_drops_display_identity(self):
         profile = display_profile()
         cleaned = icc.sanitize(profile)
