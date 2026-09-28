@@ -17,7 +17,7 @@
 A photo carries more than its pixels: where it was taken, when, on which phone, and sometimes
 hidden extras such as depth maps, portrait mattes and even the serial number of your display.
 A video may carry a GPS track of every second and its camera's serial number. MagicDispel
-saves a clean copy with none of that, and nothing a viewer sees or hears is changed.
+saves a clean copy with none of that, and no pixel, video frame or sound sample is changed.
 
 ## Quick start
 
@@ -45,11 +45,13 @@ A cleaned copy appears next to each original.
 - **It rebuilds instead of deleting.** Most tools delete the metadata they know about.
   MagicDispel writes a new file from only the parts needed to show the image, so metadata it
   has never heard of is left behind too. The parts it keeps must match their exact layout, so
-  nothing can ride along inside them.
+  almost nothing can ride along inside them; the few exceptions are listed in the privacy
+  details.
 - **Every pixel stays.** Compressed image data is copied byte for byte, never recompressed.
-  Color profiles, orientation, DPI, transparency, animation and HDR gain maps are kept, so a
-  photo looks exactly the same, in HDR too. A video keeps every frame and every sound sample
-  as they were, with its rotation, HDR, Dolby Vision and spatial video information.
+  Color profiles, orientation, transparency, animation and HDR gain maps are kept, and so is
+  the DPI of JPEG, PNG, TIFF and BMP files, so a photo looks the same, in HDR too. A video
+  keeps every frame and every sound sample as they were, with its rotation, HDR, Dolby Vision
+  and spatial video information.
 - **It finds what others miss.** Depth maps and portrait mattes inside iPhone photos,
   thumbnails and previews that may show the uncropped original, C2PA manifests, data hidden
   after the end of the image, the dates and times in file names, the display model and
@@ -59,7 +61,8 @@ A cleaned copy appears next to each original.
   original, frame by frame. ExifTool, if installed, gives an independent second opinion. If
   anything is off, nothing is saved.
 - **It stays on your computer.** No uploads, telemetry or network access. Originals are never
-  modified, and existing files are never overwritten.
+  modified, and existing files are never overwritten. An original keeps all its metadata, so
+  share only the copy.
 
 ## Compared with the usual one-liner
 
@@ -90,7 +93,8 @@ sees the same video and sound tracks and shows the same frames.
 
 ## How it works
 
-1. **Identify** the format from the file's contents, not its name.
+1. **Identify** the format from the file's contents, not its name; the copy's extension
+   follows the contents too.
 2. **Rebuild** a new file from an allowlist: the image data and the few fields needed to show
    it, such as color, orientation and HDR, some of them written afresh. Everything else is
    left behind.
@@ -116,15 +120,16 @@ describe every check.
 | GIF | images, palettes, frame timing, transparency, loop count, ICC profile | comments, text overlays, XMP, other extensions |
 | TIFF | image data, decoding tags, DPI, orientation, page numbers, ICC profile | EXIF and GPS directories, XMP, IPTC, Photoshop, descriptions, private tags, sub-images |
 | BMP | converted to lossless PNG with the same pixels, DPI and profile | everything else |
-| MP4, MOV | video and sound tracks with every sample, decoder settings, rotation, edit lists, color, HDR (HDR10, HLG, Dolby Vision), Apple spatial video, the scene illuminance iPhones show HDR video with, whether a video of 120 fps or more plays at full speed | location, device, software and dates, timed metadata tracks (GPS, motion, faces, Live Photo data), timecode and chapter tracks, maker data (GoPro serial numbers, Samsung SEF data), unused media data, trailing data |
+| MP4, MOV | video and sound tracks with every sample, decoder settings, rotation, edit lists, color, HDR (HDR10, HLG, Dolby Vision), Apple spatial video, the scene illuminance iPhones show HDR video with, whether a video of 120 fps or more plays at full speed, track language codes | location, device, software and dates, timed metadata tracks (GPS, motion, faces, Live Photo data), timecode and chapter tracks, maker data (GoPro serial numbers, Samsung SEF data), unused media data, trailing data |
 | RAW, PDF, stereo photos, audio files | not supported; RAW files built on TIFF (DNG, CR2, NEF...) and stereo JPEG and HEIC photos are recognized and refused | |
 
 ICC profiles keep their color data. Their date becomes a fixed placeholder (`2000-01-01`),
 their description `Clean`, and device and creator fields, and reserved and vendor bits, are
 cleared. Images up to 268 megapixels are checked, enough for 200-megapixel phone photos;
 larger ones are refused.
-Videos are cleaned in a copy next to the original without being read into memory: a 4.7 GB
-video takes about five seconds on a Mac. Fragmented and encrypted videos, videos with
+Videos are cleaned in a copy next to the original, mapped rather than read into memory: a
+4.7 GB video took about five seconds on an Apple-silicon Mac. Photos are read into memory
+whole. Fragmented and encrypted videos, videos with
 subtitles, Google's 360-degree videos, and codecs MagicDispel does not know are refused.
 Apple's 180- and 360-degree videos keep their projection.
 
@@ -141,9 +146,15 @@ and timestamps that screenshots, phone cameras and chat apps put in names:
 | `IMG_1234.HEIC` | `IMG_1234_clean.HEIC` |
 | `VID_20240501_123456.mp4` | `VID_clean.mp4` |
 
-Further copies get `_clean_1`, `_clean_2`... `--keep-name` keeps the original name as it is,
-and `--anonymous` uses a random name such as `photo_3f9c...e1.jpg` or `video_3f9c...e1.mov`
-instead.
+Recognized are dates with a four-digit year (`2026-09-23`, `20240501`, `2024年5月1日`), times
+with seconds (`15.14.15`, `123456`) and Unix timestamps. The rest of a name stays: other
+styles of dates and times (`23-09-26`, `May 1, 2024`, `15.14` without seconds), words,
+places, coordinates and people's names. Rename a file first, or use `--anonymous`, when its
+name may say too much.
+
+Further copies get `_clean_1`, `_clean_2`... `--keep-name` keeps the original name, dates and
+times included (`_clean` is still added), and `--anonymous` uses a random name such as
+`photo_3f9c...e1.jpg` or `video_3f9c...e1.mov` instead.
 
 ## Usage
 
@@ -157,12 +168,13 @@ magicdispel --check
 | --- | --- |
 | `--anonymous` | name copies `photo_<random>.jpg` or `video_<random>.mov` instead of after the original |
 | `--keep-name` | keep the original's name, dates and times included |
-| `--check` | check that everything needed is installed, and whether ExifTool's second check is on |
+| `--check` | show the version, and whether ExifTool's second check is on |
 | `--version` | show the version |
 | `-h`, `--help` | show all options |
 
-Quote paths containing spaces, or drag the files into the terminal. Folders are not
-processed recursively. A file whose name starts with `-` goes after `--`:
+Quote paths containing spaces, or drag the files into the terminal. A folder is not
+processed: give the files in it (for example `*.jpg`). A file whose name starts with `-` goes
+after `--`:
 `magicdispel -- -photo.jpg`. Exit codes: `0` success or help, `1` one or more files not
 cleaned, `2` invalid arguments, `130` interrupted. A failed file never stops the rest of a
 batch.
@@ -183,23 +195,31 @@ The one-line installers are short scripts you can read first:
 install uv if needed, which brings its own Python when the system has none that fits. If
 `magicdispel` is not found afterwards, open a new terminal window.
 
-To update, run the installer again or `uv tool upgrade magicdispel`. To remove MagicDispel, run
-`uv tool uninstall magicdispel`.
+To update, run the installer again, or `uv tool upgrade magicdispel` (`pipx upgrade
+magicdispel`). To remove MagicDispel, run `uv tool uninstall magicdispel` (`pipx uninstall
+magicdispel`).
 
 [ExifTool](https://exiftool.org/) is optional. When version 12.73 or newer is installed,
 MagicDispel uses it to double-check every result: `brew install exiftool`,
-`sudo apt install libimage-exiftool-perl` or `winget install --exact --id OliverBetz.ExifTool`.
-If it is installed somewhere unusual, set `MAGICDISPEL_EXIFTOOL` to its full path.
+`sudo apt install libimage-exiftool-perl` (older Debian and Ubuntu releases carry a version
+too old to be used) or `winget install --exact --id OliverBetz.ExifTool`. If it is installed
+somewhere unusual, set `MAGICDISPEL_EXIFTOOL` to its full path. `magicdispel --check` says
+whether it is used.
 
 ## Questions
 
 **Does it change my original photo or video?**
 No. MagicDispel only reads the original. The clean copy is a new file next to it, and no
-existing file is ever overwritten.
+existing file is ever overwritten. The original still holds all its metadata and sits next to
+the copy: share only the `_clean` file, and remember that a synced or backed-up folder holds
+both. While a video is being cleaned, its copy is there as `magicdispel-<random>.unfinished`
+with the video's extension.
 
 **Does anything leave my computer?**
-No. MagicDispel never uses the network. Only the installer downloads uv and MagicDispel
-itself.
+No. MagicDispel never uses the network. Only the installer downloads anything: uv, then
+MagicDispel with Pillow and, if the system has no fitting Python, a Python. It also runs
+`uv tool update-shell`, which adds uv's folder to your shell's startup files, unless
+`MAGICDISPEL_NO_MODIFY_PATH=1` is set.
 
 **Why is a cleaned HEIC or video about as large as the original?**
 HEIC files and videos are cleaned in place, so every offset inside them stays valid: removed
@@ -257,8 +277,9 @@ when available; for videos, FFmpeg and macOS AVFoundation), that no probe marker
 and, against a baseline, that no sample changes outcome or gains metadata. Pure refactors should also pass `--identical`, and
 `--without-exiftool` checks the path users without ExifTool take.
 
-`.github/workflows/test.yml` runs the tests on macOS, Windows and Linux with Python 3.10 and
-3.13, with and without ExifTool, and the install scripts on all three. `release.yml` publishes
+`.github/workflows/test.yml` runs the tests on macOS, Windows and Linux with Python 3.10, 3.13
+and 3.14, with and without ExifTool, once more with the oldest dependencies `pyproject.toml`
+allows, and the install scripts on all three. `release.yml` publishes
 a tagged version to PyPI once those pass. `scripts/screenshot.py` renders the images in this
 README.
 

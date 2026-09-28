@@ -318,13 +318,14 @@ def clean(buffer, moov, policy):
 def clean_container(buffer, container, policy, track_handler, removed):
     children = list(bmff.boxes(buffer, container.content, container.end))
     allowed = policy.boxes[container.kind]
+    kinds = Counter(child.kind for child in children)  # counted once: a box may have thousands of siblings
     check_repeats(buffer, children, allowed)
     groups = kept_groupings(buffer, children) if container.kind == b"stbl" else set()
     for found in children:
         if found.kind not in allowed:
             if found.kind in PLACED:
                 raise StructureError("misplaced %s box" % found.kind.decode("latin-1"))
-            replacement = rewrite(buffer, container, children, found, policy)
+            replacement = rewrite(buffer, container, kinds[found.kind], found, policy)
             empty(buffer, found)
             if replacement:
                 place(buffer, found, replacement)
@@ -649,11 +650,12 @@ def empty(buffer, found):
     zero(buffer, found.content, found.end)
 
 
-def rewrite(data, container, children, found, policy):
+def rewrite(data, container, siblings, found, policy):
     """The box that a box the policy does not keep is rewritten as, or None
-    (see Policy.rewritten)."""
+    (see Policy.rewritten). `siblings` is how many boxes of its type its
+    container holds."""
     rewriter = (policy.rewritten or {}).get(container.kind)
-    if not rewriter or sum(child.kind == found.kind for child in children) != 1:
+    if not rewriter or siblings != 1:
         return None
     replacement = rewriter(data, found)
     room = found.end - found.start - len(replacement or b"")
@@ -1117,7 +1119,8 @@ def rewritten(original, rebuilt, container, found, policy):
     """Whether a box of the result is what the original's box at its place is rewritten as."""
     before = list(bmff.boxes(original, container.content, container.end))
     source = next((box for box in before if box.start == found.start), None)
-    replacement = source and rewrite(original, container, before, source, policy)
+    siblings = source and sum(box.kind == source.kind for box in before)
+    replacement = source and rewrite(original, container, siblings, source, policy)
     return bool(replacement) and rebuilt[found.start:found.end] == replacement
 
 

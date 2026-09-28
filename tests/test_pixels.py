@@ -16,6 +16,18 @@ def png(image):
 
 
 class CompareTests(unittest.TestCase):
+    def test_a_file_is_opened_only_by_the_decoder_of_its_kind(self):
+        data = png(Image.new("RGB", (8, 8), "teal"))
+        with pixels.opened(data, "PNG") as picture:
+            self.assertEqual(picture.format, "PNG")
+        for kind in sorted(pixels.FORMATS - {"PNG", "APNG"}):
+            with self.subTest(kind=kind), self.assertRaises(OSError):  # Pillow's UnidentifiedImageError
+                pixels.digest(data, kind)
+        # A BMP's clean copy is a PNG, compared as one.
+        stream = io.BytesIO()
+        Image.new("RGB", (8, 8), "teal").save(stream, "BMP")
+        pixels.compare(stream.getvalue(), data, "BMP")
+
     def test_identical_pixels_pass(self):
         data = png(Image.new("RGB", (300, 600), "teal"))  # taller than one strip
         pixels.compare(data, data, "PNG")

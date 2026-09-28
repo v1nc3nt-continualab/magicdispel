@@ -1,4 +1,6 @@
 """The cleaning pipeline: what has to pass before anything is saved."""
+import os
+import stat
 import tempfile
 import unittest
 from pathlib import Path
@@ -39,6 +41,18 @@ class PipelineTests(unittest.TestCase):
             self.assertEqual(core.clean(str(photo)).name, "photo_clean_1.png")
             self.assertEqual(core.clean(str(photo)).name, "photo_clean_2.png")
             self.assertEqual(Path(folder, "photo_clean.png").read_bytes(), b"KEEP")
+
+    @unittest.skipIf(os.name == "nt", "Windows only has a read-only flag")
+    def test_a_copy_gets_the_originals_permissions_even_when_they_forbid_writing(self):
+        # Clearing the extended attributes macOS gives every new file needs the right to write to it.
+        with tempfile.TemporaryDirectory(prefix="core-") as folder:
+            for mode in (0o444, 0o400, 0o640):
+                photo = Path(folder, "photo%o.png" % mode)
+                Image.new("RGB", (8, 8), "green").save(photo)
+                photo.chmod(mode)
+                with self.subTest(mode=oct(mode)):
+                    self.assertEqual(stat.S_IMODE(core.clean(str(photo)).stat().st_mode), mode)
+                photo.chmod(0o600)
 
 
 if __name__ == "__main__":

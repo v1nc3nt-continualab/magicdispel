@@ -125,7 +125,8 @@ def playback_intent(data, meta):
         (hdlr,), (keys,), (ilst,) = parts.get(b"hdlr", ()), parts.get(b"keys", ()), parts.get(b"ilst", ())
         entries = listed(data, keys, 8)  # after the version, flags and count
         indices = [index for index, entry in enumerate(entries, 1)
-                   if entry.kind == b"mdta" and data[entry.content:entry.end] == PLAYBACK_INTENT]
+                   if entry.kind == b"mdta" and entry.end - entry.content == len(PLAYBACK_INTENT)
+                   and data[entry.content:entry.end] == PLAYBACK_INTENT]  # sized first: a key may be megabytes
         if (data[hdlr.content + 8:hdlr.content + 12] != b"mdta" or len(indices) != 1
                 or int.from_bytes(data[keys.content + 4:keys.content + 8], "big") != len(entries)):
             return None
@@ -133,10 +134,10 @@ def playback_intent(data, meta):
         (value,) = listed(data, item)
     except (StructureError, ValueError):  # none or several of a box, or too many boxes
         return None
-    kind, number = int.from_bytes(data[value.content:value.content + 4], "big"), data[value.content + 8:value.end]
-    if value.kind != b"data" or kind not in INTEGERS or len(number) not in (1, 2, 4, 8):
+    kind, size = int.from_bytes(data[value.content:value.content + 4], "big"), value.end - value.content - 8
+    if value.kind != b"data" or kind not in INTEGERS or size not in (1, 2, 4, 8):
         return None
-    intent = int.from_bytes(number, "big", signed=INTEGERS[kind])
+    intent = int.from_bytes(data[value.content + 8:value.end], "big", signed=INTEGERS[kind])
     return intent if intent in (0, 1) else None
 
 

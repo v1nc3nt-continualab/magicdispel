@@ -117,19 +117,41 @@ def parse(data):
         raise FormatError("unsupported_variant", format="BigTIFF")
     if magic != CLASSIC:
         raise damaged()
-    pages, seen, offset = [], set(), first
+    pages, seen, offset, claims = [], set(), first, Claims(len(data))
     while offset:
         if offset in seen or len(pages) > MAX_PAGES:
             raise damaged()
         seen.add(offset)
-        page, offset = read_directory(data, offset, order)
+        page, offset = read_directory(data, offset, order, claims)
         pages.append(page)
     if not pages:
+        raise damaged()
+    # Image blocks share no byte: what would come out of one file is what it holds.
+    used = sorted(span for page in pages for span in page["image"])
+    if any(later[0] < earlier[1] for earlier, later in zip(used, used[1:])):
         raise damaged()
     return order, pages
 
 
-def read_directory(data, offset, order):
+class Claims:
+    """The bytes a file's tags and image blocks name. A range is copied once
+    however many name it, and the ranges together hold no more than the file
+    does, as those of a real file, which share nothing, do not: thousands of
+    entries naming one large range would otherwise need thousands of copies."""
+
+    def __init__(self, size):
+        self.left, self.copies = size, {}
+
+    def take(self, data, start, size):
+        if (start, size) not in self.copies:
+            self.left -= size
+            if self.left < 0:
+                raise damaged()
+            self.copies[start, size] = data[start:start + size]
+        return self.copies[start, size]
+
+
+def read_directory(data, offset, order, claims):
     count = unpack(data, order + "H", offset)[0]
     table_end = offset + 2 + 12 * count + 4
     if table_end > len(data):
@@ -144,7 +166,7 @@ def read_directory(data, offset, order):
         start = field if size <= 4 else unpack(data, order + "I", field)[0]
         if start + size > len(data):
             raise damaged()
-        tags[tag] = (kind, data[start:start + size])
+        tags[tag] = (kind, claims.take(data, start, size))
         if size > 4:
             spans.append((start, start + size))
     # A DNG, or a preview page whose full image sits in a sub-IFD, is a RAW photo.
@@ -159,19 +181,20 @@ def read_directory(data, offset, order):
     offsets, counts = integers(tags[offsets_tag], order), integers(tags[counts_tag], order)
     if len(offsets) != len(counts):
         raise damaged()
-    blocks = []
+    blocks, image = [], []
     for start, size in zip(offsets, counts):
         if start + size > len(data) or (size and start < 8):
             raise damaged()
-        blocks.append(data[start:start + size])
+        blocks.append(claims.take(data, start, size))
         if size:
             spans.append((start, start + size))
+            image.append((start, start + size))
     check_layout(tags, blocks, order)
     if value(tags, COMPRESSION, UNCOMPRESSED, order) == JPEG_COMPRESSION:
         for block in blocks + ([tags[JPEG_TABLES][1]] if JPEG_TABLES in tags else []):
             check_jpeg_block(block)
     next_offset = unpack(data, order + "I", table_end - 4)[0]
-    return {"tags": tags, "blocks": blocks, "spans": spans}, next_offset
+    return {"tags": tags, "blocks": blocks, "spans": spans, "image": image}, next_offset
 
 
 def check_counts(tags, order):
@@ -206,14 +229,16 @@ def check_layout(tags, blocks, order):
         if not tile_width or not tile_length:
             raise damaged()
         tiles = ceil(width / tile_width) * ceil(height / tile_length)
+        if len(blocks) != tiles * len(planes):  # before any list of that many sizes: it may be billions
+            raise damaged()
         sizes = [tile_length * ((tile_width * plane + 7) // 8) for plane in planes for _ in range(tiles)]
     else:
         rows = min(value(tags, ROWS_PER_STRIP, height, order) or height, height)
         strips = ceil(height / rows)
+        if len(blocks) != strips * len(planes):
+            raise damaged()
         sizes = [min(rows, height - n * rows) * ((width * plane + 7) // 8)
                  for plane in planes for n in range(strips)]
-    if len(blocks) != len(sizes):
-        raise damaged()
     # Subsampled YCbCr packs its samples differently; compressed sizes are unknown.
     if value(tags, COMPRESSION, UNCOMPRESSED, order) == UNCOMPRESSED and value(tags, PHOTOMETRIC, 0, order) != YCBCR:
         if any(len(block) > size for block, size in zip(blocks, sizes)):

@@ -2,8 +2,10 @@
 import io
 import struct
 import tempfile
+import tracemalloc
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from PIL import Image, ImageCms
 
@@ -248,6 +250,38 @@ class SanitizeTests(unittest.TestCase):
             broken[offset:offset + len(value)] = value
             with self.subTest(offset=offset), self.assertRaises(icc.ProfileError):
                 icc.sanitize(bytes(broken))
+
+    def test_tags_that_share_data_do_not_multiply_it(self):
+        # 4096 tags may name one range of a 64 MB profile, which a small PNG inflates to: 256 GB if each got a copy.
+        entries, size = 300, 1 << 20
+        table_end = 132 + 12 * entries
+        profile = bytearray(SRGB[:128]) + struct.pack(">I", entries)
+        for index in range(entries):
+            profile += struct.pack(">4sII", b"x%03d" % index, table_end, size)
+        profile += bytes(size)
+        struct.pack_into(">I", profile, 0, len(profile))
+        tracemalloc.start()
+        try:
+            with self.assertRaises(icc.ProfileError):  # made-up tags: refused
+                icc.sanitize(bytes(profile))
+            peak = tracemalloc.get_traced_memory()[1]
+        finally:
+            tracemalloc.stop()
+        self.assertLess(peak, 30 << 20)
+
+    def test_a_header_that_loses_a_field_is_noticed(self):
+        # The check must not compare header() with itself: the output is written from it.
+        profile = bytearray(SRGB)
+        profile[44:48], profile[56:64], profile[64:68] = struct.pack(">I", 1), struct.pack(">Q", 5), struct.pack(">I", 1)
+        icc.sanitize(bytes(profile))
+        real = icc.header
+        for field in (icc.FLAGS, icc.ATTRIBUTES, icc.INTENT, icc.CLASS_AND_SPACES):
+            def forgetful(original, field=field):
+                head = bytearray(real(original))
+                head[field] = bytes(field.stop - field.start)
+                return bytes(head)
+            with self.subTest(field=field), patch.object(icc, "header", forgetful), self.assertRaises(icc.ProfileError):
+                icc.sanitize(bytes(profile))
 
     def test_tags_are_kept_in_one_order(self):
         tags = tag_table(user_profile())

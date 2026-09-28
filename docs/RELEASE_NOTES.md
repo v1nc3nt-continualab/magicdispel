@@ -24,12 +24,13 @@ QuickTime (MOV) videos. Each file is rebuilt from only what is needed to show or
 location, capture time, camera details, author, comments, thumbnails, depth maps and portrait
 mattes, C2PA manifests, GPS tracks and camera serial numbers in videos, and unknown data blocks
 are left behind. Image data, video frames and sound are copied unchanged (BMP becomes lossless
-PNG), and color, orientation, DPI, transparency, animation, HDR gain maps, HDR video, Dolby
-Vision and spatial video are kept. The dates and times that screenshots and cameras put in file
+PNG), and color, orientation, transparency, animation, HDR gain maps, HDR video, Dolby Vision and
+spatial video are kept, and so is the DPI of JPEG, PNG, TIFF and BMP files. The dates and times that screenshots and cameras put in file
 names are left out of the new name. Every result is checked before it is saved. ExifTool is
 optional; when installed, it double-checks each result.
 
 This is not an anonymity tool: what a picture or video shows can still identify people and
 places. Read the privacy details before sharing sensitive files.
 
-Tested on macOS, Windows and Linux with Python 3.10 and 3.13.
+Unit tests run on macOS, Windows and Linux with Python 3.10, 3.13 and 3.14; real photos and
+videos are checked on macOS.

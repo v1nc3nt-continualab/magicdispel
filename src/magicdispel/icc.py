@@ -134,14 +134,24 @@ def sanitize(profile):
             offset += (len(payload) + 3) & ~3
         struct.pack_into(">4sII", clean, TAG_TABLE + 12 * index, tag, placed[payload], len(payload))
     result = bytes(clean)
-    if color_signature(profile) != color_signature(result):
+    if color_signature(profile) != color_signature(result) or defined_fields(profile) != defined_fields(result):
         raise ProfileError("ICC color conversion data changed")
     return result
 
 
+def defined_fields(profile):
+    """The header fields a conversion reads, read from the bytes themselves,
+    with the bits the standard defines and no others: a sanitized copy must
+    hold what the original does. header() writes them, so a check that used it
+    would only find it agreeing with itself."""
+    number = lambda field: int.from_bytes(profile[field], "big")
+    return (bytes(profile[8:10]), bytes(profile[CLASS_AND_SPACES]), number(FLAGS) & FLAG_BITS,
+            number(ATTRIBUTES) & ATTRIBUTE_BITS, number(INTENT) & INTENT_BITS)
+
+
 def color_signature(profile):
     """Everything that determines color conversion: the header and color tags."""
-    kept = {}
+    kept, checked = {}, set()
     for tag, value in entries(profile).items():
         if tag in DROPPED_TAGS:
             continue
@@ -155,7 +165,9 @@ def color_signature(profile):
             check_gain_curve(value)
             kept[tag] = value
         else:
-            check_layout(value)
+            if id(value) not in checked:  # tags that share data are checked once
+                check_layout(value)
+                checked.add(id(value))
             check_values(tag, value)
             kept[tag] = value
     return header(profile), kept
@@ -304,7 +316,7 @@ def entries(profile):
     table_end = TAG_TABLE + 12 * count
     if count > 4096 or not table_end <= length <= len(profile):
         raise ProfileError("Invalid ICC profile table")
-    found, ranges = {}, []
+    found, ranges, slices = {}, [], {}
     for index in range(count):
         tag, offset, size = struct.unpack_from(">4sII", profile, TAG_TABLE + 12 * index)
         if tag in found or offset < table_end or size < 8 or offset % 4 or offset + size > length:
@@ -314,7 +326,9 @@ def entries(profile):
                for start, end in ranges):
             raise ProfileError("Overlapping ICC tag data")
         ranges.append((offset, offset + size))
-        found[tag] = profile[offset:offset + size]
+        if (offset, size) not in slices:  # tags that share data share one copy: thousands of them may
+            slices[offset, size] = profile[offset:offset + size]
+        found[tag] = slices[offset, size]
     return found
 
 

@@ -158,8 +158,8 @@ def publish(data, source, suffix, naming="plain"):
         try:
             with output:
                 output.write(data)
+            clear_attributes(destination)  # while it can still be written: the original may not be
             os.chmod(destination, permissions(source))
-            clear_attributes(destination)
             return destination
         except BaseException:
             destination.unlink(missing_ok=True)
@@ -176,8 +176,8 @@ def rename(path, source, suffix, naming="plain", noun="photo"):
             continue
         try:
             os.replace(path, destination)
+            clear_attributes(destination)  # while it can still be written: the original may not be
             os.chmod(destination, permissions(source))
-            clear_attributes(destination)
             return destination
         except BaseException:
             destination.unlink(missing_ok=True)

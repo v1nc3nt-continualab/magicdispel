@@ -5,6 +5,8 @@ import os
 import re
 import struct
 import tempfile
+import time
+import tracemalloc
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -371,6 +373,26 @@ class MovieTests(VideoTests):
         # One holding just the intent, as a clean copy does, is kept as it is.
         exact = movie_file(meta=mp4.playback_metadata(1))
         self.assertIn(mp4.playback_metadata(1), self.assertCleaned(exact))
+
+    def test_a_huge_key_or_value_is_sized_before_it_is_read(self):
+        for items in ([(bytes(20_000_000), 1, b""), intent(1)], [(INTENT, 21, bytes(20_000_000))]):
+            data = apple_metadata(*items)
+            meta = next(bmff.boxes(data))
+            tracemalloc.start()
+            try:
+                found = mp4.playback_intent(data, meta)
+                peak = tracemalloc.get_traced_memory()[1]
+            finally:
+                tracemalloc.stop()
+            self.assertEqual(found, 1 if len(items) == 2 else None)
+            self.assertLess(peak, 2 << 20)
+
+    def test_a_movie_box_of_tens_of_thousands_of_boxes_is_cleaned_at_once(self):
+        # The time once grew with the square of the number of boxes: 30 seconds for 32,000 of them.
+        data = movie_file(movie_extra=b"".join(box(b"free", bytes(8)) for _ in range(40_000)))
+        start = time.monotonic()
+        self.assertCleaned(data)
+        self.assertLess(time.monotonic() - start, 10)
 
     def test_what_cannot_be_cleaned_safely_is_refused(self):
         video = (1, b"vide", visual_entry(b"avc1", box(b"avcC", bytes(7))), VIDEO, b"", b"vmhd")
@@ -843,6 +865,17 @@ class PipelineTests(unittest.TestCase):
             unfinished = [name for name in seen if name.startswith("magicdispel-")]
             self.assertEqual([seen[name] for name in unfinished], [0o600])  # visible, and the owner's alone
             self.assertEqual(output.stat().st_mode & 0o777, 0o640)
+
+    @unittest.skipIf(os.name == "nt", "Windows only has a read-only flag")
+    def test_a_video_the_owner_cannot_write_is_cleaned_into_a_copy_with_its_permissions(self):
+        with tempfile.TemporaryDirectory(prefix="video-") as folder:
+            for mode in (0o444, 0o400):
+                source = Path(folder, "locked%o.mov" % mode)
+                source.write_bytes(movie_file())
+                source.chmod(mode)
+                with self.subTest(mode=oct(mode)):
+                    self.assertEqual(core.clean(str(source)).stat().st_mode & 0o777, mode)
+                source.chmod(0o600)
 
     def test_exiftool_is_never_given_a_path_it_would_misread(self):
         with self.assertRaises(exiftool.ExifToolError):

@@ -193,6 +193,10 @@ class ItemTests(HeifTests):
             ("unsupported_part", heif_file([PRIMARY, (2, b"Exif", MARKER)], [(b"dimg", 1, [2])])),
             ("damaged", heif_file(items, [(b"auxl", 2, [99])], depth)),
             ("damaged", heif_file(items, [(b"auxl", 2, [1])], depth, associations={1: [99]})),
+            # A file type box alone, or with anything after it, holds no picture.
+            ("damaged", box(b"ftyp", b"heic" + bytes(4) + b"mif1")),
+            ("damaged", box(b"ftyp", b"heic" + bytes(4) + b"mif1") + bytes(40)),
+            ("damaged", box(b"ftyp", b"avif" + bytes(4) + b"mif1") + box(b"free", bytes(40))),
         ]
         for index, (key, data) in enumerate(cases):
             with self.subTest(case=index):

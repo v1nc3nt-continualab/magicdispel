@@ -12,8 +12,8 @@ pipe, ExifTool would hold the whole video in memory to move through it.
 import json
 import os
 import re
-import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 from . import xmp
@@ -66,16 +66,37 @@ class ExifToolError(Exception):
     """ExifTool could not run, or reported a problem with a file."""
 
 
+def which(name):
+    """The program `name` in the folders of PATH, or None. Only folders given
+    in full count: a relative or empty entry stands for the current directory,
+    which Windows searches first even without one (as shutil.which does), so a
+    program planted in a folder the user happens to be in would be run."""
+    extensions = [""]
+    if sys.platform == "win32":
+        extensions = [extension for extension in os.environ.get("PATHEXT", ".COM;.EXE;.BAT;.CMD").split(os.pathsep)
+                      if extension]
+    for folder in os.environ.get("PATH", "").split(os.pathsep):
+        if not os.path.isabs(folder):
+            continue
+        for extension in extensions:
+            candidate = os.path.join(folder, name + extension)
+            if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+                return candidate
+    return None
+
+
 def find():
     """The ExifTool executable, or None when it is not installed. An explicit
-    MAGICDISPEL_EXIFTOOL that does not name a program is an error."""
+    MAGICDISPEL_EXIFTOOL, a program's name or its path, that does not name a
+    program is an error."""
     configured = os.environ.get("MAGICDISPEL_EXIFTOOL")
     if configured:
-        candidate = shutil.which(configured) or os.path.expanduser(configured)
-        if Path(candidate).is_file() and os.access(candidate, os.X_OK):
+        named = os.sep not in configured and not (os.altsep and os.altsep in configured)
+        candidate = which(configured) if named else os.path.expanduser(configured)
+        if candidate and Path(candidate).is_file() and os.access(candidate, os.X_OK):
             return candidate
         raise UserError("exiftool_misconfigured", path=configured)
-    for candidate in (shutil.which("exiftool"), "/opt/homebrew/bin/exiftool", "/usr/local/bin/exiftool"):
+    for candidate in (which("exiftool"), "/opt/homebrew/bin/exiftool", "/usr/local/bin/exiftool"):
         if candidate and Path(candidate).is_file() and os.access(candidate, os.X_OK):
             return candidate
     return None

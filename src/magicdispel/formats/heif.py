@@ -160,6 +160,8 @@ def cleaned(data):
     movie.clear(result, file_type_brands(data, top[0]))
     kept = kept_boxes(top)
     layout = bmff.layout(data)
+    if not layout and not any(found.kind == b"moov" for found in top):
+        raise StructureError("no image and no sequence")  # a file type box alone is no picture
     if layout:  # items share no data with the samples a sequence keeps, nor with each other
         clean_items(data, layout, result, [span for found in top if found.kind == b"moov"
                                            for span in movie.kept_ranges(data, found, SEQUENCE)])

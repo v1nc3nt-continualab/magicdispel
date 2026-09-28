@@ -1,6 +1,7 @@
 """TIFF rebuilding: kept tags and image data, dropped directories, refused variants."""
 import io
 import struct
+import tracemalloc
 import unittest
 
 from PIL import Image
@@ -63,6 +64,18 @@ def patch_tag(data, tag, value):
         entry = first + 2 + 12 * index
         if struct.unpack_from(order + "H", data, entry)[0] == tag:
             struct.pack_into(order + "H", data, entry + 8, value)
+    return bytes(data)
+
+
+def patch_long(data, tag, value):
+    """Overwrite a tag of the first directory with one inline LONG."""
+    data = bytearray(data)
+    order = "<" if data[:2] == b"II" else ">"
+    first = struct.unpack_from(order + "I", data, 4)[0]
+    for index in range(struct.unpack_from(order + "H", data, first)[0]):
+        entry = first + 2 + 12 * index
+        if struct.unpack_from(order + "H", data, entry)[0] == tag:
+            struct.pack_into(order + "HHII", data, entry, tag, 4, 1, value)
     return bytes(data)
 
 
@@ -146,6 +159,37 @@ class TiffTests(unittest.TestCase):
                 with self.assertRaises(FormatError) as caught:
                     tiff.rebuild(data)
                 self.assertEqual(caught.exception.key, key)
+
+    def test_a_size_that_needs_billions_of_strips_is_refused_before_a_list_of_them_is_made(self):
+        # A 130-byte file may say its rows are 4 billion and each a strip of its own.
+        data = patch_long(encode(gradient(), tiffinfo={278: 1}), tiff.HEIGHT, 8_000_000)
+        tracemalloc.start()
+        try:
+            with self.assertRaises(FormatError) as caught:
+                tiff.rebuild(data)
+            peak = tracemalloc.get_traced_memory()[1]
+        finally:
+            tracemalloc.stop()
+        self.assertEqual(caught.exception.key, "damaged")
+        self.assertLess(peak, 10 << 20)
+
+    def test_image_blocks_that_share_bytes_are_refused(self):
+        # Strips of one range, however many name it, would each be written out again.
+        data = encode(gradient(), tiffinfo={278: 7})
+        _, pages = tiff.parse(data)
+        offsets = [int.from_bytes(pages[0]["tags"][273][1][n:n + 4], "little") for n in (0, 4)]
+        for second in (offsets[0], offsets[0] + 10):
+            with self.subTest(second=second), self.assertRaises(FormatError) as caught:
+                tiff.rebuild(with_values(data, 273, 4, [offsets[0], second]))
+            self.assertEqual(caught.exception.key, "damaged")
+
+    def test_a_range_named_by_many_entries_is_copied_once_and_the_ranges_hold_no_more_than_the_file(self):
+        claims = tiff.Claims(100)
+        data = bytes(range(100))
+        first = claims.take(data, 10, 60)
+        self.assertIs(claims.take(data, 10, 60), first)  # a copy each would be 60 bytes each
+        with self.assertRaises(FormatError):
+            claims.take(data, 20, 60)  # 120 bytes of ranges in a file of 100
 
     def test_verify_notices_a_tampered_result(self):
         data = encode(gradient())

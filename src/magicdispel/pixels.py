@@ -11,6 +11,12 @@ from .errors import FormatError, VerificationError
 # Formats Pillow decodes (AVIF only when built with it). For HEIC, heif.verify
 # compares every retained image item byte for byte instead.
 FORMATS = {"PNG", "APNG", "BMP", "JPEG", "WEBP", "GIF", "AVIF", "TIFF"}
+# The one decoder that opens each kind. Pillow would otherwise open a file by
+# any of its many decoders whose signature the file's bytes match, and each
+# decoder is more code that a file made for it could reach.
+DECODERS = {"PNG": ["PNG"], "APNG": ["PNG"], "BMP": ["BMP"], "JPEG": ["JPEG"], "WEBP": ["WEBP"], "GIF": ["GIF"],
+            "AVIF": ["AVIF"], "TIFF": ["TIFF"]}
+RESULTS = {"BMP": "PNG"}  # a kind whose clean copy is of another
 # One limit for every format, with room for 200-megapixel phone photos. Pillow
 # refuses images over twice MAX_IMAGE_PIXELS as possible decompression bombs,
 # and only warns between the two.
@@ -30,7 +36,7 @@ def decodes(kind):
 def opened(data, kind):
     """The image in `data`, opened by Pillow; FormatError if it is too large."""
     try:
-        with Image.open(io.BytesIO(data)) as picture:
+        with Image.open(io.BytesIO(data), formats=DECODERS[kind]) as picture:
             yield picture
     except Image.DecompressionBombError:
         raise FormatError("too_large", format=kind, limit=MEGAPIXELS)
@@ -48,7 +54,7 @@ def compare(original, rebuilt, kind):
         # Without a decodable original there is nothing to compare against.
         raise FormatError("undecodable", format=kind)
     try:
-        after = digest(rebuilt, kind)
+        after = digest(rebuilt, RESULTS.get(kind, kind))
     except Exception:
         raise VerificationError("verification_failed", detail="the result cannot be decoded")
     if before != after:
