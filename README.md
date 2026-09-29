@@ -131,7 +131,8 @@ larger ones are refused, and so are animations (GIF, WebP, APNG, AVIF) on a canv
 proportion: a 268-megapixel WebP needs about 4 GB.
 Videos are cleaned in a copy next to the original, mapped rather than read into memory: a
 4.7 GB video took about five seconds on an Apple-silicon Mac. Photos are read into memory
-whole. Fragmented and encrypted videos, videos with
+whole, and a large GIF or PNG animation needs about five times its size. Fragmented and
+encrypted videos, videos with
 subtitles, Google's 360-degree videos, and codecs MagicDispel does not know are refused.
 Apple's 180- and 360-degree videos keep their projection.
 
@@ -279,6 +280,14 @@ It checks that every output looks identical to its input (Pillow, and macOS Imag
 when available; for videos, FFmpeg and macOS AVFoundation), that no probe marker survives,
 and, against a baseline, that no sample changes outcome or gains metadata. Pure refactors should also pass `--identical`, and
 `--without-exiftool` checks the path users without ExifTool take.
+
+```sh
+python scripts/fuzz.py 10000 --workers 8 --keep ~/fuzz-cases
+```
+
+damages small files of every format, and cleans them: a damaged file must be refused, and never
+crash the program, take more than eight seconds, or come out as a copy that cleans to something
+else. It reports what does, and saves those files.
 
 `.github/workflows/test.yml` runs the tests on macOS, Windows and Linux with Python 3.10, 3.13
 and 3.14, with and without ExifTool, once more with the oldest dependencies `pyproject.toml`

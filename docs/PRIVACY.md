@@ -106,12 +106,12 @@ edit list may then play a few milliseconds of silence at the start of the sound.
   first stays, and only where it counts: in a JPEG, a JFIF, EXIF, XMP, ISO gain-map, Apple
   gain-curve or Adobe segment, and the quantization and Huffman tables and restart interval a
   scan reads (a table that nothing reads, or that another replaces first, goes, as do fill
-  bytes and markers that stand alone); in a PNG, each chunk the standard allows once, and only
-  before the image data, and the frames its animation control counts; in a WebP, one ANIM and
-  one ICCP, and in each frame the first image with its alpha data; in a GIF, one loop count,
-  one profile and the last graphic control before each image; in a track, each type of
-  reference once, and the sample dependency table only if the track has pictures, where it
-  says how they depend on each other. The suggested palette of a truecolor PNG, a TIFF's JPEG
+  bytes and markers that stand alone); in a PNG, each chunk the standard allows once, and those
+  it puts before the image data only there, and the frames its animation control counts; in a
+  WebP, one ANIM and one ICCP, and in each frame the first image with its alpha data; in a GIF,
+  one loop count, one profile and the last graphic control before each image; in a track, each
+  type of reference once, and the sample dependency table only if the track has pictures, where
+  it says how they depend on each other. The suggested palette of a truecolor PNG, a TIFF's JPEG
   tables unless it is JPEG compressed and its palette unless it is a palette image, and
   whatever follows an item's name in a HEIF item's information (but the type of XMP), go. A
   file with more of something than a real one has (65,536 JPEG segments, 262,144 boxes in a
@@ -173,8 +173,8 @@ edit list may then play a few milliseconds of silence at the start of the sound.
   media stored outside the file, BigTIFF, old-style JPEG in TIFF, metadata inside
   JPEG-compressed TIFF strips, unrecognized ICC tags and floating-point ICC transforms,
   gain-map metadata of an unknown version, 4-bit run-length BMPs (Pillow decodes them wrongly),
-  BMPs whose profile is a file of its own, compact sample sizes (stz2) and HEIF image items with
-  no data. RAW photos built on TIFF (DNG, CR2, NEF and others) are refused too: their TIFF pages
+  BMPs whose profile is a file of its own, compact sample sizes (stz2), a track or movie header
+  outside the movie box, and HEIF image items with no data. RAW photos built on TIFF (DNG, CR2, NEF and others) are refused too: their TIFF pages
   hold only a preview.
 - **Checked before saving.** The rebuilder parses its own result independently and compares it
   with what the original should yield: for HEIF, for instance, that every retained image item is
@@ -308,6 +308,16 @@ container and muxer option they offer: all but those refused by design clean wit
 frames and sound, and every clean copy cleans to itself. A 4.7 GB video was cleaned in about five
 seconds on an Apple-silicon Mac, using about 25 MB of memory of its own: the video is mapped, so
 the system's file cache is not counted.
+
+For 0.2.3 a new audit read the code and tried to break it. Besides the unit tests, 330,000
+damaged variants of small files of every format were cleaned, made by changing, cutting,
+doubling and swapping bytes, and by doubling, dropping, swapping and retyping chunks, segments,
+blocks, boxes and TIFF entries, with their sizes and checksums made right again: each was
+refused or cleaned, none crashed the program or took more than eight seconds, and every clean
+copy cleaned to itself (`scripts/fuzz.py`). Files built to hide data in tables, fill, repeated
+segments and chunks, and dependency tables of sound are cleaned or refused since 0.2.3, and 18
+JPEGs made with libjpeg-turbo, FFmpeg and macOS, and the 48 JPEGs of the corpus, come out byte for
+byte as before.
 
 On macOS, Windows and Linux, CI runs the unit tests with Python 3.10, 3.13 and 3.14, with and
 without ExifTool, once more with the oldest dependencies pyproject.toml allows, and installs

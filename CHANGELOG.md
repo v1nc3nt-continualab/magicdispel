@@ -4,8 +4,9 @@
 
 An audit of 0.2.2 by a new model read the whole code base and tried to make it misbehave. It
 found files refused or saved wrongly, files that took minutes or gigabytes to check, and places
-where a file made for it could hide data. None of it leaked what a camera or an app writes.
-Upgrading is recommended if you clean BMP or TIFF files, or read-only originals on macOS.
+where a file made for it could hide data. None of it was a way for what a camera or an app
+writes to survive cleaning. Upgrading is recommended if you clean BMP or TIFF files, videos of
+many hours, or read-only originals on macOS.
 
 Refused or saved wrongly:
 
@@ -22,7 +23,7 @@ Refused or saved wrongly:
 - On Windows, ExifTool was looked for in the current folder first; only folders of `PATH` given
   in full count now.
 - A HEIC of a file type box alone was "cleaned" into a file with no picture, and so was one whose
-  only image had no data. Both are refused. A 10-byte `nclx` colour box, as some Android phones
+  only image had no data. Both are refused. A 10-byte `nclx` color box, as some Android phones
   write it, is accepted, as it is in videos.
 - Image sequences keep their extensions: `.heics`, `.heifs` and `.avifs` became `.heic` and
   `.avif`.
@@ -89,16 +90,22 @@ Places where a made-up file could hide data, closed:
   read and the standard leaves free, the order of boxes), and the two that grow with a video:
   how its tables are cut into runs, and the dependency table of its pictures.
 
-Also: libtiff's own messages about a damaged TIFF no longer appear before the command's, 240,000
-damaged variants of files of every format and 260,000 with their chunks, segments, blocks and
-boxes duplicated, dropped, swapped and retyped were cleaned without a crash, a stall or a copy
-that cleans to something else, Pillow 12.3 or newer is required (11.3 has 36 published advisories), each kind of file is
-opened by its own decoder only, CI runs Python 3.14 and once with the oldest dependencies allowed,
-the regression harness reports an unexpected exception as a problem, not a refusal, and the
-documentation is corrected where the audit found claims that were too strong or too weak.
-Known limits: a video's metadata box of fewer than 157 bytes, or of 158 to 164, has no room for the
-playback intent, which then goes with the rest; a WebP of 268 megapixels takes about 4 GB to
-check.
+Also:
+
+- `scripts/fuzz.py` damages small files of every format and cleans them, to see that a damaged
+  file is refused and never crashes the program, takes more than eight seconds, or comes out as a
+  copy that cleans to something else. It found the limit on the canvas of an animation above, and
+  330,000 variants of small files now clean or are refused without any of that.
+- Pillow 12.3 or newer is required (11.3 has 36 published advisories), and each kind of file is
+  opened by its own decoder only. CI runs Python 3.14, and once with the oldest dependencies
+  allowed.
+- libtiff's own messages about a damaged TIFF no longer appear in front of the command's.
+- The regression harness reports an unexpected exception as a problem, not as a refusal, and the
+  documentation is corrected where the audit found claims that were too strong or too weak.
+
+Known limits: a video's metadata box of fewer than 157 bytes, or of 158 to 164, has no room for
+the playback intent, which then goes with the rest; a WebP of 268 megapixels takes about 4 GB to
+check; a GIF or PNG animation takes about five times its size in memory.
 
 ## 0.2.2 (2026-09-26)
 
