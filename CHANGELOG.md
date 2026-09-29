@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.3 (2026-09-29)
 
 An audit of 0.2.2 by a new model read the whole code base and tried to make it misbehave. It
 found files refused or saved wrongly, files that took minutes or gigabytes to check, and places
