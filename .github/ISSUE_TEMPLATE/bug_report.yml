@@ -1,11 +1,11 @@
 name: Bug report
-description: A photo MagicDispel refused or cleaned wrongly, or anything else that went wrong.
+description: A photo or video MagicDispel refused or cleaned wrongly, or anything else that went wrong.
 labels: [bug]
 body:
   - type: markdown
     attributes:
       value: |
-        **Please do not attach private photos.** Issues are public, and attachments can stay online even after an issue is deleted. Say where the photo comes from instead, or show the problem with a photo that contains nothing private, such as a picture of a blank wall.
+        **Please do not attach private photos or videos.** Issues are public, and attachments can stay online even after an issue is deleted. Say where the file comes from instead, or show the problem with a file that contains nothing private, such as a picture of a blank wall. A photo's location and phone model stay in it on a public issue.
 
         Did private data survive cleaning? That is a security issue: please [report it privately](https://github.com/v1nc3nt-continualab/magicdispel/security/advisories/new) instead.
   - type: textarea
@@ -26,7 +26,7 @@ body:
   - type: input
     id: source
     attributes:
-      label: Where the photo comes from
+      label: Where the file comes from
       description: The camera, phone or app that made it, and any app that edited it since.
       placeholder: iPhone 15 Pro, portrait mode HEIC, edited in Photos
     validations:
@@ -48,5 +48,5 @@ body:
     attributes:
       label: Privacy
       options:
-        - label: I have not attached any photo, screenshot or file that shows or contains private information.
+        - label: I have not attached any photo, video, screenshot or file that shows or contains private information.
           required: true

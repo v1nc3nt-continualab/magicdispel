@@ -42,6 +42,7 @@ from pathlib import Path
 from PIL import Image
 
 from magicdispel import core
+from magicdispel.errors import UserError
 from magicdispel.exiftool import find as find_exiftool, usable, version
 
 MARKER = b"SECRET-40.7128N"
@@ -375,8 +376,10 @@ def clean_sample(exiftool, corpus, sample, workdir):
     record = {"id": sample["id"], "label": sample["label"], "input_suffix": source.suffix}
     try:
         output = core.clean(str(source), exiftool)
-    except (OSError, ValueError) as error:
+    except (UserError, OSError) as error:
         record.update(status="refused", message=str(error))
+    except Exception as error:  # a bug, not a refusal: reported as a problem
+        record.update(status="refused", message="%s: %s" % (type(error).__name__, error), unexpected=True)
     else:
         record.update(status="cleaned", output=str(output))
     record["seconds"] = round(time.perf_counter() - started, 2)
@@ -384,7 +387,7 @@ def clean_sample(exiftool, corpus, sample, workdir):
         # A clean copy must clean to itself.
         try:
             again = core.clean(str(output), exiftool)
-        except (OSError, ValueError) as error:
+        except Exception as error:
             record["again"] = "refused: " + str(error)
         else:
             record["again"] = "same" if sha256_file(again) == sha256_file(output) else "changed"
@@ -506,6 +509,8 @@ def run(corpus, workers, keep, without_exiftool=False):
 def check_against_input(record):
     """Problems visible without any baseline: the output must look like its input."""
     problems = []
+    if record.get("unexpected"):
+        problems.append("unexpected error: " + record["message"])
     if not record["source_unchanged"]:
         problems.append("source file was modified")
     if record["leftovers"]:
@@ -570,6 +575,8 @@ def native_video_differences(before, after):
         problems.append("output has a track that differs from the input's")
     if before.get("duration") != after.get("duration"):
         problems.append("macOS duration %s -> %s" % (before.get("duration"), after.get("duration")))
+    if any(isinstance(native.get("playbackIntent"), str) for native in (before, after)):  # an error text
+        problems.append("macOS could not read the playback intent")
     if before.get("playbackIntent") != after.get("playbackIntent"):
         problems.append("macOS playback intent %s -> %s" % (before.get("playbackIntent"), after.get("playbackIntent")))
     if any(a != b for a, b in zip(before.get("frames", []), after.get("frames", [])) if a.get("srgb")):

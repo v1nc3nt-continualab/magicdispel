@@ -3,8 +3,8 @@
 MagicDispel rebuilds each file from an allowlist: it copies only the parts a viewer needs to
 show the image or play the video and leaves everything else behind. It does not search for known metadata to
 delete, so metadata it has never heard of is removed too, and the parts it keeps must match
-their exact layout, so they cannot carry anything else along. It does not promise forensic
-anonymization.
+their exact layout, so almost nothing can ride along in them; the exceptions are listed under
+"Out of scope". It does not promise forensic anonymization.
 
 ## What is kept, and why
 
@@ -36,14 +36,20 @@ anonymization.
   Apple's full frame rate playback intent, which says whether a video of 120 fps or more plays
   at its full rate or in slow motion, as some players would otherwise play it: the one item of a
   video's metadata kept, as 0 or 1, in a metadata box rewritten with it alone, as iPhones write
-  it.
-- **Structure.** Transparency, animation frames, timing and loop count, TIFF pages and page
-  numbers, and the format's own headers.
+  it. Each track's language code stays as well (iPhones write `und`, undetermined; others may
+  write their own, such as `eng`).
+- **Structure.** Transparency, animation frames, timing and loop count, TIFF pages, page
+  numbers and byte order, PNG background color and significant bits, the color transform
+  flags of JPEG (Adobe), and the format's own headers.
 - **The file name**, with `_clean` added and without the dates, times and timestamps that
   screenshots, cameras and chat apps put in names: `Screenshot 2026-09-23 at 15.14.15.png`
-  becomes `Screenshot_clean.png`, `IMG_20240501_123456.jpg` becomes `IMG_clean.jpg`.
-  `--keep-name` keeps the name as it is; `--anonymous` replaces it with a random 128-bit token
-  that contains no name, time, MAC address or user ID.
+  becomes `Screenshot_clean.png`, `IMG_20240501_123456.jpg` becomes `IMG_clean.jpg`. Only dates
+  with a four-digit year, times with seconds and Unix timestamps are recognized; the rest of a
+  name stays, and so do other styles of dates and times (`23-09-26`, `May 1, 2024`, `15.14`),
+  words, places, coordinates and people's names. `--keep-name` keeps the dates and times too
+  (`_clean` is still added); `--anonymous` replaces the name with a random 128-bit token that
+  contains no name, time, MAC address or user ID. The extension follows the contents: a JPEG
+  named `.png` comes out as `.jpg`.
 
 ## What is removed
 
@@ -63,8 +69,9 @@ directories, descriptions, private tags and sub-images; and unknown or private d
 data after the end of an image or video.
 
 Removing auxiliary HEIF images limits later portrait, depth-of-field and photographic-style
-edits. A HEIC photo's resolution in DPI goes with its EXIF, the only place HEIF has for it:
-readers then assume 72 DPI, which is what iPhones write anyway. Tested HEIC and HDR JPEG files
+edits. The resolution in DPI of a HEIC, AVIF or WebP photo goes with its EXIF, the only place those
+formats have for it: readers then assume 72 DPI, which is what iPhones write anyway. JPEG,
+PNG, TIFF and BMP keep theirs. Tested HEIC and HDR JPEG files
 render identically on macOS in SDR and HDR. Removing a video's timed metadata likewise ends
 what only its maker's app draws from it, such as the pairing of a Live Photo's video with its
 photo, or Samsung's slow-motion sections. The gapless playback note some encoders put in the
@@ -85,12 +92,12 @@ edit list may then play a few milliseconds of silence at the start of the sound.
   field or between the parts of a lookup table, gets the file refused, and so does a field the
   standard gives a list of values holding another: an ICC profile's classes and spaces, version
   digits and rendering intent, a non-D50 illuminant, the signatures of its technology, image
-  state and gamut tags, the enumerations of its measurement, viewing conditions, chromaticity
-  and cicp tags. A headroom adaptive gain curve is read bit by bit: a reserved bit that is set,
-  a number outside its range or anything after it gets the file refused. ISO 21496-1 gain-map
-  metadata keeps only the fields its standard defines, which are all a decoder reads: in JPEG
-  anything after them is dropped, and in HEIF, where an item cannot be shortened in place, it
-  gets the file refused.
+  state and gamut tags, the enumerations of its measurement, viewing conditions and chromaticity
+  tags, and cicp's full range flag. A headroom adaptive gain curve is read bit by bit: a
+  reserved bit that is set, a number outside its range or anything after it gets the file
+  refused. ISO 21496-1 gain-map metadata keeps only the fields its standard defines, which are
+  all a decoder reads: in JPEG anything after them is dropped, and in HEIF, where an item cannot
+  be shortened in place, it gets the file refused.
 - **Image sequences.** Animated AVIF and HEIF files keep only the boxes on a fixed list:
   headers, tracks, edits and sample tables, and in each sample entry its decoder
   configuration and color and display properties. Readers skip boxes they do not know, so
@@ -110,15 +117,19 @@ edit list may then play a few milliseconds of silence at the start of the sound.
   are cleared; others, which only help seeking, are emptied, as are shadow sync, sub-sample and
   padding tables. Reserved fields, QuickTime's preview, poster and selection times, and a visual
   entry's data size are cleared. The file type box keeps the brands that say how to read the
-  file, and its minor version, a number some encoders set; brands such as those naming a
-  camera's maker are cleared. The name of the codec's maker in H.263 and AMR configurations is
-  cleared, and so is the extended language tag, which may name a region. Uncompressed sound is
+  file, and its minor version, a number some encoders set; compatible brands that name a
+  camera's maker are cleared, but a major brand that does (Sony's XAVC and MSNV, Canon's CAEP,
+  Nikon's niko, Panasonic's pana, Casio's caqv, KDDI's) stays, as readers may go by it. The name
+  of the codec's maker in H.263 and AMR configurations is cleared, and so is the extended
+  language tag, which may name a region; each track's own language code stays. Uncompressed sound is
   read by its sample entry, as players read it; sound they could read in two ways is refused.
   The check compares every box of the result with the original's and every kept sample byte for
   byte. A video is cleaned in a copy next to the original, and neither is read into memory.
   FFmpeg's copy of a ProRes encoder's description (glbl) is emptied, as its compressor name
   would be. Until it is clean, the copy is named `magicdispel-<random>.unfinished` and the
-  video's extension, and is readable only by its owner; it then gets the original's permissions.
+  video's extension, and, on macOS and Linux, is readable only by its owner; it then gets the
+  original's permissions. Meanwhile it is a complete copy of the video with all its metadata, in
+  the original's folder, where a sync client may see it.
 - **HEIF and videos in place.** HEIF files and videos are cleaned without moving any image or
   media data, so every offset stays valid: the item tables are rewritten in the space they had,
   removed items and boxes are zero-filled, bytes that no remaining item or sample uses are
@@ -159,7 +170,10 @@ Data hidden inside the compressed image data itself, for example in JPEG scans, 
 frames, GIF LZW data or unused palette entries, is copied along with the image. So is data
 inside video and sound samples, such as the SEI messages some encoders write into H.264 and HEVC
 frames: the frames of an iPhone's Live Photo video, for one, carry an 8-byte value of unknown
-meaning that other videos lack. Decoder configurations (such as hvcC and avcC) are copied whole
+meaning that other videos lack. Software banners are such data: x264 and x265 write their name,
+version and settings, among them the thread count of the computer that encoded, into the first
+frame, and x265 into the decoder configuration too; MPEG-4 video keeps its encoder's version,
+and MP3 sound its LAME tag. Decoder configurations (such as hvcC and avcC) are copied whole
 too, as the samples are, up to their end; those of other codecs (VVC, APV, AC-4, MPEG-H, DTS,
 ALAC, MLP, IAMF and more, and HEIF's uncompressed images) are not read at all. So are fields
 that players read and whose values a made-up file could choose freely: track IDs, display sizes
@@ -169,7 +183,14 @@ bytes per packet and sample; in HEIF, image group IDs and the values of layout p
 (scaling, position, AV1 layers, color volume, ambient light). Apple's positional audio
 configuration (dapa) is copied whole. So are the numbers in kept ICC tags (curves, matrices,
 lookup tables, measurement and viewing values), which a made-up profile could also choose
-freely. Detecting such steganography is beyond this tool.
+freely, and so are a profile's length, the padding inside its kept tags, about two dozen bits
+of its header's enumerations, and the primaries, transfer and matrix codes of a cicp tag. Detecting
+such steganography is beyond this tool.
+
+macOS recognizes some of Apple's own standard color profiles (Keynote's Display P3, for one) by a
+digest of their contents. A sanitized copy no longer matches, so macOS converts colors through it
+by the numbers in the profile instead, which differ by at most 2 in 255. Of the profiles found in
+macOS and in test photos, only that one differed; the profiles iPhone photos carry did not.
 
 If MagicDispel is killed, or the drive a video is on goes away while it is being cleaned, the
 unfinished copy may stay next to it, named `magicdispel-<random>.unfinished` and the video's
@@ -193,8 +214,9 @@ Outputs are new files containing only the verified bytes. Extended attributes, m
 forks and Windows alternate data streams of the original are not copied; macOS output
 attributes are cleared, as are Linux `user.` attributes where supported. macOS may then add its
 own bookkeeping attributes, such as `com.apple.provenance` and `com.apple.macl`, which record
-which programs created or opened the file and hold nothing about the photo. Normal permissions
-and creation/modification times of the new file are set by the system.
+which programs created or opened the file and hold nothing about the photo. The copy gets the
+original's permissions, and its creation and modification times are those of the moment it was
+written, not the original's.
 
 ## What this cannot prevent
 
@@ -203,19 +225,28 @@ and creation/modification times of the new file are set by the system.
 - Matching the image with a previously published or known original.
 - Identification through the account or service used to share the result.
 - Information a sharing application adds afterwards.
+- The original: it is never changed, so it keeps all its metadata next to the copy, and a
+  synced, backed-up or shared folder holds both.
+- The kind of camera, phone or app that made the file, which can often still be guessed from
+  what stays: image size, encoder settings and tables, color profile numbers, the file type's
+  major brand.
+- What a file name still says, beyond the dates and times that are recognized.
 - Deliberately hidden information, steganography or sensor fingerprinting.
 
 When anonymity matters, share a separate copy and look at what it shows.
 
 ## Validation status
 
-On macOS, the unit tests and a local corpus of 60 real and synthetic samples pass: every output
+On macOS, the unit tests and a local corpus of real and synthetic samples (60 at 0.1.1, 557 at
+0.2.2) pass: every output
 renders identically in macOS ImageIO/ColorSync (pixels, sRGB and Display P3 renders, SDR, HDR,
 gain maps, orientation and DPI), and 11 synthetic leak probes come out clean. Files built by an
 independent review to hide data where 0.1.1 did not look (a preview in a multi-picture JPEG,
 bytes after an ICC curve, in ISO gain-map metadata and in an image-sequence box) are cleaned or
-refused since 0.1.2, and 634 ICC profiles from macOS and the corpus sanitize exactly as
-before.
+refused since 0.1.2, and 634 ICC profiles from macOS and the corpus sanitized exactly as
+before (checked for 0.1.2). For 0.2.1, 124 distinct profiles found in macOS and the corpus were
+sanitized and compared: the same ones are refused as before, and LittleCMS and macOS ColorSync
+convert colors through each of the 107 that an image can use as they did.
 
 Since 0.1.4 the corpus also holds 27 photos straight from, or exported from, 21 current phones
 and cameras, taken from Wikimedia Commons: Samsung Galaxy S25 Ultra and S24, Google Pixel 8a
@@ -236,12 +267,14 @@ videos from an iPhone 16 on iOS 27 (a Live Photo's video, an HDR video and an H.
 clean the same way, keeping their scene illuminance. It also holds 394 small files made for the
 tests with FFmpeg, macOS's avconvert, AVAssetWriter and ImageIO, and ExifTool, of every codec,
 container and muxer option they offer: all but those refused by design clean with identical
-frames and sound, and every clean copy cleans to itself. A 4.7 GB video is cleaned in about five
-seconds, with 25 MB of memory.
+frames and sound, and every clean copy cleans to itself. A 4.7 GB video was cleaned in about five
+seconds on an Apple-silicon Mac, using about 25 MB of memory of its own: the video is mapped, so
+the system's file cache is not counted.
 
-On macOS, Windows and Linux, CI runs the unit tests with Python 3.10 and 3.13, with and without
-ExifTool, and installs MagicDispel with the install scripts. On Windows and Linux, MagicDispel
-is validated by those synthetic tests, not by a corpus of real photos.
+On macOS, Windows and Linux, CI runs the unit tests with Python 3.10, 3.13 and 3.14, with and
+without ExifTool, once more with the oldest dependencies pyproject.toml allows, and installs
+MagicDispel with the install scripts. Only on macOS is MagicDispel validated with a corpus of
+real photos and videos; on Windows and Linux, by those synthetic tests.
 
 References: [ExifTool FAQ](https://exiftool.org/faq.html#Q32),
 [Apple location metadata guidance](https://support.apple.com/guide/personal-safety/ips0d7a5df82/web).

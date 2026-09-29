@@ -18,7 +18,7 @@ Options:
   --anonymous   name outputs photo_<random>.jpg or video_<random>.mov instead of
                 after the original (the picture itself is not changed)
   --keep-name   keep the original's name as it is, dates and times included
-  --check       check that everything needed is installed
+  --check       show the version, and whether ExifTool's second check is on
   --version     show the version
   -h, --help    show this help
 
