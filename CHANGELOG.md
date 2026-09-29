@@ -1,5 +1,97 @@
 # Changelog
 
+## Unreleased
+
+An audit of 0.2.2 by a new model read the whole code base and tried to make it misbehave. It
+found files refused or saved wrongly, files that took minutes or gigabytes to check, and places
+where a file made for it could hide data. None of it leaked what a camera or an app writes.
+Upgrading is recommended if you clean BMP or TIFF files, or read-only originals on macOS.
+
+Refused or saved wrongly:
+
+- A read-only original (mode 444 or 400) was refused on macOS with "could not clear extended
+  attributes". Attributes are cleared before the mode is set now.
+- A 4-bit run-length BMP was saved with wrong pixels, as Pillow decodes it wrongly (macOS does
+  not); it is refused now. The profile a version 5 BMP header embeds was dropped, which changed
+  its colors; it stays, and one that names a file is refused.
+- With ExifTool installed, a TIFF with one of the rarer tags (`NumberofInks`, `DotRange`,
+  `TransferRange`, gray response curves and others) was refused, because ExifTool names them
+  otherwise than the list did, and a video with a movie box over 32 MiB, a recording of many
+  hours, was refused, because ExifTool skips such a box. Both pass now; ExifTool is told to read
+  the large movie box.
+- On Windows, ExifTool was looked for in the current folder first; only folders of `PATH` given
+  in full count now.
+- A HEIC of a file type box alone was "cleaned" into a file with no picture, and so was one whose
+  only image had no data. Both are refused. A 10-byte `nclx` colour box, as some Android phones
+  write it, is accepted, as it is in videos.
+- Image sequences keep their extensions: `.heics`, `.heifs` and `.avifs` became `.heic` and
+  `.avif`.
+- A movie whose media lies in another file (a reference movie) is refused as unsupported, not as
+  damaged.
+- A file name of more than about 245 characters failed at the end: the name of the copy is cut
+  short. A photo is written as `magicdispel-<random>.unfinished` and given its name when whole,
+  as videos are, so a crash never leaves half a photo under it.
+- 0.2.2 only: a movie box of many boxes took time growing with the square of their number (32,000
+  boxes took 25 seconds).
+
+Too slow, or too large, for files made to be:
+
+- GIF: 8 MB of empty comments took two minutes to read; more than a thousand dropped extension
+  blocks are refused. An animation whose frames add up to more than four gigapixels (a GIF of
+  1.5 KB could ask for 1.1 GB and half a minute) is refused before anything is decoded.
+- TIFF: a header of 123 bytes could name billions of strips or of samples per pixel, tags could
+  name one range of the file any number of times, and each was copied; ICC profiles likewise (a
+  3.7 KB PNG needed 1.1 GB). Ranges are copied once, and counts are checked before any list is
+  made.
+- JPEG: 16 MB of empty segments took 19 seconds and 600 MB; more than 65,536 segments are
+  refused, and an extended XMP packet over 1 MB is not read. EXIF entries that name one range
+  cost nothing each. Files of another kind are refused from their first bytes, without being
+  read.
+- HEIF: a long chain of derived images took minutes (each link searched them all again), so did
+  many `ipma` boxes, millions of boxes or extents cost gigabytes, and items naming one large
+  range each got a copy of it. Each is now handled in one pass, or refused above 262,144 boxes in
+  a container and a million extents or references.
+- Video: the check of a movie took time growing with the square of its sample group
+  descriptions, and 24 MB of chunk offsets took 1.6 GB; a track of more than about two million
+  chunks is refused.
+
+Places where a made-up file could hide data, closed:
+
+- JPEG: quantization and Huffman tables that no scan reads, or that another definition replaces
+  first, fill bytes, markers that stand alone, the ignored fields of a sequential scan header,
+  and repeated JFIF, EXIF, XMP, ISO gain-map, Apple gain-curve and Adobe segments (a scan reads
+  the tables as libjpeg does; the 48 JPEGs of the corpus and 18 made with libjpeg-turbo, FFmpeg
+  and macOS, progressive, arithmetic and restart-interval ones among them, come out byte for byte
+  as before).
+- PNG: a chunk the standard allows once is kept once, and before the image data; the suggested
+  palette of a truecolor image goes; image data is cut into chunks of one size and animation
+  frames are numbered afresh; sRGB, cICP, pHYs, bKGD and sBIT hold what their standards
+  define; an animation holds as many frames as it says.
+- GIF: one loop count, one profile, the last graphic control before an image, the image data in
+  blocks of 255 bytes, and reserved descriptor bits cleared. WebP: one ANIM, one ICCP, and one
+  image with its alpha data in each frame.
+- XMP numbers (HDR gain-map fields) are written from their value without an exponent, so their
+  digits carry nothing: `1.369850` becomes `1.36985`. XMP in an encoding Python does not know is
+  refused, not a crash.
+- TIFF: JPEG tables only for JPEG compression, a palette only for palette images, and kept tags
+  of the types they call for.
+- HEIF: what follows an item's name, and all but the "hidden" flag of an item, are zeroed; `dinf`
+  keeps only its `dref`; properties of codecs with no layout here are limited to 2 KB each and
+  8 KB in all; an XMP packet too large to read (4 MB) goes with the rest of the XMP.
+- Video: the sample dependency table goes from a track of sound, where it could hold anything for
+  each sample, and a track names each type of reference once.
+- The privacy details now say where a made-up file can still put a few kilobits (fields players
+  read and the standard leaves free, the order of boxes), and the two that grow with a video:
+  how its tables are cut into runs, and the dependency table of its pictures.
+
+Also: Pillow 12.3 or newer is required (11.3 has 36 published advisories), each kind of file is
+opened by its own decoder only, CI runs Python 3.14 and once with the oldest dependencies allowed,
+the regression harness reports an unexpected exception as a problem, not a refusal, and the
+documentation is corrected where the audit found claims that were too strong or too weak.
+Known limits: a video's metadata box of fewer than 157 bytes, or of 158 to 164, has no room for the
+playback intent, which then goes with the rest; a WebP of 268 megapixels takes about 4 GB to
+check.
+
 ## 0.2.2 (2026-09-26)
 
 A clean copy of an iPhone video of 120 fps or more no longer risks playing in slow motion:

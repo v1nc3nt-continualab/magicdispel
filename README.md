@@ -119,14 +119,16 @@ describe every check.
 | WebP | image data, alpha, animation, ICC profile, orientation | other EXIF, XMP, unknown chunks |
 | GIF | images, palettes, frame timing, transparency, loop count, ICC profile | comments, text overlays, XMP, other extensions |
 | TIFF | image data, decoding tags, DPI, orientation, page numbers, ICC profile | EXIF and GPS directories, XMP, IPTC, Photoshop, descriptions, private tags, sub-images |
-| BMP | converted to lossless PNG with the same pixels, DPI and profile | everything else |
+| BMP | converted to lossless PNG with the same pixels, DPI and profile (an embedded one too) | everything else; 4-bit run-length files are refused |
 | MP4, MOV | video and sound tracks with every sample, decoder settings, rotation, edit lists, color, HDR (HDR10, HLG, Dolby Vision), Apple spatial video, the scene illuminance iPhones show HDR video with, whether a video of 120 fps or more plays at full speed, track language codes | location, device, software and dates, timed metadata tracks (GPS, motion, faces, Live Photo data), timecode and chapter tracks, maker data (GoPro serial numbers, Samsung SEF data), unused media data, trailing data |
 | RAW, PDF, stereo photos, audio files | not supported; RAW files built on TIFF (DNG, CR2, NEF...) and stereo JPEG and HEIC photos are recognized and refused | |
 
 ICC profiles keep their color data. Their date becomes a fixed placeholder (`2000-01-01`),
 their description `Clean`, and device and creator fields, and reserved and vendor bits, are
 cleared. Images up to 268 megapixels are checked, enough for 200-megapixel phone photos;
-larger ones are refused.
+larger ones are refused, and so are animations (GIF, WebP, APNG, AVIF) of more than four
+gigapixels in all their frames. Checking takes memory in proportion: a 268-megapixel WebP needs
+about 4 GB.
 Videos are cleaned in a copy next to the original, mapped rather than read into memory: a
 4.7 GB video took about five seconds on an Apple-silicon Mac. Photos are read into memory
 whole. Fragmented and encrypted videos, videos with
@@ -154,7 +156,8 @@ name may say too much.
 
 Further copies get `_clean_1`, `_clean_2`... `--keep-name` keeps the original name, dates and
 times included (`_clean` is still added), and `--anonymous` uses a random name such as
-`photo_3f9c...e1.jpg` or `video_3f9c...e1.mov` instead.
+`photo_3f9c...e1.jpg` or `video_3f9c...e1.mov` instead. A name too long for the file system is
+cut short at its end.
 
 ## Usage
 
@@ -212,8 +215,8 @@ whether it is used.
 No. MagicDispel only reads the original. The clean copy is a new file next to it, and no
 existing file is ever overwritten. The original still holds all its metadata and sits next to
 the copy: share only the `_clean` file, and remember that a synced or backed-up folder holds
-both. While a video is being cleaned, its copy is there as `magicdispel-<random>.unfinished`
-with the video's extension.
+both. While a photo or video is being cleaned, its copy is there as
+`magicdispel-<random>.unfinished` with the original's extension.
 
 **Does anything leave my computer?**
 No. MagicDispel never uses the network. Only the installer downloads anything: uv, then

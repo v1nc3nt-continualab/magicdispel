@@ -46,15 +46,16 @@ class ExifTests(unittest.TestCase):
     def test_invalid_values_read_as_absent(self):
         self.assertIsNone(exif.display_fields(pillow_exif(**{"0x0112": 9})).orientation)
 
-    def test_orientation_is_read_however_it_is_typed(self):
-        # ImageIO turns such a picture; leaving the tag out would leave it on its side.
+    def test_an_orientation_that_is_not_a_short_is_not_read(self):
+        # ImageIO reads only a short, so macOS shows a photo with a byte or a long unturned; a copy that
+        # turned it would differ from what its owner saw there.
         for order, header in ((">", b"MM\0*\0\0\0\x08"), ("<", b"II*\0\x08\0\0\0")):
-            for kind, value in ((exif.BYTE, b"\x06"), (exif.SHORT, struct.pack(order + "H", 6)),
-                                (exif.LONG, struct.pack(order + "I", 6))):
+            for kind, value, expected in ((exif.BYTE, b"\x06", None), (exif.SHORT, struct.pack(order + "H", 6), 6),
+                                          (exif.LONG, struct.pack(order + "I", 6), None)):
                 entry = struct.pack(order + "HHI", 0x0112, kind, 1) + value.ljust(4, b"\0")
                 data = header + struct.pack(order + "H", 1) + entry + b"\0" * 4
                 with self.subTest(order=order, kind=kind):
-                    self.assertEqual(exif.display_fields(data).orientation, 6)
+                    self.assertEqual(exif.display_fields(data).orientation, expected)
 
     def test_entries_naming_one_large_range_cost_nothing(self):
         # 3,000 entries each naming the same 500 KB: copying it for each would take 1.5 GB.

@@ -9,7 +9,9 @@ their exact layout, so almost nothing can ride along in them; the exceptions are
 ## What is kept, and why
 
 - **Image data.** Compressed pixels are copied byte for byte. BMP is the only format that is
-  re-encoded, losslessly, as PNG.
+  re-encoded, losslessly, as PNG. Of a JPEG's quantization and Huffman tables, the ones a scan
+  reads stay, as a decoder reads them; a PNG's image data is cut into chunks of one size again,
+  and a GIF's into blocks of 255 bytes.
 - **Color.** ICC profiles keep their color conversion data: matrices, curves, lookup tables,
   Apple's parametric curves in screenshot profiles, HDR adaptive curves (with their
   image-specific identifier cleared), and the headroom adaptive gain curves of HDR photos (SMPTE
@@ -36,7 +38,8 @@ their exact layout, so almost nothing can ride along in them; the exceptions are
   Apple's full frame rate playback intent, which says whether a video of 120 fps or more plays
   at its full rate or in slow motion, as some players would otherwise play it: the one item of a
   video's metadata kept, as 0 or 1, in a metadata box rewritten with it alone, as iPhones write
-  it. Each track's language code stays as well (iPhones write `und`, undetermined; others may
+  it, in the room that box had (one of fewer than 157 bytes, or of 158 to 164, cannot hold it,
+  and the intent goes with the rest). Each track's language code stays as well (iPhones write `und`, undetermined; others may
   write their own, such as `eng`).
 - **Structure.** Transparency, animation frames, timing and loop count, TIFF pages, page
   numbers and byte order, PNG background color and significant bits, the color transform
@@ -86,8 +89,9 @@ edit list may then play a few milliseconds of silence at the start of the sound.
   compressed stream, and its palette and transparency hold exactly what the color type allows. A
   TIFF page holds exactly the strips or tiles its image needs, uncompressed ones at exactly
   their size, and every kept tag has exactly the number of values the specification gives it.
-  HEIF item properties are kept only if they say how to decode and show an image. JPEG
-  multi-picture indexes are written fresh. Every kept ICC color tag and Apple HDR curve must
+  HEIF item properties are kept only if they say how to decode and show an image, those of
+  codecs without a layout here (VVC, JPEG 2000, uncompressed images, layered HEVC) at 2 KB each
+  and 8 KB in all. JPEG multi-picture indexes are written fresh. Every kept ICC color tag and Apple HDR curve must
   match its type's layout: a byte outside it that is not zero, after a curve, in a reserved
   field or between the parts of a lookup table, gets the file refused, and so does a field the
   standard gives a list of values holding another: an ICC profile's classes and spaces, version
@@ -98,6 +102,22 @@ edit list may then play a few milliseconds of silence at the start of the sound.
   refused. ISO 21496-1 gain-map metadata keeps only the fields its standard defines, which are
   all a decoder reads: in JPEG anything after them is dropped, and in HEIF, where an item cannot
   be shortened in place, it gets the file refused.
+- **What a file may hold once.** Where a decoder reads only the first of something, only the
+  first stays, and only where it counts: in a JPEG, a JFIF, EXIF, XMP, ISO gain-map, Apple
+  gain-curve or Adobe segment, and the quantization and Huffman tables and restart interval a
+  scan reads (a table that nothing reads, or that another replaces first, goes, as do fill
+  bytes and markers that stand alone); in a PNG, each chunk the standard allows once, and only
+  before the image data, and the frames its animation control counts; in a WebP, one ANIM and
+  one ICCP, and in each frame the first image with its alpha data; in a GIF, one loop count,
+  one profile and the last graphic control before each image; in a track, each type of
+  reference once, and the sample dependency table only if the track has pictures, where it
+  says how they depend on each other. The suggested palette of a truecolor PNG, a TIFF's JPEG
+  tables unless it is JPEG compressed and its palette unless it is a palette image, and
+  whatever follows an item's name in a HEIF item's information (but the type of XMP), go. A
+  file with more of something than a real one has (65,536 JPEG segments, 262,144 boxes in a
+  HEIF container, a million item data extents, about two million chunks in a track, over a
+  thousand GIF comments, four gigapixels of frames) is refused before it costs minutes or
+  gigabytes.
 - **Image sequences.** Animated AVIF and HEIF files keep only the boxes on a fixed list:
   headers, tracks, edits and sample tables, and in each sample entry its decoder
   configuration and color and display properties. Readers skip boxes they do not know, so
@@ -151,8 +171,10 @@ edit list may then play a few milliseconds of silence at the start of the sound.
   ways, file types of unknown major brands, a removed track that another needs to be shown,
   media stored outside the file, BigTIFF, old-style JPEG in TIFF, metadata inside
   JPEG-compressed TIFF strips, unrecognized ICC tags and floating-point ICC transforms,
-  gain-map metadata of an unknown version. RAW photos built on TIFF (DNG, CR2, NEF and others)
-  are refused too: their TIFF pages hold only a preview.
+  gain-map metadata of an unknown version, 4-bit run-length BMPs (Pillow decodes them wrongly),
+  BMPs whose profile is a file of its own, compact sample sizes (stz2) and HEIF image items with
+  no data. RAW photos built on TIFF (DNG, CR2, NEF and others) are refused too: their TIFF pages
+  hold only a preview.
 - **Checked before saving.** The rebuilder parses its own result independently and compares it
   with what the original should yield: for HEIF, for instance, that every retained image item is
   byte-identical, XMP holds only gain-map fields, no editing image, thumbnail or item name
@@ -161,7 +183,8 @@ edit list may then play a few milliseconds of silence at the start of the sound.
   transparency (all formats but HEIC and videos, which are compared byte for byte; for JPEG,
   of the images kept). If ExifTool 12.73+ is
   installed, it reads the result as a second opinion, and any warning, private field or data it
-  cannot identify stops the save. The original's hash is compared before and after, so a file
+  cannot identify stops the save. (ExifTool skips a movie box of more than 32 MiB, a recording
+  of many hours, unless told to ignore minor problems, so it is told to, for such a video.) The original's hash is compared before and after, so a file
   changed by another program during cleaning is not published.
 
 ## Out of scope
@@ -187,15 +210,29 @@ freely, and so are a profile's length, the padding inside its kept tags, about t
 of its header's enumerations, and the primaries, transfer and matrix codes of a cicp tag. Detecting
 such steganography is beyond this tool.
 
+Nor is every place closed where a made-up file could put data by how it lays out what stays.
+Most of them hold a fixed number of bits: the order of boxes and chunks, the fields players
+read and the standard leaves free (a movie's rate, volume, matrix, layer and alternate group, a
+track's flags and duration, bitrate boxes, pixel aspect and clean aperture: in all about 1.2 to
+1.6 kilobits in a video), an EXIF block's display fields (about 35 bytes), the numbers of a PNG's
+color chunks, the version and flags of a JPEG's Adobe segment, Apple's HDR gain curve (up to
+1,024 points, about 250 in real ones), the flags and reference types of a HEIF file's tables.
+Two grow with the file: where a video's tables of timing, chunks and sample groups are cut into
+runs (about a bit for each sample), and, in a track of pictures, the sample dependency table (a
+byte for each, of which about six bits are free). A camera or an app writes into all of them
+what the format calls for. A TIFF's reduced-resolution pages, and the HEIF image items that no
+other item refers to (an image collection has many), stay as what they are, image data.
+
 macOS recognizes some of Apple's own standard color profiles (Keynote's Display P3, for one) by a
 digest of their contents. A sanitized copy no longer matches, so macOS converts colors through it
 by the numbers in the profile instead, which differ by at most 2 in 255. Of the profiles found in
 macOS and in test photos, only that one differed; the profiles iPhone photos carry did not.
 
-If MagicDispel is killed, or the drive a video is on goes away while it is being cleaned, the
-unfinished copy may stay next to it, named `magicdispel-<random>.unfinished` and the video's
-extension (`.unfinished.mov`, for instance): it may still hold everything the original does, and
-can be deleted. Closing the console window on Windows kills MagicDispel the same way.
+If MagicDispel is killed, or the drive a file is on goes away while it is being cleaned, the
+unfinished copy may stay next to it, named `magicdispel-<random>.unfinished` and the original's
+extension (`.unfinished.mov`, for instance). Of a video it may still hold everything the original
+does; of a photo, only the clean bytes written so far. Either can be deleted. Closing the
+console window on Windows kills MagicDispel the same way.
 
 A JPEG gain map that only an Ultra HDR GContainer directory points to, with no multi-picture
 index, is not recognized: it sits after the end of the image and is removed as trailing data,
@@ -237,8 +274,8 @@ When anonymity matters, share a separate copy and look at what it shows.
 
 ## Validation status
 
-On macOS, the unit tests and a local corpus of real and synthetic samples (60 at 0.1.1, 557 at
-0.2.2) pass: every output
+On macOS, the unit tests and a local corpus of real and synthetic samples (60 at 0.1.1, 559 at
+0.2.3) pass: every output
 renders identically in macOS ImageIO/ColorSync (pixels, sRGB and Display P3 renders, SDR, HDR,
 gain maps, orientation and DPI), and 11 synthetic leak probes come out clean. Files built by an
 independent review to hide data where 0.1.1 did not look (a preview in a multi-picture JPEG,
@@ -264,7 +301,7 @@ AVFoundation sees the same video and sound tracks and shows the same frames, and
 no private field. The other 17 are refused as designed: audio-only, fragmented and encrypted
 files, subtitles, two damaged files, Motion JPEG and a track needed to show the video. Three
 videos from an iPhone 16 on iOS 27 (a Live Photo's video, an HDR video and an H.264 one)
-clean the same way, keeping their scene illuminance. It also holds 394 small files made for the
+clean the same way, keeping their scene illuminance. It also holds 396 small files made for the
 tests with FFmpeg, macOS's avconvert, AVAssetWriter and ImageIO, and ExifTool, of every codec,
 container and muxer option they offer: all but those refused by design clean with identical
 frames and sound, and every clean copy cleans to itself. A 4.7 GB video was cleaned in about five

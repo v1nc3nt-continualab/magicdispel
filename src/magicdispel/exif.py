@@ -37,7 +37,7 @@ def display_fields(data):
     ifd0 = reader.directory(reader.first_directory())
     exif_ifd = reader.directory(reader.pointer(ifd0.get(EXIF_POINTER)))
     interop = reader.directory(reader.pointer(exif_ifd.get(INTEROP_POINTER)))
-    orientation = reader.small_number(ifd0.get(ORIENTATION))
+    orientation = reader.number(ifd0.get(ORIENTATION), SHORT)  # a byte or a long is read by no viewer of note
     x, y = reader.rational(ifd0.get(X_RESOLUTION)), reader.rational(ifd0.get(Y_RESOLUTION))
     unit = reader.number(ifd0.get(RESOLUTION_UNIT), SHORT) or 2
     index = reader.text(interop.get(INTEROP_INDEX))
@@ -178,12 +178,6 @@ class _Reader:
         if entry is None or entry[0] != kind or entry[1] != 1:
             return None
         return struct.unpack(self.order + {SHORT: "H", LONG: "I"}[kind], self.value(entry))[0]
-
-    def small_number(self, entry):
-        """A number that one byte, one short or one long holds: writers differ in which."""
-        if entry is None or entry[0] not in (BYTE, SHORT, LONG) or entry[1] != 1:
-            return None
-        return int.from_bytes(self.value(entry), "big" if self.order == ">" else "little")
 
     def pointer(self, entry):
         if entry is not None and entry[0] == IFD:
