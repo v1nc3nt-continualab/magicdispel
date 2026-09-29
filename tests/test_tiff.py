@@ -173,6 +173,28 @@ class TiffTests(unittest.TestCase):
         self.assertEqual(caught.exception.key, "damaged")
         self.assertLess(peak, 10 << 20)
 
+    def test_counts_that_would_build_billions_of_values_are_refused_at_once(self):
+        # Samples per pixel and bits per sample may be LONGs of any size; tiles of one pixel make billions.
+        cases = {
+            "samples with extra samples": patch_long(encode(gradient("RGBA")), tiff.SAMPLES, 1 << 24),
+            "samples": patch_long(encode(gradient("L"), tiffinfo={277: 1}), tiff.SAMPLES, 1 << 26),
+            "bits with a palette": patch_long(encode(gradient("P")), tiff.BITS, 0xFFFFFFF0),
+            "tiles of one pixel": patch_long(patch_long(patch_long(patch_long(
+                encode(gradient("L"), tiffinfo={322: 16, 323: 16}), tiff.WIDTH, 1 << 27), tiff.TILE_WIDTH, 1),
+                tiff.TILE_LENGTH, 1), tiff.HEIGHT, 1),
+        }
+        for reason, data in cases.items():
+            with self.subTest(reason):
+                tracemalloc.start()
+                try:
+                    with self.assertRaises(FormatError) as caught:
+                        tiff.rebuild(data)
+                    peak = tracemalloc.get_traced_memory()[1]
+                finally:
+                    tracemalloc.stop()
+                self.assertEqual(caught.exception.key, "damaged")
+                self.assertLess(peak, 10 << 20)
+
     def test_image_blocks_that_share_bytes_are_refused(self):
         # Strips of one range, however many name it, would each be written out again.
         data = encode(gradient(), tiffinfo={278: 7})

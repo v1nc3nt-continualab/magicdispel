@@ -58,6 +58,8 @@ people and places.""",
                  "first.",
     "no_video": "This {format} file holds no video; audio files are not supported.",
     "too_large": "This {format} image is too large to check safely (the limit is {limit} megapixels).",
+    "too_many_pixels": "This {format} file holds too many pixels, counting every frame, to check safely "
+                       "(the limit is {limit} gigapixels).",
     "extra_image_data": "The image data in this {format} file carries extra hidden bytes.",
     "verification_failed": "The cleaned copy did not pass verification ({detail}); nothing was saved.",
     "pixels_changed": "The cleaned copy would not look identical to the original; nothing was saved.",

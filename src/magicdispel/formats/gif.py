@@ -1,12 +1,13 @@
 """GIF: rebuild the file from the blocks needed to show the image.
 
 Copied unchanged: the header, screen descriptor and global color table, and
-every image with its local color table and compressed data. Graphic control
-extensions (frame timing and transparency) are kept with reserved bits
-cleared, the animation loop count is rewritten as a bare NETSCAPE2.0 (or
-ANIMEXTS1.0) extension, and the ICC profile is sanitized. Comments, plain-text
-overlays, XMP and other application extensions, and anything after the
-trailer are dropped.
+every image with its local color table and compressed data, which is put in
+sub-blocks of 255 bytes again, and whose descriptor loses its reserved bits.
+Graphic control extensions (frame timing and transparency) are kept, the last
+before an image, with reserved bits cleared, the animation loop count is
+rewritten as a bare NETSCAPE2.0 (or ANIMEXTS1.0) extension, once, and the ICC
+profile is sanitized, once. Comments, plain-text overlays, XMP and other
+application extensions, and anything after the trailer are dropped.
 """
 from .. import icc
 from ..errors import FormatError, VerificationError
@@ -17,6 +18,8 @@ SCREEN = 13            # signature, version and logical screen descriptor
 IMAGE_DESCRIPTOR = 10  # its last byte holds the local color table flags
 LOOP_APPLICATIONS = {b"NETSCAPE2.0", b"ANIMEXTS1.0"}
 ICC_APPLICATION = b"ICCRGBG1012"
+IMAGE_RESERVED = 0x18  # bits of an image descriptor's flags that mean nothing
+MAX_DROPPED = 1024     # blocks that go: real files hold a few, and Pillow's time grows with their square
 
 
 def rebuild(data):
@@ -35,17 +38,39 @@ def verify(original, rebuilt):
 
 def selected_blocks(data):
     """The blocks, as bytes, that a clean copy holds."""
-    result = []
+    result, control, seen, dropped = [], None, set(), 0
     for kind, block in blocks(data):
-        if kind in ("header", "image", "trailer"):
+        if kind in ("header", "trailer"):
             result.append(block)
+        elif kind == "image":
+            result.extend([control] if control else [])
+            result.append(normalized(block))
+            control = None
         elif kind == GRAPHIC_CONTROL:  # size 4, flags, delay, transparent index
             if len(block) != 8 or block[2] != 4:
                 raise damaged()
-            result.append(block[:3] + bytes([block[3] & 0x1F]) + block[4:])
-        elif kind == APPLICATION:
-            result.extend(application_extension(block))
+            control = block[:3] + bytes([block[3] & 0x1F]) + block[4:]  # of two in a row, the last counts
+        else:
+            kept = application_extension(block) if kind == APPLICATION else []
+            if kept and kept[0][3:14] not in seen:  # once each: the loop count, the profile
+                seen.add(kept[0][3:14])
+                result.extend(kept)
+            else:
+                dropped += 1
+                if dropped > MAX_DROPPED:
+                    raise FormatError("unsupported_part", format="GIF", part="over a thousand extension blocks")
     return result
+
+
+def normalized(block):
+    """An image block with the reserved bits of its descriptor cleared and its
+    data in sub-blocks of 255 bytes: how it is cut says nothing about the image."""
+    flags = block[IMAGE_DESCRIPTOR - 1]
+    start = IMAGE_DESCRIPTOR + color_table_size(flags) + 1  # after the LZW code size
+    head = block[:IMAGE_DESCRIPTOR - 1] + bytes([flags & ~IMAGE_RESERVED]) + block[IMAGE_DESCRIPTOR:start]
+    data = b"".join(sub_blocks(block, start))
+    pieces = [data[n:n + 255] for n in range(0, len(data), 255)]
+    return head + b"".join(bytes([len(piece)]) + piece for piece in pieces) + b"\0"
 
 
 def application_extension(block):

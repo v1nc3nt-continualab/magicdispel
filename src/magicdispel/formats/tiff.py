@@ -31,6 +31,8 @@ UNCOMPRESSED, OLD_JPEG, JPEG_COMPRESSION, YCBCR = 1, 6, 7, 6
 JPEG_TABLES, ICC = 347, 34675
 SUB_IFDS, DNG_VERSION = 330, 50706
 MAX_PAGES = 10000
+MAX_SAMPLES = 4096  # samples per pixel: a LONG could say 4 billion, and lists of that many values would follow
+MAX_BITS = 64       # bits per sample: 1 << bits is computed for the response curve and palette sizes
 # The number of values of kept tags: fixed, or one per sample (one value
 # alone also stands for every sample).
 COUNTS = {254: 1, 255: 1, 256: 1, 257: 1, 259: 1, 262: 1, 263: 1, 266: 1, 274: 1, 277: 1, 278: 1,
@@ -200,11 +202,15 @@ def read_directory(data, offset, order, claims):
 def check_counts(tags, order):
     """Kept tags hold exactly as many values as the specification gives them."""
     samples = value(tags, SAMPLES, 1, order)
+    if samples > MAX_SAMPLES:
+        raise damaged()
     bits = max(integers(tags[BITS], order)) if BITS in tags else 1
+    if bits > MAX_BITS:
+        raise damaged()
     for tag, (kind, data) in tags.items():
         count = len(data) // TYPE_SIZES[kind]
         allowed = ({COUNTS[tag]} if tag in COUNTS else {1, samples} if tag in PER_SAMPLE
-                   else set(range(samples + 1)) if tag == 338       # extra samples
+                   else range(samples + 1) if tag == 338              # extra samples
                    else {2, 2 * samples} if tag == 336                # dot range
                    else {1 << bits} if tag == 291                     # gray response curve
                    else {1 << bits, 3 << bits} if tag == 301          # transfer function

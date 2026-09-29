@@ -28,6 +28,26 @@ class CompareTests(unittest.TestCase):
         Image.new("RGB", (8, 8), "teal").save(stream, "BMP")
         pixels.compare(stream.getvalue(), data, "BMP")
 
+    def test_frames_are_counted_against_the_pixels_a_file_may_ask_for(self):
+        # A header says the canvas, and a frame count says how often it is decoded.
+        frames = [Image.new("RGB", (10, 10), color) for color in ("red", "blue", "green")]
+        stream = io.BytesIO()
+        frames[0].save(stream, "GIF", save_all=True, append_images=frames[1:], duration=50)
+        data = stream.getvalue()
+        pixels.digest(data, "GIF")
+        with patch.object(pixels, "FRAME_PIXELS", 299):  # three frames of a 10 by 10 canvas
+            with self.assertRaises(FormatError) as caught:
+                pixels.digest(data, "GIF")
+            self.assertEqual(caught.exception.key, "too_many_pixels")
+        with patch.object(pixels, "FRAME_PIXELS", 300):
+            pixels.digest(data, "GIF")
+        # Pages of a TIFF are counted as they are decoded, each at its own size.
+        stream = io.BytesIO()
+        frames[0].save(stream, "TIFF", save_all=True, append_images=frames[1:])
+        with patch.object(pixels, "FRAME_PIXELS", 250), self.assertRaises(FormatError) as caught:
+            pixels.digest(stream.getvalue(), "TIFF")
+        self.assertEqual(caught.exception.key, "too_many_pixels")
+
     def test_identical_pixels_pass(self):
         data = png(Image.new("RGB", (300, 600), "teal"))  # taller than one strip
         pixels.compare(data, data, "PNG")

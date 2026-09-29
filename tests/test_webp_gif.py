@@ -151,6 +151,50 @@ class GifTests(unittest.TestCase):
         rebuilt = self.assertRebuilt(tampered)
         self.assertEqual(next(block for kind, block in gif.blocks(rebuilt) if kind == 0xF9), control)
 
+    def test_what_is_repeated_or_only_cut_differently_is_written_once_and_plainly(self):
+        frames = [gradient("P", shift=n * 50) for n in range(2)]
+        data = encode(frames[0], "GIF", save_all=True, append_images=frames[1:], duration=[40, 70], loop=2,
+                      transparency=0)
+        plain = self.assertRebuilt(data)
+        control = next(block for kind, block in gif.blocks(data) if kind == 0xF9)
+        loop = next(block for kind, block in gif.blocks(data) if kind == 0xFF)
+        image = next(block for kind, block in gif.blocks(data) if kind == "image")
+        start = gif.IMAGE_DESCRIPTOR + gif.color_table_size(image[9]) + 1
+        payload = b"".join(gif.sub_blocks(image, start))
+        pieces = [payload[n:n + 7] for n in range(0, len(payload), 7)]
+        cut = b"".join(bytes([len(piece)]) + piece for piece in pieces) + b"\0"
+        other_loops = extension(0xFF, b"NETSCAPE2.0", b"\x01\x09\x00") * 3
+        other_delay = control[:4] + b"\x63\x63" + control[6:]
+        marked = image[:9] + bytes([image[9] | 0x18]) + image[10:]
+        tampered = {
+            "more loop counts": data.replace(loop, loop + other_loops, 1),
+            "a control before the real one": data.replace(control, other_delay + control, 1),
+            "a control with nothing to control": data[:-1] + control + b"\x3b",
+            "image data cut in pieces of 7": data.replace(image, image[:start] + cut, 1),
+            "reserved bits of the descriptor": data.replace(image, marked, 1),
+        }
+        for name, changed in tampered.items():
+            with self.subTest(name):
+                self.assertNotEqual(changed, data)
+                rebuilt = gif.rebuild(changed)
+                gif.verify(changed, rebuilt)
+                self.assertEqual(rebuilt, plain)
+
+    def test_a_second_profile_is_dropped(self):
+        pieces = [PROFILE[n:n + 200] for n in range(0, len(PROFILE), 200)]
+        profile = extension(0xFF, gif.ICC_APPLICATION, *pieces)
+        data = encode(gradient("P"), "GIF")
+        rebuilt = self.assertRebuilt(with_blocks(data, profile, profile))
+        self.assertEqual(rebuilt, self.assertRebuilt(with_blocks(data, profile)))
+
+    def test_thousands_of_comments_are_refused_at_once(self):
+        # Pillow takes time that grows with the square of their number to read them.
+        data = encode(gradient("P"), "GIF")
+        self.assertRebuilt(with_blocks(data, *[extension(0xFE, b"c")] * 1000))
+        with self.assertRaises(FormatError) as caught:
+            gif.rebuild(with_blocks(data, *[extension(0xFE, b"c")] * 1100))
+        self.assertEqual(caught.exception.key, "unsupported_part")
+
     def test_profile_is_sanitized(self):
         pieces = [PROFILE[n:n + 200] for n in range(0, len(PROFILE), 200)]
         rebuilt = self.assertRebuilt(with_blocks(encode(gradient("P"), "GIF"),

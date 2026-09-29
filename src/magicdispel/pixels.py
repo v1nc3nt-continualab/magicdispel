@@ -26,6 +26,10 @@ warnings.filterwarnings("ignore", category=Image.DecompressionBombWarning)
 # Pillow warns about damaged files it can partly read; the comparison decides.
 warnings.filterwarnings("ignore", category=UserWarning, module=r"PIL\.")
 STRIP = 256  # rows hashed at a time, so no frame is copied whole
+# The most pixels a file may ask Pillow to decode, counted over every frame: about a minute's work.
+# A canvas of tens of megapixels takes a header, and a number of frames little more.
+FRAME_PIXELS = 4 << 30
+ONE_CANVAS = {"WEBP", "GIF", "APNG", "AVIF"}  # kinds whose frames are all drawn on the file's canvas
 
 
 def decodes(kind):
@@ -67,8 +71,11 @@ def digest(data, kind):
     result = hashlib.sha256()
     with opened(data, kind) as picture:
         frames = getattr(picture, "n_frames", 1)
+        if kind in ONE_CANVAS and frames * picture.size[0] * picture.size[1] > FRAME_PIXELS:
+            raise too_many_pixels(kind)
         result.update(repr((picture.size, frames, picture.info.get("loop"),
                             picture.info.get("default_image", False))).encode())
+        decoded = 0
         for index in range(frames):
             picture.seek(index)
             picture.load()
@@ -76,6 +83,13 @@ def digest(data, kind):
                                 picture.info.get("transparency"),
                                 picture.getpalette() if picture.mode in ("P", "PA") else None)).encode())
             width, height = picture.size
+            decoded += width * height
+            if decoded > FRAME_PIXELS:
+                raise too_many_pixels(kind)
             for top in range(0, height, STRIP):
                 result.update(picture.crop((0, top, width, min(top + STRIP, height))).tobytes())
     return result.digest()
+
+
+def too_many_pixels(kind):
+    return FormatError("too_many_pixels", format=kind, limit=FRAME_PIXELS >> 30)
