@@ -69,6 +69,10 @@ class FindTests(unittest.TestCase):
         path.chmod(path.stat().st_mode | stat.S_IXUSR)
         return str(path)
 
+    def assertSamePath(self, found, expected):
+        """The same file: Windows writes the extension as PATHEXT does (.EXE) and ignores case."""
+        self.assertEqual(os.path.normcase(found), os.path.normcase(expected))
+
     def test_a_program_in_the_current_directory_is_never_run(self):
         with tempfile.TemporaryDirectory(prefix="find-") as planted, \
                 tempfile.TemporaryDirectory(prefix="path-") as real:
@@ -88,7 +92,7 @@ class FindTests(unittest.TestCase):
             with patch.dict(os.environ, {"PATH": os.pathsep.join(["", ".", real])}, clear=False):
                 os.chdir(planted)
                 try:
-                    self.assertEqual(exiftool.which("exiftool"), found)
+                    self.assertSamePath(exiftool.which("exiftool"), found)
                 finally:
                     os.chdir(previous)
 
@@ -96,9 +100,9 @@ class FindTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="find-") as folder:
             found = self.program(folder, "my-exiftool")
             with patch.dict(os.environ, {"PATH": folder, "MAGICDISPEL_EXIFTOOL": "my-exiftool"}):
-                self.assertEqual(exiftool.find(), found)
+                self.assertSamePath(exiftool.find(), found)
             with patch.dict(os.environ, {"MAGICDISPEL_EXIFTOOL": found}):
-                self.assertEqual(exiftool.find(), found)
+                self.assertSamePath(exiftool.find(), found)
             with patch.dict(os.environ, {"MAGICDISPEL_EXIFTOOL": os.path.join(folder, "missing")}), \
                     self.assertRaises(UserError):
                 exiftool.find()
