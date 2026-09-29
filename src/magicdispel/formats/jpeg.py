@@ -1,9 +1,11 @@
 """JPEG: rebuild each image from the segments needed to decode and show it.
 
-Copied unchanged: quantization and Huffman tables, frame and scan headers with
-their compressed data, restart intervals, Adobe color-transform information,
-and HDR data (ISO 21496-1 gain-map metadata up to the end of the fields its
-standard defines, Apple gain curves and Apple's MPF marker), each once. Written afresh:
+Copied unchanged: the quantization and Huffman tables that a scan reads, frame
+and scan headers with their compressed data, restart intervals, Adobe
+color-transform information, and HDR data (ISO 21496-1 gain-map metadata up
+to the end of the fields its standard defines, Apple gain curves and Apple's
+MPF marker), each once. Tables that no scan reads, or that another definition
+replaces before one does, and fill bytes, are left out. Written afresh:
 JFIF (density only, no thumbnail), EXIF (orientation, resolution, color space,
 Apple HDR headroom), XMP (recognized HDR fields, also from an extended
 packet), the ICC profile (sanitized) and the multi-picture (MPF) index, which
@@ -14,6 +16,7 @@ comments, IPTC/Photoshop blocks, C2PA, thumbnails, maker notes and trailing
 data.
 """
 import hashlib
+import re
 import struct
 
 from .. import exif, gainmap, icc, xmp
@@ -24,11 +27,15 @@ TEM, RESTART, APPLICATION = 0x01, range(0xD0, 0xD8), range(0xE0, 0xF0)
 # Frame headers (SOF0-SOF15 except the table markers), then tables, restart
 # interval, number of lines, temporary marker. RST markers are part of the scan data.
 FRAME_HEADERS = {0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7, 0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF}
-CODING = FRAME_HEADERS | {0xC4, 0xCC, 0xDB, 0xDD, 0xDC, TEM, SOS}
+DHT, DAC, DQT, DRI, DNL = 0xC4, 0xCC, 0xDB, 0xDD, 0xDC
+CODING = FRAME_HEADERS | {DHT, DAC, DQT, DRI, DNL, TEM, SOS}
+HUFFMAN_FRAMES = {0xC0, 0xC1, 0xC2}  # baseline, extended sequential and progressive: whose tables are read here
 MAX_PAYLOAD = 65533  # a segment's 16-bit length also counts its own two bytes
 MAX_SEGMENTS = 1 << 16  # in one image: real files hold tens, and a file of empty ones takes minutes and gigabytes
 MAX_EXTENDED_XMP = 1 << 20  # an extended packet larger than this is not read: it is only searched for HDR fields
 MAX_CURVE_POINTS = 1024  # Apple's HDR gain curve has about 250
+SCAN_END = re.compile(rb"\xff+[^\x00\xd0-\xd7\xff]", re.DOTALL)  # fill bytes and a marker that is none of those
+FILL = re.compile(rb"\xff{2,}(?=[\xd0-\xd7])")  # fill bytes before a restart marker
 EXIF_ID, XMP_ID = b"Exif\0\0", b"http://ns.adobe.com/xap/1.0/\0"
 XMP_EXTENSION_ID = b"http://ns.adobe.com/xmp/extension/\0"
 EXTENSION_HEADER = len(XMP_EXTENSION_ID) + 32 + 8  # then a GUID, the full length and an offset
@@ -72,6 +79,8 @@ def verify(original, rebuilt):
                  if not (marker == APP2 and payload.startswith(MPF_ID))]
         if found != expected_segments(source):
             raise VerificationError("verification_failed", detail="JPEG segments differ from the original")
+        if expected_segments(frame) != found:  # what is left holds nothing that cleaning would take out again
+            raise VerificationError("verification_failed", detail="JPEG keeps tables or bytes that no decoder reads")
 
 
 def expected_segments(data):
@@ -80,6 +89,7 @@ def expected_segments(data):
     exif_segment = rewritten_exif(parsed)
     xmp_segment = rewritten_xmp(parsed)
     profile_slices = iter(sanitized_profile_slices(parsed))
+    plan = coding_plan(parsed)
     result, seen = [], set()
 
     def first(name):
@@ -89,8 +99,25 @@ def expected_segments(data):
         seen.add(name)
         return True
 
-    for marker, start, end, payload in parsed:
-        if marker in (SOI, EOI) or marker in CODING:
+    for number, (marker, start, end, payload) in enumerate(parsed):
+        if marker in (SOI, EOI):
+            result.append(data[start:end])
+        elif marker == TEM or marker in RESTART:
+            continue  # markers that stand alone between segments, which no decoder reads
+        elif plan and marker in (DQT, DHT):
+            tables = (quantization_tables if marker == DQT else huffman_tables)(payload)
+            kept = [table for index, table in enumerate(tables) if (number, index) in plan.tables]
+            if kept:
+                result.append(segment(marker, b"".join(kept)))
+        elif plan and marker in (DAC, DRI, DNL):
+            if number in plan.kept:
+                result.append(data[start:end])
+        elif marker == SOS:
+            header = start + 4 + len(payload)
+            sequential = plan and plan.sequential  # whose scan header holds nothing after its components
+            result.append((segment(SOS, payload[:-3] + bytes([0, 63, 0])) if sequential else data[start:header])
+                          + plain_scan(data[header:end]))
+        elif marker in CODING:
             result.append(data[start:end])
         elif marker == APP0 and payload.startswith(b"JFIF\0") and first("JFIF"):
             if len(payload) < JFIF_FIELDS + 2:
@@ -237,6 +264,112 @@ def segment(marker, payload):
     return bytes((0xFF, marker)) + struct.pack(">H", len(payload) + 2) + payload
 
 
+class Plan:
+    """What a decoder reads of the table segments of an image: `tables` as
+    (segment number, table number in the segment), `kept` the numbers of the
+    restart interval and line count segments, `sequential` whether the frame is."""
+
+    def __init__(self, sequential):
+        self.tables, self.kept, self.sequential = set(), set(), sequential
+
+
+def coding_plan(parsed):
+    """The Plan of an image, as libjpeg reads it: a quantization table when the
+    first scan of a component that uses it starts, a Huffman table when a scan
+    that uses it starts, the restart interval in force then, and a line count
+    when the frame has no height. None for an image this module does not read
+    the tables of: those not Huffman coded, or of more than one frame."""
+    frames = [part for part in parsed if part[0] in FRAME_HEADERS]
+    if len(frames) != 1 or frames[0][0] not in HUFFMAN_FRAMES:
+        return None
+    plan = Plan(sequential=frames[0][0] != 0xC2)
+    quantization, huffman, restart, components, latched = {}, {}, None, {}, set()
+    heights, lines = [], None  # of the frame, and the first line count
+
+    def read(table):
+        if table is not None:
+            plan.tables.add(table)
+
+    for number, (marker, _, _, payload) in enumerate(parsed):
+        if marker == DQT:
+            for index, table in enumerate(quantization_tables(payload)):
+                quantization[table[0] & 15] = number, index
+        elif marker == DHT:
+            for index, table in enumerate(huffman_tables(payload)):
+                huffman[table[0] >> 4, table[0] & 15] = number, index
+        elif marker == DRI:
+            if len(payload) != 2:
+                raise damaged()
+            restart = number
+        elif marker == DNL and lines is None:
+            lines = number
+        elif marker in FRAME_HEADERS:
+            if len(payload) < 6 or len(payload) != 6 + 3 * payload[5]:
+                raise damaged()
+            components = {payload[6 + 3 * n]: payload[8 + 3 * n] for n in range(payload[5])}  # by number: its table
+            heights.append(int.from_bytes(payload[1:3], "big"))
+        elif marker == SOS:
+            count = payload[0] if payload else 0
+            if len(payload) != 4 + 2 * count:
+                raise damaged()
+            first, last, refined = payload[1 + 2 * count], payload[2 + 2 * count], payload[3 + 2 * count] >> 4
+            reads_dc, reads_ac = plan.sequential or first == 0 and not refined, plan.sequential or last > 0
+            for n in range(count):
+                component, selected = payload[1 + 2 * n], payload[2 + 2 * n]
+                if component not in components:
+                    raise damaged()
+                if component not in latched:
+                    latched.add(component)
+                    read(quantization.get(components[component]))
+                if reads_dc:
+                    read(huffman.get((0, selected >> 4)))
+                if reads_ac:
+                    read(huffman.get((1, selected & 15)))
+            if restart is not None:
+                plan.kept.add(restart)
+    if lines is not None and not heights[0]:  # a frame with no height is given one after its first scan
+        plan.kept.add(lines)
+    return plan
+
+
+def quantization_tables(payload):
+    """The tables of a DQT segment, each as bytes: a byte of precision and
+    number, then 64 values of a byte or 64 of two."""
+    tables, position = [], 0
+    while position < len(payload):
+        precision, size = payload[position] >> 4, 1 + 64 * ((payload[position] >> 4) + 1)
+        if precision > 1 or payload[position] & 15 > 3 or position + size > len(payload):
+            raise damaged()
+        tables.append(payload[position:position + size])
+        position += size
+    return tables
+
+
+def huffman_tables(payload):
+    """The tables of a DHT segment, each as bytes: a byte of class and number,
+    the number of codes of each length up to 16, then their symbols."""
+    tables, position = [], 0
+    while position < len(payload):
+        if payload[position] >> 4 > 1 or payload[position] & 15 > 3 or position + 17 > len(payload):
+            raise damaged()
+        size = 17 + sum(payload[position + 1:position + 17])
+        if position + size > len(payload):
+            raise damaged()
+        tables.append(payload[position:position + size])
+        position += size
+    return tables
+
+
+def plain_scan(scan):
+    """Compressed data without the fill bytes before its restart markers. Fill
+    before anything else is refused: no encoder writes it, and one decoder may
+    skip it where another reads a marker."""
+    scan = FILL.sub(b"\xff", scan)
+    if b"\xff\xff" in scan:
+        raise damaged()
+    return scan
+
+
 def coding_hash(data):
     """Hash of everything that decodes the pixels: tables, headers and scans."""
     return hashlib.sha256(b"".join(data[start:end] for marker, start, end, _ in segments(data)
@@ -245,7 +378,7 @@ def coding_hash(data):
 
 def segments(data):
     """(marker, start, end, payload) for one image, up to its EOI. A scan's range
-    includes its compressed data; `start` includes any fill bytes."""
+    includes its compressed data; `start` is the marker's own FF, after any fill bytes."""
     for count, found in enumerate(walk(data)):
         if count == MAX_SEGMENTS:
             raise FormatError("unsupported_part", format="JPEG", part="over %d segments" % MAX_SEGMENTS)
@@ -258,14 +391,13 @@ def walk(data):
     yield SOI, 0, 2, b""
     position = 2
     while position < len(data):
-        start = position
         if data[position] != 0xFF:
             raise damaged()
         while position < len(data) and data[position] == 0xFF:
             position += 1
         if position >= len(data):
             break
-        marker = data[position]
+        start, marker = position - 1, data[position]
         position += 1
         if marker == EOI:
             yield marker, start, position, b""
@@ -291,20 +423,11 @@ def walk(data):
 
 def scan_end(data, position):
     """Where compressed scan data ends: the first FF that is neither stuffing
-    (FF 00) nor a restart marker (FF D0-D7)."""
-    while True:
-        found = data.find(b"\xff", position)
-        if found < 0:
-            raise damaged()
-        following = found + 1
-        while following < len(data) and data[following] == 0xFF:
-            following += 1
-        if following >= len(data):
-            raise damaged()
-        if data[following] == 0 or data[following] in RESTART:
-            position = following + 1
-            continue
-        return found
+    (FF 00) nor a restart marker (FF D0-D7), each perhaps after fill bytes."""
+    found = SCAN_END.search(data, position)
+    if not found:
+        raise damaged()
+    return found.start()
 
 
 def images(data, strict=False):

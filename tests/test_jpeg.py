@@ -180,12 +180,17 @@ def decoded(data):
 
 
 class RebuildTests(unittest.TestCase):
-    def assertRebuilt(self, data):
+    def assertCleaned(self, data):
         rebuilt = jpeg.rebuild(data)
         jpeg.verify(data, rebuilt)
         self.assertEqual(decoded(rebuilt), decoded(data))
-        self.assertEqual(jpeg.coding_hash(rebuilt), jpeg.coding_hash(data))
         self.assertNotIn(MARKER, rebuilt)
+        return rebuilt
+
+    def assertRebuilt(self, data):
+        """Cleaned, and with every table and scan of the original."""
+        rebuilt = self.assertCleaned(data)
+        self.assertEqual(jpeg.coding_hash(rebuilt), jpeg.coding_hash(data))
         return rebuilt
 
     def test_private_segments_are_dropped_and_display_fields_kept(self):
@@ -292,6 +297,55 @@ class RebuildTests(unittest.TestCase):
                 piece = app(0xE1, EXTENSION_ID + guid + struct.pack(">II", total, 0) + extension)
                 rebuilt = self.assertRebuilt(with_segments(encode(gradient()), app(0xE1, XMP_ID + main), piece))
                 self.assertEqual(b"hdrgm:Version" in rebuilt, kept)
+
+    def test_tables_no_scan_reads_and_fill_bytes_are_left_out(self):
+        table = bytes(64)
+        unused_quantization = app(0xDB, bytes([3]) + table)          # table 3, which no component uses
+        unused_huffman = app(0xC4, bytes([0x13]) + bytes([0, 1]) + bytes(14) + b"\x05")  # AC table 3, one symbol
+        superseded = app(0xDB, bytes([0]) + bytes(range(64)))         # table 0, replaced before it is used
+        stand_alone = b"\xff\x01" + b"\xff\xd0" + b"\xff\xff\xff\x01"
+        plain = self.assertCleaned(encode(gradient()))
+        for name, tampered in {
+                "an unused quantization table": with_segments(encode(gradient()), unused_quantization),
+                "an unused Huffman table": with_segments(encode(gradient()), unused_huffman),
+                "a definition replaced before use": with_segments(encode(gradient()), superseded),
+                "a restart interval no scan reads": encode(gradient())[:-2] + app(0xDD, b"\0\x10") + b"\xff\xd9",
+                "markers that stand alone": with_segments(encode(gradient()), stand_alone),
+                "fill bytes before segments": encode(gradient()).replace(b"\xff\xdb", b"\xff\xff\xff\xdb"),
+                "fill bytes before the end": encode(gradient())[:-2] + b"\xff\xff\xff\xd9",
+        }.items():
+            with self.subTest(name):
+                self.assertNotEqual(tampered, encode(gradient()))
+                rebuilt = jpeg.rebuild(tampered)  # Pillow cannot read some of these, libjpeg's own readers can
+                jpeg.verify(tampered, rebuilt)
+                self.assertEqual(rebuilt, plain)
+        # A scan reads the restart interval in force when it starts.
+        rows = encode(gradient(), restart_marker_rows=1)
+        self.assertIn(b"\xff\xdd", rows)
+        self.assertEqual(self.assertRebuilt(rows), rows)
+
+    def test_the_tables_a_progressive_image_defines_between_its_scans_stay(self):
+        data = encode(gradient(size=(64, 48)), progressive=True)
+        segments_of_data = [marker for marker, *_ in jpeg.segments(data)]
+        self.assertGreater(segments_of_data.count(0xC4), 4)  # tables redefined for one scan after another
+        self.assertEqual(self.assertRebuilt(data), data)
+
+    def test_a_scan_header_of_a_sequential_image_holds_only_its_components(self):
+        data = encode(gradient())
+        header = next(payload for marker, _, _, payload in jpeg.segments(data) if marker == 0xDA)
+        tampered = data.replace(header, header[:-3] + bytes([5, 20, 0x33]))
+        self.assertNotEqual(tampered, data)
+        self.assertEqual(jpeg.rebuild(tampered), jpeg.rebuild(data))
+
+    def test_fill_bytes_inside_compressed_data(self):
+        data = encode(gradient(size=(64, 48)), restart_marker_rows=1)
+        self.assertIn(b"\xff\xd0", data)
+        self.assertEqual(jpeg.rebuild(data.replace(b"\xff\xd0", b"\xff\xff\xff\xd0")), jpeg.rebuild(data))
+        # Fill before a stuffed byte is no fill any marker rule allows.
+        stuffed = data.index(b"\xff\x00", data.index(b"\xff\xda"))
+        with self.assertRaises(FormatError) as caught:
+            jpeg.rebuild(data[:stuffed] + b"\xff" + data[stuffed:])
+        self.assertEqual(caught.exception.key, "damaged")
 
     def test_iso_gain_map_metadata_keeps_the_fields_of_its_layout_only(self):
         namespace = b"urn:iso:std:iso:ts:21496:-1\0"
