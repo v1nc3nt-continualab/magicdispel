@@ -31,6 +31,9 @@ STRIP = 256  # rows hashed at a time, so no frame is copied whole
 # The most pixels a file may ask Pillow to decode, counted over every frame: about a minute's work.
 # A canvas of tens of megapixels takes a header, and a number of frames little more.
 FRAME_PIXELS = 4 << 30
+# The largest canvas of an animation: Pillow holds several copies of it, so a header for 250 megapixels
+# asks for 8 GB, and no animation is so large (an 8K one is 33).
+ANIMATION_MEGAPIXELS = 64
 ONE_CANVAS = {"WEBP", "GIF", "APNG", "AVIF"}  # kinds whose frames are all drawn on the file's canvas
 MAX_FRAMES = {"WEBP": 32768}  # libwebp's time grows with the square of them: 100,000 frames of a pixel take 15 seconds
 
@@ -76,6 +79,8 @@ def digest(data, kind):
         frames = getattr(picture, "n_frames", 1)
         if frames > MAX_FRAMES.get(kind, frames):
             raise FormatError("too_many_frames", format=kind, limit=MAX_FRAMES[kind])
+        if frames > 1 and picture.size[0] * picture.size[1] > ANIMATION_MEGAPIXELS * 1_000_000:
+            raise FormatError("too_large", format=kind, limit=ANIMATION_MEGAPIXELS)
         if kind in ONE_CANVAS and frames * picture.size[0] * picture.size[1] > FRAME_PIXELS:
             raise too_many_pixels(kind)
         result.update(repr((picture.size, frames, picture.info.get("loop"),

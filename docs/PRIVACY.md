@@ -116,8 +116,9 @@ edit list may then play a few milliseconds of silence at the start of the sound.
   whatever follows an item's name in a HEIF item's information (but the type of XMP), go. A
   file with more of something than a real one has (65,536 JPEG segments, 262,144 boxes in a
   HEIF container, a million item data extents, about two million chunks in a track, over a
-  thousand GIF comments, four gigapixels of frames) is refused before it costs minutes or
-  gigabytes.
+  thousand GIF comments, 1,024 bytes of JPEG fill, 32,768 WebP frames, an animation on a canvas of
+  more than 64 megapixels or of more than four gigapixels in all its frames) is refused before it
+  costs minutes or gigabytes.
 - **Image sequences.** Animated AVIF and HEIF files keep only the boxes on a fixed list:
   headers, tracks, edits and sample tables, and in each sample entry its decoder
   configuration and color and display properties. Readers skip boxes they do not know, so

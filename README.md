@@ -126,9 +126,9 @@ describe every check.
 ICC profiles keep their color data. Their date becomes a fixed placeholder (`2000-01-01`),
 their description `Clean`, and device and creator fields, and reserved and vendor bits, are
 cleared. Images up to 268 megapixels are checked, enough for 200-megapixel phone photos;
-larger ones are refused, and so are animations (GIF, WebP, APNG, AVIF) of more than four
-gigapixels in all their frames. Checking takes memory in proportion: a 268-megapixel WebP needs
-about 4 GB.
+larger ones are refused, and so are animations (GIF, WebP, APNG, AVIF) on a canvas of more than
+64 megapixels, or of more than four gigapixels in all their frames. Checking takes memory in
+proportion: a 268-megapixel WebP needs about 4 GB.
 Videos are cleaned in a copy next to the original, mapped rather than read into memory: a
 4.7 GB video took about five seconds on an Apple-silicon Mac. Photos are read into memory
 whole. Fragmented and encrypted videos, videos with

@@ -59,6 +59,21 @@ class CompareTests(unittest.TestCase):
             pixels.digest(stream.getvalue(), "WEBP")
         self.assertEqual(caught.exception.key, "too_many_frames")
 
+    def test_an_animation_is_checked_on_a_smaller_canvas_than_a_still_image(self):
+        frames = [Image.new("RGB", (10, 10), color) for color in ("red", "blue")]
+        for kind in ("GIF", "WEBP"):
+            stream = io.BytesIO()
+            frames[0].save(stream, kind, save_all=True, append_images=frames[1:], duration=50, lossless=True)
+            animation = stream.getvalue()
+            pixels.digest(animation, kind)
+            with patch.object(pixels, "ANIMATION_MEGAPIXELS", 0.00005), self.subTest(kind), \
+                    self.assertRaises(FormatError) as caught:  # 50 pixels, of a canvas of 100
+                pixels.digest(animation, kind)
+            self.assertEqual(caught.exception.key, "too_large")
+        still = png(Image.new("RGB", (10, 10)))
+        with patch.object(pixels, "ANIMATION_MEGAPIXELS", 0.00005):
+            pixels.digest(still, "PNG")
+
     def test_what_libtiff_writes_to_standard_error_is_muted_while_pillow_decodes(self):
         with tempfile.TemporaryFile() as captured:
             saved = os.dup(2)

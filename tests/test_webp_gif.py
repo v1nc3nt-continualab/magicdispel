@@ -115,6 +115,21 @@ class WebPTests(unittest.TestCase):
                 webp.verify(riff(changed), rebuilt)
                 self.assertEqual(rebuilt, plain)
 
+    def test_a_canvas_too_large_to_check_is_refused_before_pillow_allocates_it(self):
+        frames = [gradient("RGBA"), gradient("RGBA").rotate(90)]
+        animation = encode(frames[0], "WEBP", save_all=True, append_images=frames[1:], duration=50, quality=80)
+        parts = webp.chunks(animation)
+        for canvas, expected in (((8000, 8000), None), ((8000, 8001), "too_large"), ((1 << 24, 1 << 24), "too_large")):
+            header = parts[0][1][:4] + (canvas[0] - 1).to_bytes(3, "little") + (canvas[1] - 1).to_bytes(3, "little")
+            data = riff([(b"VP8X", header)] + parts[1:])
+            with self.subTest(canvas=canvas):
+                if expected is None:
+                    webp.rebuild(data)
+                    continue
+                with self.assertRaises(FormatError) as caught:
+                    webp.rebuild(data)
+                self.assertEqual(caught.exception.key, expected)
+
     def test_damaged_files_are_refused(self):
         data = encode(gradient(), "WEBP", quality=80, exif=private_exif())
         wrong_size = data[:4] + struct.pack("<I", len(data)) + data[8:]

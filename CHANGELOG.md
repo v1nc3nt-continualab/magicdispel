@@ -43,10 +43,14 @@ Too slow, or too large, for files made to be:
   name one range of the file any number of times, and each was copied; ICC profiles likewise (a
   3.7 KB PNG needed 1.1 GB). Ranges are copied once, and counts are checked before any list is
   made.
-- JPEG: 16 MB of empty segments took 19 seconds and 600 MB; more than 65,536 segments are
-  refused, and an extended XMP packet over 1 MB is not read. EXIF entries that name one range
-  cost nothing each. Files of another kind are refused from their first bytes, without being
-  read.
+- JPEG: 16 MB of empty segments took 19 seconds and 600 MB, and 16 MB of fill bytes 16 seconds
+  and 900 MB; more than 65,536 segments, or more than 1,024 fill bytes in a row, are refused, and
+  an extended XMP packet over 1 MB is not read. EXIF entries that name one range cost nothing
+  each. Files of another kind are refused from their first bytes, without being read.
+- WebP: libwebp takes time growing with the square of the frames (100,000 frames of one pixel
+  took 15 seconds); more than 32,768 are refused. An animation on a canvas of more than 64
+  megapixels is refused as well, from its header: Pillow holds several copies of the canvas, and
+  a WebP of 1.5 KB could ask for 8 GB and 30 seconds.
 - HEIF: a long chain of derived images took minutes (each link searched them all again), so did
   many `ipma` boxes, millions of boxes or extents cost gigabytes, and items naming one large
   range each got a copy of it. Each is now handled in one pass, or refused above 262,144 boxes in
@@ -77,14 +81,18 @@ Places where a made-up file could hide data, closed:
   of the types they call for.
 - HEIF: what follows an item's name, and all but the "hidden" flag of an item, are zeroed; `dinf`
   keeps only its `dref`; properties of codecs with no layout here are limited to 2 KB each and
-  8 KB in all; an XMP packet too large to read (4 MB) goes with the rest of the XMP.
+  8 KB in all; an XMP packet too large to read (1 MB) goes with the rest of the XMP.
 - Video: the sample dependency table goes from a track of sound, where it could hold anything for
-  each sample, and a track names each type of reference once.
+  each sample, a track names each type of reference once, and a track or movie header outside the
+  movie box, which some readers take up as an extra stream, is refused.
 - The privacy details now say where a made-up file can still put a few kilobits (fields players
   read and the standard leaves free, the order of boxes), and the two that grow with a video:
   how its tables are cut into runs, and the dependency table of its pictures.
 
-Also: Pillow 12.3 or newer is required (11.3 has 36 published advisories), each kind of file is
+Also: libtiff's own messages about a damaged TIFF no longer appear before the command's, 240,000
+damaged variants of files of every format and 260,000 with their chunks, segments, blocks and
+boxes duplicated, dropped, swapped and retyped were cleaned without a crash, a stall or a copy
+that cleans to something else, Pillow 12.3 or newer is required (11.3 has 36 published advisories), each kind of file is
 opened by its own decoder only, CI runs Python 3.14 and once with the oldest dependencies allowed,
 the regression harness reports an unexpected exception as a problem, not a refusal, and the
 documentation is corrected where the audit found claims that were too strong or too weak.

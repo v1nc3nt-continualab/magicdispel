@@ -10,7 +10,7 @@ end are dropped.
 """
 import struct
 
-from .. import exif, icc
+from .. import exif, icc, pixels
 from ..errors import FormatError, VerificationError
 
 # VP8X flags. Bits 0, 6 and 7 are reserved and always written as zero.
@@ -44,6 +44,7 @@ def selected_chunks(data):
         return parts[:1]  # the simple format: one image chunk and nothing else
     if parts[0][0] != b"VP8X" or len(parts[0][1]) != VP8X_SIZE:
         raise damaged()
+    check_canvas(parts[0][1])
     kept, image, once = [], picture(parts), set()
     for index, (kind, payload) in enumerate(parts[1:], 1):
         if kind in (b"ANIM", b"ICCP"):
@@ -81,6 +82,15 @@ def selected_chunks(data):
     if b"EXIF" in kinds:
         flags |= EXIF
     return [(b"VP8X", bytes([flags]) + b"\0\0\0" + parts[0][1][4:])] + kept
+
+
+def check_canvas(header):
+    """The canvas a header names is one Pillow can check: it is allocated when the file is opened, an
+    animation's in several copies, so a header of a few bytes could ask for gigabytes."""
+    width, height = (int.from_bytes(header[start:start + 3], "little") + 1 for start in (4, 7))
+    limit = pixels.ANIMATION_MEGAPIXELS if header[0] & ANIMATION else pixels.MEGAPIXELS
+    if width * height > limit * 1_000_000:
+        raise FormatError("too_large", format="WebP", limit=limit)
 
 
 def animation_frame(payload):
