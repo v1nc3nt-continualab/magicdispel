@@ -34,6 +34,8 @@ MAX_PAYLOAD = 65533  # a segment's 16-bit length also counts its own two bytes
 MAX_SEGMENTS = 1 << 16  # in one image: real files hold tens, and a file of empty ones takes minutes and gigabytes
 MAX_EXTENDED_XMP = 1 << 20  # an extended packet larger than this is not read: it is only searched for HDR fields
 MAX_CURVE_POINTS = 1024  # Apple's HDR gain curve has about 250
+FILL_RUN = re.compile(rb"\xff+")
+MAX_FILL = 1024  # bytes of fill before a marker: no encoder writes more than a few
 SCAN_END = re.compile(rb"\xff+[^\x00\xd0-\xd7\xff]", re.DOTALL)  # fill bytes and a marker that is none of those
 FILL = re.compile(rb"\xff{2,}(?=[\xd0-\xd7])")  # fill bytes before a restart marker
 EXIF_ID, XMP_ID = b"Exif\0\0", b"http://ns.adobe.com/xap/1.0/\0"
@@ -393,8 +395,10 @@ def walk(data):
     while position < len(data):
         if data[position] != 0xFF:
             raise damaged()
-        while position < len(data) and data[position] == 0xFF:
-            position += 1
+        fill = FILL_RUN.match(data, position).end() - position  # with the marker's own FF
+        if fill > MAX_FILL + 1:
+            raise damaged()
+        position += fill
         if position >= len(data):
             break
         start, marker = position - 1, data[position]

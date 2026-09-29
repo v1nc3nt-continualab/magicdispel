@@ -111,7 +111,7 @@ OPERATING_POINTS = 31  # the largest AV1 operating point (a1op)
 PIXEL_CHANNELS, PIXEL_BITS = 4, 16  # pixi: channels and bits per channel of the images kept
 # Reference types that may point to or from a removed item.
 REMOVABLE_REFERENCES = {b"dimg", b"cdsc", b"auxl", b"thmb"}
-MAX_XMP = 4 * 1024 * 1024  # of a packet read for HDR fields: 16 times that in memory to parse
+MAX_XMP = 1 << 20  # of a packet read for HDR fields, as of JPEG's extended one: 50 times that in memory to parse
 TONE_MAP_SIZE = 256  # of a tmap item: a version byte and the most gain-map metadata has (141 bytes)
 AVIF_BRANDS = {b"avif", b"avis"}
 HEIF_BRANDS = {b"heic", b"heix", b"heim", b"heis", b"hevc", b"hevx", b"hevm", b"hevs", b"mif1", b"msf1"}
@@ -158,6 +158,8 @@ def cleaned(data):
     top = top_boxes(data)
     if {found.kind for found in top} & REFUSED:
         raise unsupported("fragmented sequence")
+    if {found.kind for found in top} & movie.STRAY:
+        raise unsupported("a track outside the movie box")
     if sum(found.kind == b"moov" for found in top) > 1 or sum(found.kind == b"meta" for found in top) > 1:
         raise StructureError("more than one movie or meta box")
     result = bytearray(data)

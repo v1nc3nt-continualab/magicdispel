@@ -1,5 +1,7 @@
 """Comparing what Pillow decodes from a result and from its original."""
 import io
+import os
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -47,6 +49,31 @@ class CompareTests(unittest.TestCase):
         with patch.object(pixels, "FRAME_PIXELS", 250), self.assertRaises(FormatError) as caught:
             pixels.digest(stream.getvalue(), "TIFF")
         self.assertEqual(caught.exception.key, "too_many_pixels")
+
+    def test_a_webp_of_more_frames_than_libwebp_reads_in_good_time_is_refused(self):
+        frames = [Image.new("RGB", (4, 4), color) for color in ("red", "blue", "green")]
+        stream = io.BytesIO()
+        frames[0].save(stream, "WEBP", save_all=True, append_images=frames[1:], duration=50, lossless=True)
+        pixels.digest(stream.getvalue(), "WEBP")
+        with patch.dict(pixels.MAX_FRAMES, {"WEBP": 2}), self.assertRaises(FormatError) as caught:
+            pixels.digest(stream.getvalue(), "WEBP")
+        self.assertEqual(caught.exception.key, "too_many_frames")
+
+    def test_what_libtiff_writes_to_standard_error_is_muted_while_pillow_decodes(self):
+        with tempfile.TemporaryFile() as captured:
+            saved = os.dup(2)
+            try:
+                os.dup2(captured.fileno(), 2)
+                with pixels.quiet():
+                    os.write(2, b"libtiff complains")
+                    with self.assertRaises(ZeroDivisionError):  # and standard error is back, whatever happens
+                        1 / 0
+                os.write(2, b"the command says")
+            finally:
+                os.dup2(saved, 2)
+                os.close(saved)
+            captured.seek(0)
+            self.assertEqual(captured.read(), b"the command says")
 
     def test_identical_pixels_pass(self):
         data = png(Image.new("RGB", (300, 600), "teal"))  # taller than one strip

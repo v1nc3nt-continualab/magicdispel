@@ -243,6 +243,8 @@ def cleaned(data, buffer):
     top = top_boxes(data)
     if {found.kind for found in top} & REFUSED:
         raise unsupported("fragmented video")
+    if {found.kind for found in top} & movie.STRAY:
+        raise unsupported("a track outside the movie box")
     movie.clear(buffer, file_type_brands(data, top[0]))
     movies = [found for found in top if found.kind == b"moov"]
     if len(movies) != 1:

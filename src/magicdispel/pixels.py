@@ -1,6 +1,8 @@
 """What Pillow decodes from a file, for comparing a result with its original."""
 import hashlib
 import io
+import os
+import sys
 import warnings
 from contextlib import contextmanager
 
@@ -30,6 +32,7 @@ STRIP = 256  # rows hashed at a time, so no frame is copied whole
 # A canvas of tens of megapixels takes a header, and a number of frames little more.
 FRAME_PIXELS = 4 << 30
 ONE_CANVAS = {"WEBP", "GIF", "APNG", "AVIF"}  # kinds whose frames are all drawn on the file's canvas
+MAX_FRAMES = {"WEBP": 32768}  # libwebp's time grows with the square of them: 100,000 frames of a pixel take 15 seconds
 
 
 def decodes(kind):
@@ -69,8 +72,10 @@ def digest(data, kind):
     """A digest of every displayed frame: its pixels as decoded, their mode and
     palette, timing, transparency and the repeat count."""
     result = hashlib.sha256()
-    with opened(data, kind) as picture:
+    with quiet(), opened(data, kind) as picture:
         frames = getattr(picture, "n_frames", 1)
+        if frames > MAX_FRAMES.get(kind, frames):
+            raise FormatError("too_many_frames", format=kind, limit=MAX_FRAMES[kind])
         if kind in ONE_CANVAS and frames * picture.size[0] * picture.size[1] > FRAME_PIXELS:
             raise too_many_pixels(kind)
         result.update(repr((picture.size, frames, picture.info.get("loop"),
@@ -89,6 +94,25 @@ def digest(data, kind):
             for top in range(0, height, STRIP):
                 result.update(picture.crop((0, top, width, min(top + STRIP, height))).tobytes())
     return result.digest()
+
+
+@contextmanager
+def quiet():
+    """Standard error muted while Pillow decodes: libtiff writes its complaints
+    about a damaged file straight to it, in front of what the command says."""
+    try:
+        sys.stderr.flush()
+        saved, null = os.dup(2), os.open(os.devnull, os.O_WRONLY)
+    except (AttributeError, OSError, ValueError):  # no standard error to mute
+        yield
+        return
+    try:
+        os.dup2(null, 2)
+        yield
+    finally:
+        os.dup2(saved, 2)
+        os.close(saved)
+        os.close(null)
 
 
 def too_many_pixels(kind):

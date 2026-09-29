@@ -142,6 +142,8 @@ PCM = set(PCM_BITS) | set(ENTRY_BITS) | ISO_PCM | {LPCM}
 # Compressed sound that FFmpeg and AVFoundation read in packets of their own,
 # whatever the entry says: (bytes a channel, frames) of IMA ADPCM's.
 PACKED = {b"ima4": (34, 64)}
+# Boxes of the movie box that some readers take up when they lie outside it, which a clean copy would then lack.
+STRAY = {b"trak", b"mvhd"}
 CHUNK = 1 << 20
 BLOCK = 1 << 16  # table entries read at a time
 MAX_CHUNKS = 1 << 21  # in a track: a sample to each makes 20 hours at 30 frames a second; more take gigabytes

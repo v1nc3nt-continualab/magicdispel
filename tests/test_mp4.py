@@ -516,6 +516,17 @@ class TableTests(VideoTests):
         pictures = inserted(movie_file(tracks=[video, sound]), STBL, full(b"sdtp", 0, bytes([0x20, 0x10])))
         self.assertIn(b"sdtp", self.assertCleaned(pictures))
 
+    def test_a_track_or_movie_header_outside_the_movie_box_is_refused(self):
+        # Some readers take it up as an extra stream, which the clean copy would then lack.
+        data = movie_file()
+        trak = boxes_at(data, TRAK)[0]
+        mvhd = boxes_at(data, [b"moov", b"mvhd"])[0]
+        moov = boxes_at(data, [b"moov"])[0]
+        for stray in (data[trak.start:trak.end], data[mvhd.start:mvhd.end]):
+            with self.subTest(kind=stray[4:8]):
+                self.assertRefused(data[:moov.end] + stray + data[moov.end:])
+        self.assertCleaned(data)
+
     def test_a_track_names_each_type_of_reference_once(self):
         chapters = (5, b"text", box(b"text", bytes(8) + MARKER), [b"CHAPTER"], b"", b"gmhd")
         for count, key in ((1, None), (2, "damaged")):

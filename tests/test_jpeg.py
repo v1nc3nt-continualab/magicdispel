@@ -324,6 +324,14 @@ class RebuildTests(unittest.TestCase):
         self.assertIn(b"\xff\xdd", rows)
         self.assertEqual(self.assertRebuilt(rows), rows)
 
+    def test_a_long_run_of_fill_bytes_is_refused_at_once(self):
+        # 16 MB of them took 16 seconds and 900 MB; no encoder writes more than a few.
+        data = encode(gradient())
+        self.assertEqual(jpeg.rebuild(with_segments(data, b"\xff" * jpeg.MAX_FILL)), jpeg.rebuild(data))
+        with self.assertRaises(FormatError) as caught:
+            jpeg.rebuild(data[:2] + b"\xff" * (16 << 20) + data[2:])
+        self.assertEqual(caught.exception.key, "damaged")
+
     def test_the_tables_a_progressive_image_defines_between_its_scans_stay(self):
         data = encode(gradient(size=(64, 48)), progressive=True)
         segments_of_data = [marker for marker, *_ in jpeg.segments(data)]

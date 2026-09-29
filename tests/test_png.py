@@ -218,6 +218,8 @@ class RebuildTests(unittest.TestCase):
         entries = len(dict((k, p) for k, p, _ in png.chunks(palette))[b"PLTE"]) // 3
         refused = (
             ("background of the wrong size", rgb, b"bKGD", bytes(2)),
+            ("background of a single byte in an RGB image", rgb, b"bKGD", b"\x01"),
+            ("background of six bytes in a palette image", palette, b"bKGD", bytes(6)),
             ("background out of range", palette, b"bKGD", bytes([entries])),
             ("gray level out of range", gray, b"bKGD", b"\x01\x00"),
             ("bits that are not there", rgb, b"sBIT", bytes([8, 8, 9])),

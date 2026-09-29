@@ -522,8 +522,9 @@ class HostileTests(HeifTests):
         self.assertNotIn(HEADROOM, rebuilt)
 
     def test_one_packet_named_by_many_items_is_reduced_once(self):
-        # A packet of 1 MB that takes a tenth of a second to read, named by 400 items.
-        big = HDR_XMP.replace(b"</rdf:Description>", b'<d xmlns="urn:test"/>' * 50_000 + b"</rdf:Description>")
+        # A packet of 0.7 MB that takes a tenth of a second to read, named by 400 items.
+        big = HDR_XMP.replace(b"</rdf:Description>", b'<d xmlns="urn:test"/>' * 35_000 + b"</rdf:Description>")
+        self.assertLess(len(big), heif.MAX_XMP)
         items = [PRIMARY, (2, b"mime", big)] + [(n, b"mime", b"") for n in range(3, 402)]
         rebuilt = self.assertRebuilt(heif_file(items, sharing={n: 2 for n in range(3, 402)}))
         layout = bmff.layout(rebuilt)

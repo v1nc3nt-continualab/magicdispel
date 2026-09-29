@@ -226,9 +226,9 @@ def check_values(parts, color, depth):
     entries = sum(len(payload) // 3 for kind, payload in parts if kind == b"PLTE")
     for kind, payload in parts:
         if kind == b"bKGD":
-            samples = [payload[0]] if color == 3 else struct.unpack(">%dH" % (len(payload) // 2), payload)
             valid = len(payload) == BACKGROUND_SIZES[color] and all(
-                value < (entries if color == 3 else 1 << depth) for value in samples)
+                value < (entries if color == 3 else 1 << depth)
+                for value in (payload[:1] if color == 3 else struct.unpack(">%dH" % (len(payload) // 2), payload)))
         elif kind == b"sBIT":
             valid = len(payload) == size and all(1 <= value <= (8 if color == 3 else depth) for value in payload)
         elif kind == b"sRGB":

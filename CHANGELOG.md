@@ -12,8 +12,8 @@ Refused or saved wrongly:
 - A read-only original (mode 444 or 400) was refused on macOS with "could not clear extended
   attributes". Attributes are cleared before the mode is set now.
 - A 4-bit run-length BMP was saved with wrong pixels, as Pillow decodes it wrongly (macOS does
-  not); it is refused now. The profile a version 5 BMP header embeds was dropped, which changed
-  its colors; it stays, and one that names a file is refused.
+  not); it is refused now. The profile a version 5 BMP header embeds was dropped, which changes
+  the colors in a viewer that applies it; it stays, and one that names a file is refused.
 - With ExifTool installed, a TIFF with one of the rarer tags (`NumberofInks`, `DotRange`,
   `TransferRange`, gray response curves and others) was refused, because ExifTool names them
   otherwise than the list did, and a video with a movie box over 32 MiB, a recording of many
