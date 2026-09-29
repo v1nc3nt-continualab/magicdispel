@@ -12,6 +12,7 @@ pipe, ExifTool would hold the whole video in memory to move through it.
 import json
 import os
 import re
+import struct
 import subprocess
 import sys
 from pathlib import Path
@@ -55,6 +56,7 @@ BMFF_STRUCTURE = ({"Unknown_" + name for name in ("edts", "av1C", "hvcC", "colr"
                   | {"Unknown_" + kind.decode("latin-1") for kind in mp4.STRUCTURE | set(heif.ENTRY_BOXES)})
 # A second check that takes longer than this, or a problem longer than this to
 # describe, comes from a file made to exhaust it.
+BIG_ATOM = 32 << 20  # a movie box larger than this is read by ExifTool only if it is told to ignore minor problems
 TIMEOUT = 600  # seconds
 MESSAGE = 500  # bytes of ExifTool's own message kept
 # ExifTool's group names for the XMP namespaces whose HDR fields xmp.py keeps.
@@ -138,12 +140,35 @@ def read(exiftool, data, path=None):
         name = os.fsencode(path)
         if b"\n" in name:  # which would end the argument
             raise ExifToolError("the folder's name holds a line break")
+        if big_movie(path):
+            arguments.append("-m")  # or ExifTool skips the movie box, as a minor problem, and reads none of it
         result = run(exiftool, arguments + ["-ee", "-api", "LargeFileSupport=1", "-@", "-"], name + b"\n")
     tags = json.loads(result.stdout)[0]
     for key, value in tags.items():
         if key.split(":")[-1] in ("Error", "Warning"):
             raise ExifToolError(str(value))
     return tags
+
+
+def big_movie(path):
+    """Whether the video at `path` has a movie box of more than BIG_ATOM bytes
+    (a recording of many hours): its boxes' sizes are read, no more."""
+    with open(path, "rb") as stream:
+        size = os.fstat(stream.fileno()).st_size
+        position = 0
+        while position + 8 <= size:
+            stream.seek(position)
+            length, kind = struct.unpack(">I4s", stream.read(8))
+            if length == 1 and position + 16 <= size:  # a 64-bit size follows the type
+                length, = struct.unpack(">Q", stream.read(8))
+            elif length == 0:  # the box extends to the end
+                length = size - position
+            if kind == b"moov" and length > BIG_ATOM:
+                return True
+            if length < 8:
+                return False
+            position += length
+    return False
 
 
 def check_tags(tags, kind):

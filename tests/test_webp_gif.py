@@ -90,6 +90,31 @@ class WebPTests(unittest.TestCase):
         self.assertEqual(first[15] & 0xFC, 0)
         self.assertEqual(decoded(rebuilt)[0], 2)
 
+    def test_what_a_decoder_reads_once_is_kept_once(self):
+        frames = [gradient("RGBA", shift=n * 40) for n in range(2)]
+        for frame in frames:
+            frame.putalpha(128)  # an opaque frame has no alpha data
+        data = encode(frames[0], "WEBP", save_all=True, append_images=frames[1:], duration=[50, 90], loop=2,
+                      quality=80, icc_profile=PROFILE)
+        plain = self.assertRebuilt(data)
+        parts = webp.chunks(data)
+        kinds = [kind for kind, _ in parts]
+        anim, icc_at = kinds.index(b"ANIM"), kinds.index(b"ICCP")
+        first = kinds.index(b"ANMF")
+        frame = parts[first][1]
+        self.assertEqual([kind for kind, _ in webp.walk(frame, webp.FRAME_HEADER, len(frame))], [b"ALPH", b"VP8 "])
+        extra_image = webp.chunk(b"VP8L", MARKER) + webp.chunk(b"ALPH", MARKER)
+        tampered = {
+            "more ANIM": parts[:anim + 1] + [(b"ANIM", bytes(6))] * 3 + parts[anim + 1:],
+            "more ICCP": parts[:icc_at + 1] + [(b"ICCP", MARKER)] * 3 + parts[icc_at + 1:],
+            "more images in a frame": parts[:first] + [(b"ANMF", frame + extra_image)] + parts[first + 1:],
+        }
+        for name, changed in tampered.items():
+            with self.subTest(name):
+                rebuilt = webp.rebuild(riff(changed))
+                webp.verify(riff(changed), rebuilt)
+                self.assertEqual(rebuilt, plain)
+
     def test_damaged_files_are_refused(self):
         data = encode(gradient(), "WEBP", quality=80, exif=private_exif())
         wrong_size = data[:4] + struct.pack("<I", len(data)) + data[8:]

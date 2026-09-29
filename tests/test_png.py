@@ -1,5 +1,6 @@
 """PNG, APNG and BMP rebuilding: what is kept, dropped and refused."""
 import io
+import random
 import struct
 import tempfile
 import unittest
@@ -149,6 +150,87 @@ class RebuildTests(unittest.TestCase):
                 with self.assertRaises(FormatError) as caught:
                     png.rebuild(tampered)
                 self.assertEqual(caught.exception.key, "damaged")
+
+    def test_a_chunk_that_may_come_once_is_kept_once_and_only_where_it_belongs(self):
+        profile = ImageCms.ImageCmsProfile(ImageCms.createProfile("sRGB")).tobytes()
+        data = encode(gradient("RGBA"), dpi=(144, 144), icc_profile=profile)
+        icc_chunk = dict((k, p) for k, p, _ in png.chunks(data))[b"iCCP"]
+        dozen = data
+        for _ in range(12):
+            dozen = insert(dozen, b"sRGB", b"\0")
+        late = insert(insert(data, b"gAMA", bytes(4), b"IEND"), b"pHYs", bytes(9), b"IEND")
+        one_srgb = png.rebuild(insert(data, b"sRGB", b"\0"))
+        cases = {
+            "another pHYs": (insert(data, b"pHYs", struct.pack(">IIB", 1, 1, 1)), png.rebuild(data)),
+            "iCCP twice": (insert(data, b"iCCP", icc_chunk), png.rebuild(data)),
+            "sRGB by the dozen": (dozen, one_srgb),
+            "gAMA and pHYs after the image": (late, png.rebuild(data)),
+            "a suggested palette in an RGBA image": (insert(data, b"PLTE", bytes(12)), png.rebuild(data)),
+        }
+        for name, (changed, expected) in cases.items():
+            with self.subTest(name):
+                rebuilt = png.rebuild(changed)
+                png.verify(changed, rebuilt)
+                self.assertEqual(rebuilt, expected)
+
+    def test_image_data_is_framed_the_one_way(self):
+        # Noise that takes 200,000 bytes: cut into chunks of 7 bytes or of a megabyte, it is the same image.
+        image = Image.frombytes("RGB", (300, 250), random.Random(1).randbytes(300 * 250 * 3))
+        data = encode(image)
+        stream = b"".join(p for k, p, _ in png.chunks(data) if k == b"IDAT")
+        self.assertGreater(len(stream), 2 * png.FRAME)
+        plain = self.assertRebuilt(data)
+        self.assertEqual([len(p) for k, p, _ in png.chunks(plain) if k == b"IDAT"],
+                         [png.FRAME] * (len(stream) // png.FRAME) + [len(stream) % png.FRAME])
+        for size in (7, 1000, len(stream)):
+            head = [(k, p) for k, p, _ in png.chunks(data) if k == b"IHDR"]
+            cut = [(b"IDAT", stream[n:n + size]) for n in range(0, len(stream), size)]
+            reframed = png.SIGNATURE + b"".join(png.serialize(k, p) for k, p in head + cut + [(b"IEND", b"")])
+            with self.subTest(size=size):
+                self.assertEqual(png.rebuild(reframed), plain)
+        self.assertEqual(png.rebuild(plain), plain)
+
+    def test_animation_frames_are_numbered_afresh(self):
+        frames = [gradient("RGBA"), gradient("RGBA").rotate(180), Image.new("RGBA", (7, 5), (0, 0, 0, 0))]
+        data = encode(frames[0], save_all=True, append_images=frames[1:], duration=[40, 80, 120], loop=3)
+        plain = self.assertRebuilt(data)
+        numbers = [struct.unpack_from(">I", p)[0] for k, p, _ in png.chunks(plain) if k in (b"fcTL", b"fdAT")]
+        self.assertEqual(numbers, list(range(len(numbers))))
+        # The numbers are what a decoder checks, and they carry nothing when they are checked.
+        shuffled = [(k, struct.pack(">I", 1000 - n) + p[4:]) if k in (b"fcTL", b"fdAT") else (k, p)
+                    for n, (k, p, _) in enumerate(png.chunks(data))]
+        changed = png.SIGNATURE + b"".join(png.serialize(k, p) for k, p in shuffled)
+        self.assertEqual(png.rebuild(changed), plain)
+        # Frames of an animation that acTL does not declare are not frames.
+        without = png.SIGNATURE + b"".join(png.serialize(k, p) for k, p, _ in png.chunks(data) if k != b"acTL")
+        self.assertEqual(kinds(png.rebuild(without)), [b"IHDR", b"IDAT", b"IEND"])
+
+    def test_chunks_hold_what_their_standard_defines(self):
+        rgb, palette, gray = encode(gradient()), encode(gradient("P")), encode(gradient("L"))
+        entries = len(dict((k, p) for k, p, _ in png.chunks(palette))[b"PLTE"]) // 3
+        refused = (
+            ("background of the wrong size", rgb, b"bKGD", bytes(2)),
+            ("background out of range", palette, b"bKGD", bytes([entries])),
+            ("gray level out of range", gray, b"bKGD", b"\x01\x00"),
+            ("bits that are not there", rgb, b"sBIT", bytes([8, 8, 9])),
+            ("bits of another color type", rgb, b"sBIT", bytes(4)),
+            ("a rendering intent that is not one", rgb, b"sRGB", b"\x09"),
+            ("a matrix in an RGB image", rgb, b"cICP", bytes([1, 13, 1, 1])),
+            ("a unit that is not one", rgb, b"pHYs", struct.pack(">IIB", 1, 1, 7)),
+        )
+        for name, data, kind, payload in refused:
+            with self.subTest(name), self.assertRaises(FormatError) as caught:
+                png.rebuild(insert(data, kind, payload))
+            self.assertEqual(caught.exception.key, "damaged")
+        header = dict((k, p) for k, p, _ in png.chunks(rgb))[b"IHDR"]
+        with self.assertRaises(FormatError) as caught:  # a second header
+            png.rebuild(insert(rgb, b"IHDR", header))
+        self.assertEqual(caught.exception.key, "damaged")
+        allowed = ((b"bKGD", struct.pack(">HHH", 1, 2, 3)), (b"sBIT", bytes([5, 6, 7])), (b"sRGB", b"\x03"),
+                   (b"cICP", bytes([1, 13, 0, 1])), (b"pHYs", struct.pack(">IIB", 1, 1, 1)))
+        for kind, payload in allowed:
+            with self.subTest(kind=kind):
+                self.assertIn(kind, kinds(self.assertRebuilt(insert(rgb, kind, payload))))
 
     def test_huge_images_are_refused_before_inflating(self):
         header = struct.pack(">IIBBBBB", 30000, 30000, 8, 2, 0, 0, 0)

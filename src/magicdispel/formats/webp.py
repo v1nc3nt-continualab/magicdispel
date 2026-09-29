@@ -4,7 +4,9 @@ Copied unchanged: the compressed image data (VP8, VP8L, ALPH) and animation
 parameters (ANIM, and each ANMF frame with only its image chunks inside). The
 extended header (VP8X) gets flags matching what is kept, with reserved bits
 cleared. The ICC profile is sanitized and EXIF is reduced to the orientation.
-XMP, unknown chunks and anything after the RIFF end are dropped.
+Of what a decoder reads once, the first is kept: ANIM, ICCP, and in each frame
+the image with its alpha data. XMP, unknown chunks and anything after the RIFF
+end are dropped.
 """
 import struct
 
@@ -42,10 +44,15 @@ def selected_chunks(data):
         return parts[:1]  # the simple format: one image chunk and nothing else
     if parts[0][0] != b"VP8X" or len(parts[0][1]) != VP8X_SIZE:
         raise damaged()
-    kept = []
-    for kind, payload in parts[1:]:
+    kept, image, once = [], picture(parts), set()
+    for index, (kind, payload) in enumerate(parts[1:], 1):
+        if kind in (b"ANIM", b"ICCP"):
+            if kind in once:
+                continue
+            once.add(kind)
         if kind in IMAGE_DATA:
-            kept.append((kind, payload))
+            if index in image:
+                kept.append((kind, payload))
         elif kind == b"ANIM":
             if len(payload) != ANIM_SIZE:
                 raise damaged()
@@ -82,10 +89,23 @@ def animation_frame(payload):
         raise damaged()
     last = FRAME_HEADER - 1
     header = payload[:last] + bytes([payload[last] & 0x03])  # blending and disposal bits only
-    inner = [(kind, body) for kind, body in walk(payload, FRAME_HEADER, len(payload)) if kind in IMAGE_DATA]
-    if not any(kind in (b"VP8 ", b"VP8L") for kind, _ in inner):
+    inner = list(walk(payload, FRAME_HEADER, len(payload)))
+    image = [inner[index] for index in picture(inner)]
+    if not any(kind in (b"VP8 ", b"VP8L") for kind, _ in image):
         raise damaged()
-    return header + b"".join(chunk(kind, body) for kind, body in inner)
+    return header + b"".join(chunk(kind, body) for kind, body in image)
+
+
+def picture(parts):
+    """Where in `parts` the image is that a decoder shows: the first, with the
+    alpha data before it. Decoders skip the rest, which could hold anything."""
+    found = []
+    for index, (kind, _) in enumerate(parts):
+        if kind == b"ALPH" and not found:
+            found.append(index)
+        elif kind in (b"VP8 ", b"VP8L"):
+            return found + [index]
+    return found
 
 
 def chunks(data):

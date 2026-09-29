@@ -1,6 +1,7 @@
 """HEIF and AVIF: items, boxes and image sequences, through rebuild and verify."""
 import struct
 import unittest
+from unittest.mock import patch
 
 from PIL import ImageCms
 
@@ -32,7 +33,7 @@ def full(kind, version, payload):
 
 
 def heif_file(items, refs=(), auxiliary=None, names=None, properties=(), associations=None, in_idat=False,
-              overlap=False, group=(), meta_boxes=(), before_mdat=(), after_mdat=(), gap=b""):
+              overlap=False, group=(), meta_boxes=(), before_mdat=(), after_mdat=(), gap=b"", sharing=None):
     """A small HEIF file, built independently of the code under test.
 
     items are (id, type, payload), or (id, "mime", payload, content type) for
@@ -41,9 +42,11 @@ def heif_file(items, refs=(), auxiliary=None, names=None, properties=(), associa
     `properties` are left unused, and `associations` ({id: indices}) replaces
     what an item gets. Item data goes in idat, or in an mdat after the
     `before_mdat` boxes, followed by `gap`; with `overlap`, item 2's data
-    starts where item 1's does. The handler name is MARKER.
+    starts where item 1's does, and items in `sharing` ({id: source id}) name
+    the data of their source alike, and have none of their own. The handler
+    name is MARKER.
     """
-    auxiliary, names = auxiliary or {}, names or {}
+    auxiliary, names, sharing = auxiliary or {}, names or {}, sharing or {}
     props = [box(b"ispe", bytes(4) + struct.pack(">II", 8, 8))]
     assigned = {ident: [1] for ident, kind, *_ in items if kind not in (b"Exif", b"mime", b"uri ")}
     for ident, urn in auxiliary.items():
@@ -64,18 +67,22 @@ def heif_file(items, refs=(), auxiliary=None, names=None, properties=(), associa
               + (full(b"iref", 0, b"".join(box(kind, struct.pack(">HH%dH" % len(targets), origin, len(targets), *targets))
                                            for kind, origin, targets in refs)) if refs else b""))
     grpl = box(b"grpl", full(b"altr", 0, struct.pack(">II%dI" % len(group), GROUP, len(group), *group))) if group else b""
-    data = b"".join(payload for _, _, payload, *_ in items) + gap
+    data = b"".join(payload for ident, _, payload, *_ in items if ident not in sharing) + gap
     ftyp = box(b"ftyp", b"heic\0\0\0\0mif1heic")
     extras = b"".join(before_mdat)
 
     def meta(base):
-        entries, offset = b"", 0
+        entries, offset, spans = b"", 0, {}
         for ident, _, payload, *_ in items:
-            start = base if overlap and ident == 2 else base + offset
+            if ident in sharing:
+                start, length = spans[sharing[ident]]
+            else:
+                start, length = (base if overlap and ident == 2 else base + offset), len(payload)
+                offset += len(payload)
+            spans[ident] = start, length
             # Version 1 has a construction method: 1 is an offset into idat.
             entries += struct.pack(">H", ident) + (b"\0\1" if in_idat else b"") + struct.pack(">HHII", 0, 1, start,
-                                                                                               len(payload))
-            offset += len(payload)
+                                                                                               length)
         iloc = full(b"iloc", int(in_idat), bytes([0x44, 0]) + struct.pack(">H", len(items)) + entries)
         return full(b"meta", 0, tables + iloc + (box(b"idat", data) if in_idat else b"") + grpl
                     + b"".join(meta_boxes))
@@ -433,6 +440,52 @@ class ToneMapTests(HeifTests):
                         b"\0" + unreadable, b"\0" + self.METADATA[:5] + bytes(56)):
             with self.subTest(size=len(payload)):
                 self.assertRefused(self.tone_mapped(payload), "unsupported_part")
+
+
+class HostileTests(HeifTests):
+    """Files made to have a program do far more work than their size: each is handled at once."""
+
+    def test_a_long_chain_of_derived_images_goes_with_the_depth_image_at_its_head(self):
+        count = 20_000  # each image built from the next: searching them all again for each took minutes
+        items = [PRIMARY, DEPTH_IMAGE] + [(n, b"hvc1", b"T") for n in range(3, count + 1)]
+        refs = [(b"auxl", 2, [1])] + [(b"dimg", n, [n + 1]) for n in range(2, count)]
+        rebuilt = self.assertRebuilt(heif_file(items, refs, {2: DEPTH}))
+        self.assertEqual(set(bmff.layout(rebuilt).items), {1})
+
+    def test_more_boxes_or_extents_than_a_file_can_hold_are_refused(self):
+        with patch.object(bmff, "MAX_BOXES", 50):
+            self.assertRefused(heif_file([PRIMARY], before_mdat=[box(b"free", b"")] * 60), "unsupported_part")
+        with patch.object(bmff, "MAX_ENTRIES", 2):  # a few bytes can name 65,535 extents of no size each
+            self.assertRefused(heif_file([PRIMARY, (2, b"Exif", MARKER), (3, b"Exif", MARKER)]), "unsupported_part")
+
+    def test_items_may_share_data_alike_but_not_in_part(self):
+        self.assertRebuilt(heif_file([PRIMARY, (2, b"hvc1", b"")], sharing={2: 1}))
+        partly = heif_file([PRIMARY, (2, b"hvc1", b"LONGER_THAN_THE_PRIMARY")], overlap=True)
+        self.assertRefused(partly, "unsupported_part")
+
+    def test_thousands_of_items_naming_the_same_data_are_checked_once(self):
+        # 2,000 images of 5 MB each, in a file of 5 MB: reading each in full took 10 seconds and more.
+        primary = (1, b"hvc1", b"PRIMARY_PIXELS" + bytes(5_000_000))
+        items = [primary] + [(n, b"hvc1", b"") for n in range(2, 2002)]
+        rebuilt = self.assertRebuilt(heif_file(items, sharing={n: 1 for n in range(2, 2002)}))
+        self.assertEqual(len(bmff.layout(rebuilt).items), 2001)
+
+    def test_a_packet_too_large_to_read_goes_with_the_rest_of_the_xmp(self):
+        big = HDR_XMP.replace(b"</rdf:Description>", b'<d xmlns="urn:test"/>' * 250_000 + b"</rdf:Description>")
+        self.assertGreater(len(big), heif.MAX_XMP)
+        rebuilt = self.assertRebuilt(heif_file([PRIMARY, (2, b"mime", big)]))
+        self.assertEqual(set(bmff.layout(rebuilt).items), {1})
+        self.assertNotIn(HEADROOM, rebuilt)
+
+    def test_one_packet_named_by_many_items_is_reduced_once(self):
+        # A packet of 1 MB that takes a tenth of a second to read, named by 400 items.
+        big = HDR_XMP.replace(b"</rdf:Description>", b'<d xmlns="urn:test"/>' * 50_000 + b"</rdf:Description>")
+        items = [PRIMARY, (2, b"mime", big)] + [(n, b"mime", b"") for n in range(3, 402)]
+        rebuilt = self.assertRebuilt(heif_file(items, sharing={n: 2 for n in range(3, 402)}))
+        layout = bmff.layout(rebuilt)
+        self.assertEqual(len(layout.items), 401)
+        self.assertIn(HEADROOM, b"".join(rebuilt[a:b] for a, b in layout.extents[3]))
+        self.assertNotIn(b"urn:test", rebuilt)
 
 
 if __name__ == "__main__":

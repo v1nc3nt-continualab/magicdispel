@@ -1,4 +1,6 @@
 """Reading and writing only the EXIF fields that affect display."""
+import struct
+import tracemalloc
 import unittest
 
 from PIL import Image
@@ -43,6 +45,30 @@ class ExifTests(unittest.TestCase):
 
     def test_invalid_values_read_as_absent(self):
         self.assertIsNone(exif.display_fields(pillow_exif(**{"0x0112": 9})).orientation)
+
+    def test_orientation_is_read_however_it_is_typed(self):
+        # ImageIO turns such a picture; leaving the tag out would leave it on its side.
+        for order, header in ((">", b"MM\0*\0\0\0\x08"), ("<", b"II*\0\x08\0\0\0")):
+            for kind, value in ((exif.BYTE, b"\x06"), (exif.SHORT, struct.pack(order + "H", 6)),
+                                (exif.LONG, struct.pack(order + "I", 6))):
+                entry = struct.pack(order + "HHI", 0x0112, kind, 1) + value.ljust(4, b"\0")
+                data = header + struct.pack(order + "H", 1) + entry + b"\0" * 4
+                with self.subTest(order=order, kind=kind):
+                    self.assertEqual(exif.display_fields(data).orientation, 6)
+
+    def test_entries_naming_one_large_range_cost_nothing(self):
+        # 3,000 entries each naming the same 500 KB: copying it for each would take 1.5 GB.
+        count, table = 3000, 8 + 2 + 12 * 3000 + 4
+        entries = b"".join(struct.pack(">HHII", 0x9000 + n, exif.UNDEFINED, 500_000, table) for n in range(count))
+        data = b"MM\0*\0\0\0\x08" + struct.pack(">H", count) + entries + b"\0" * 4 + bytes(500_000)
+        tracemalloc.start()
+        try:
+            fields = exif.display_fields(data)
+            peak = tracemalloc.get_traced_memory()[1]
+        finally:
+            tracemalloc.stop()
+        self.assertEqual(fields, exif.DisplayFields())
+        self.assertLess(peak, 5_000_000)
 
 
 if __name__ == "__main__":

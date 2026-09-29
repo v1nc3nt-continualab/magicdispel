@@ -3,7 +3,7 @@
 Copied unchanged: quantization and Huffman tables, frame and scan headers with
 their compressed data, restart intervals, Adobe color-transform information,
 and HDR data (ISO 21496-1 gain-map metadata up to the end of the fields its
-standard defines, Apple gain curves and Apple's MPF marker). Written afresh:
+standard defines, Apple gain curves and Apple's MPF marker), each once. Written afresh:
 JFIF (density only, no thumbnail), EXIF (orientation, resolution, color space,
 Apple HDR headroom), XMP (recognized HDR fields, also from an extended
 packet), the ICC profile (sanitized) and the multi-picture (MPF) index, which
@@ -26,6 +26,9 @@ TEM, RESTART, APPLICATION = 0x01, range(0xD0, 0xD8), range(0xE0, 0xF0)
 FRAME_HEADERS = {0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7, 0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF}
 CODING = FRAME_HEADERS | {0xC4, 0xCC, 0xDB, 0xDD, 0xDC, TEM, SOS}
 MAX_PAYLOAD = 65533  # a segment's 16-bit length also counts its own two bytes
+MAX_SEGMENTS = 1 << 16  # in one image: real files hold tens, and a file of empty ones takes minutes and gigabytes
+MAX_EXTENDED_XMP = 1 << 20  # an extended packet larger than this is not read: it is only searched for HDR fields
+MAX_CURVE_POINTS = 1024  # Apple's HDR gain curve has about 250
 EXIF_ID, XMP_ID = b"Exif\0\0", b"http://ns.adobe.com/xap/1.0/\0"
 XMP_EXTENSION_ID = b"http://ns.adobe.com/xmp/extension/\0"
 EXTENSION_HEADER = len(XMP_EXTENSION_ID) + 32 + 8  # then a GUID, the full length and an offset
@@ -77,31 +80,39 @@ def expected_segments(data):
     exif_segment = rewritten_exif(parsed)
     xmp_segment = rewritten_xmp(parsed)
     profile_slices = iter(sanitized_profile_slices(parsed))
-    result, seen_jfif, seen_exif, seen_xmp = [], False, False, False
+    result, seen = [], set()
+
+    def first(name):
+        """Whether this is the first of what an image holds once, which a decoder reads."""
+        if name in seen:
+            return False
+        seen.add(name)
+        return True
+
     for marker, start, end, payload in parsed:
         if marker in (SOI, EOI) or marker in CODING:
             result.append(data[start:end])
-        elif marker == APP0 and payload.startswith(b"JFIF\0") and not seen_jfif:
-            seen_jfif = True
+        elif marker == APP0 and payload.startswith(b"JFIF\0") and first("JFIF"):
             if len(payload) < JFIF_FIELDS + 2:
                 raise damaged()
             # Apple's gain-map marker is an exact 18-byte JFIF variant; keep it as it is.
             result.append(data[start:end] if is_apple_mpf_marker(payload)
                           else segment(APP0, payload[:JFIF_FIELDS] + b"\0\0"))  # no thumbnail
         elif marker == APP1 and payload.startswith(EXIF_ID):
-            if not seen_exif and exif_segment:
+            if first("Exif") and exif_segment:
                 result.append(exif_segment)
-            seen_exif = True
         elif marker == APP1 and payload.startswith(XMP_ID):
-            if not seen_xmp and xmp_segment:
+            if first("XMP") and xmp_segment:
                 result.append(xmp_segment)
-            seen_xmp = True
         elif marker == APP2 and payload.startswith(ICC_ID):
             result.append(segment(APP2, payload[:ICC_HEADER] + next(profile_slices)))
         elif marker == APP2 and payload.startswith(ISO_GAIN_MAP_ID):
-            result.append(segment(APP2, iso_gain_map(payload)))
-        elif is_rendering_segment(marker, payload):
-            result.append(data[start:end])
+            metadata = iso_gain_map(payload)  # checked whether it is kept or not
+            if first("ISO"):
+                result.append(segment(APP2, metadata))
+        elif is_rendering_segment(marker, payload):  # likewise
+            if first(payload[:5]):
+                result.append(data[start:end])
         elif marker in APPLICATION or marker == COM:
             continue  # other application data and comments
         else:
@@ -147,15 +158,15 @@ def extended_xmp(parsed, guid):
             if payload[len(XMP_EXTENSION_ID):len(XMP_EXTENSION_ID) + 32] != guid:
                 continue
             length, offset = struct.unpack_from(">II", payload, len(XMP_EXTENSION_ID) + 32)
-            if total not in (None, length) or offset in pieces:
+            if total not in (None, length) or offset in pieces or length > MAX_EXTENDED_XMP:
                 return None
             total, pieces[offset] = length, payload[EXTENSION_HEADER:]
-    packet = b""
+    position = 0
     for offset in sorted(pieces):
-        if offset != len(packet):
+        if offset != position:
             return None
-        packet += pieces[offset]
-    return packet if pieces and len(packet) == total else None
+        position += len(pieces[offset])
+    return b"".join(pieces[offset] for offset in sorted(pieces)) if pieces and position == total else None
 
 
 def sanitized_profile_slices(parsed):
@@ -207,8 +218,9 @@ def is_rendering_segment(marker, payload):
         points = len(APPLE_CURVE_ID)
         if len(payload) < points + 4:
             raise damaged()
-        curve_end = points + 4 + 4 * int.from_bytes(payload[points:points + 4], "big")
-        if not curve_end <= len(payload) <= curve_end + 64 or any(payload[curve_end:]):
+        count = int.from_bytes(payload[points:points + 4], "big")
+        curve_end = points + 4 + 4 * count
+        if count > MAX_CURVE_POINTS or not curve_end <= len(payload) <= curve_end + 64 or any(payload[curve_end:]):
             raise FormatError("unsupported_part", format="JPEG", part="HDR gain curve layout")
         return True
     # Adobe's segment tells decoders how CMYK/YCCK data is stored; exactly 12 bytes.
@@ -234,6 +246,13 @@ def coding_hash(data):
 def segments(data):
     """(marker, start, end, payload) for one image, up to its EOI. A scan's range
     includes its compressed data; `start` includes any fill bytes."""
+    for count, found in enumerate(walk(data)):
+        if count == MAX_SEGMENTS:
+            raise FormatError("unsupported_part", format="JPEG", part="over %d segments" % MAX_SEGMENTS)
+        yield found
+
+
+def walk(data):
     if not data.startswith(b"\xff\xd8"):
         raise damaged()
     yield SOI, 0, 2, b""

@@ -1,11 +1,12 @@
 """The ExifTool second opinion: which tags a cleaned file may still have."""
 import os
 import stat
+import struct
 import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from magicdispel import exiftool
 from magicdispel.errors import UserError, VerificationError
@@ -23,6 +24,40 @@ class CheckTagsTests(unittest.TestCase):
                                  ("File:Comment", "PRIVATE_MARKER", "GIF")):
             with self.subTest(key=key), self.assertRaises(VerificationError):
                 exiftool.check_tags({key: value}, kind)
+
+
+class BigMovieTests(unittest.TestCase):
+    """ExifTool skips a movie box of more than 32 MiB unless told to ignore minor problems."""
+
+    def movie(self, *boxes):
+        """A file holding only these boxes' headers: the size of a box is all that is read."""
+        folder = tempfile.TemporaryDirectory(prefix="exiftool-")
+        self.addCleanup(folder.cleanup)
+        path = Path(folder.name, "long.mov")
+        path.write_bytes(b"".join(boxes))
+        return path
+
+    def test_a_long_recordings_movie_box_is_found_by_its_size_alone(self):
+        big = 33 << 20
+        ftyp = struct.pack(">I4s", 20, b"ftyp") + bytes(12)
+        cases = (
+            ("a movie box of 33 MiB", [ftyp, struct.pack(">I4s", big, b"moov")], True),
+            ("a 64-bit size", [struct.pack(">I4sQ", 1, b"moov", big)], True),
+            ("a small movie box", [ftyp, struct.pack(">I4s", 100, b"moov") + bytes(92)], False),
+            ("a big media box", [struct.pack(">I4s", big, b"mdat")], False),
+            ("no box at all", [bytes(4)], False),
+            ("a box of no size", [struct.pack(">I4s", 4, b"free") + bytes(8)], False),
+        )
+        for name, boxes, expected in cases:
+            with self.subTest(name):
+                self.assertEqual(exiftool.big_movie(self.movie(*boxes)), expected)
+
+    def test_exiftool_is_told_to_ignore_minor_problems_only_for_such_a_video(self):
+        for size, flag in ((40 << 20, True), (8, False)):
+            path = self.movie(struct.pack(">I4s", size, b"moov"))
+            with patch.object(exiftool, "run", return_value=Mock(stdout=b"[{}]")) as run:
+                exiftool.read("exiftool", None, path)
+            self.assertEqual("-m" in run.call_args.args[1], flag)
 
 
 class FindTests(unittest.TestCase):

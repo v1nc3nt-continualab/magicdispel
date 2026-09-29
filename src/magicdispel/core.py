@@ -30,9 +30,12 @@ def clean(argument, exiftool_path=None, naming="plain"):
     if not source.is_file():
         raise InputError("not_a_file", path=source)
     with source.open("rb") as stream:
-        video = formats.video_format(stream.read(HEAD))
+        head = stream.read(HEAD)
+    video = formats.video_format(head)
     if video:
         return clean_copy(source, video, exiftool_path, naming)
+    if not formats.recognized(head):  # said before the rest is read: a file of gigabytes may not be a photo at all
+        raise InputError("unsupported_format")
     data = source.read_bytes()
     kind = formats.identify(data)
     if kind is None:

@@ -30,7 +30,7 @@ from .. import gainmap, icc, xmp
 from ..errors import FormatError, VerificationError
 from . import bmff, configs, jpeg, movie
 from .bmff import METADATA_ITEMS, StructureError, unsupported
-from .movie import empty, gaps, zeroed
+from .movie import empty, uncovered, zeroed
 
 KEPT = {b"ftyp", b"meta", b"moov", b"mdat"}
 # Fragmented sequences keep samples outside moov; they are not supported.
@@ -108,7 +108,8 @@ OPERATING_POINTS = 31  # the largest AV1 operating point (a1op)
 PIXEL_CHANNELS, PIXEL_BITS = 4, 16  # pixi: channels and bits per channel of the images kept
 # Reference types that may point to or from a removed item.
 REMOVABLE_REFERENCES = {b"dimg", b"cdsc", b"auxl", b"thmb"}
-MAX_XMP = 16 * 1024 * 1024
+MAX_XMP = 4 * 1024 * 1024  # of a packet read for HDR fields: 16 times that in memory to parse
+TONE_MAP_SIZE = 256  # of a tmap item: a version byte and the most gain-map metadata has (141 bytes)
 AVIF_BRANDS = {b"avif", b"avis"}
 HEIF_BRANDS = {b"heic", b"heix", b"heim", b"heis", b"hevc", b"hevx", b"hevm", b"hevs", b"mif1", b"msf1"}
 # The other brands of HEIF files that say how to read them: MIAF and its
@@ -197,22 +198,24 @@ def clean_items(data, layout, result, samples):
     they use, reduce XMP to HDR fields, and rewrite the item tables. No item
     removed may share bytes with a kept one or with the kept `samples`."""
     auxiliary = check_items(data, layout)
+    packets = hdr_packets(data, layout)  # an item that cannot be read is refused if it is kept
     seeds = ({ident for ident, item in layout.items.items() if item.kind in METADATA_ITEMS and not item.xmp}
              | {ident for ident, urn in auxiliary.items() if urn in EDITING_AUXILIARIES}
              | {origin for kind, origin, _ in layout.references if kind == b"thmb"}
-             | {ident for ident, item in layout.items.items() if item.xmp and without_hdr_fields(data, layout, ident)})
+             | {ident for ident, packet in packets.items() if packet == b""})
     deleted = removed_items(layout, seeds)
     live = set(layout.items) - deleted
     check_jpeg_items(data, layout, live)
     retained = movie.merged([span for ident in live for span in layout.extents[ident]] + samples)
-    for ident in deleted:
-        for start, end in layout.extents[ident]:
-            if movie.overlaps(retained, start, end):
-                raise unsupported("removed item shares data with a retained one")
-            result[start:end] = bytes(end - start)
+    for start, end in movie.merged([span for ident in deleted for span in layout.extents[ident]]):
+        if movie.overlaps(retained, start, end):
+            raise unsupported("removed item shares data with a retained one")
+        result[start:end] = bytes(end - start)
     for ident in live:
         if layout.items[ident].xmp:
-            packet, position = hdr_xmp(data, layout, ident), 0
+            packet, position = packets[ident], 0
+            if isinstance(packet, StructureError):
+                raise packet
             for start, end in layout.extents[ident]:
                 result[start:end] = packet[position:position + end - start]
                 position += end - start
@@ -241,9 +244,8 @@ def check_items(data, layout):
         raise unsupported("metadata item reference")
     # Item data must lie in mdat or idat: that is where unused bytes are zeroed, and
     # nothing there is emptied.
-    media = media_spans(layout.top, layout)
-    if any(start < end and not any(a <= start and end <= b for a, b in media)
-           for spans in layout.extents.values() for start, end in spans):
+    if not movie.inside([span for spans in layout.extents.values() for span in spans],
+                        sorted(media_spans(layout.top, layout))):
         raise unsupported("item data outside mdat and idat")
     check_tone_maps(data, layout)
     return auxiliary
@@ -252,10 +254,14 @@ def check_items(data, layout):
 def check_jpeg_items(data, layout, idents):
     """The JPEG image items among `idents` hold only what decodes them (see
     jpeg_stream), their jpgC header before their data."""
+    checked = set()
     for ident in idents:
         if layout.items[ident].kind == b"jpeg":
             properties = (layout.props.get(index) for index in layout.associations.get(ident, []))
             header = b"".join(bytes(data[prop.content:prop.end]) for prop in properties if prop and prop.kind == b"jpgC")
+            if (header, tuple(layout.extents[ident])) in checked:  # items may name the same data any number of times
+                continue
+            checked.add((header, tuple(layout.extents[ident])))
             payload = b"".join(data[start:end] for start, end in layout.extents[ident])
             if header and payload[:2] != b"\xff\xd8":  # the header lacks its SOI, then
                 header = (b"" if header[:2] == b"\xff\xd8" else b"\xff\xd8") + header
@@ -268,6 +274,8 @@ def check_tone_maps(data, layout):
     metadata; its data is kept as it is, so it must be exactly that."""
     for ident, item in layout.items.items():
         if item.kind == b"tmap":
+            if sum(end - start for start, end in layout.extents[ident]) > TONE_MAP_SIZE:
+                raise unsupported("gain map metadata, size")
             payload = b"".join(data[start:end] for start, end in layout.extents[ident])
             try:
                 if payload[:1] != b"\0":
@@ -280,8 +288,9 @@ def check_tone_maps(data, layout):
 
 def removed_items(layout, seeds):
     """The seeds, the images only they are built from, and their descriptions."""
-    candidates = with_sources(layout, seeds)
-    needed = with_sources(layout, set(layout.items) - candidates)
+    sources = derived_from(layout)
+    candidates = with_sources(sources, seeds)
+    needed = with_sources(sources, set(layout.items) - candidates)
     if layout.primary in candidates or seeds & needed:
         raise unsupported("an image needed for display depends on removed data")
     deleted = candidates - needed
@@ -293,39 +302,56 @@ def removed_items(layout, seeds):
     return deleted
 
 
-def with_sources(layout, roots):
-    """The roots and, recursively, every image a derived image (dimg) among them is built from."""
-    found = set(roots)
-    while True:
-        grown = found | {target for kind, origin, targets in layout.references
-                         if kind == b"dimg" and origin in found for target in targets}
-        if grown == found:
-            return found
-        found = grown
+def derived_from(layout):
+    """{derived image: [images it is built from]}, from the dimg references."""
+    sources = {}
+    for kind, origin, targets in layout.references:
+        if kind == b"dimg":
+            sources.setdefault(origin, []).extend(targets)
+    return sources
 
 
-def hdr_xmp(data, layout, ident):
-    """An XMP item's packet reduced to its HDR fields and padded with spaces to
-    its old length, so no offsets move; b"" if no field remains."""
-    raw = b"".join(data[start:end] for start, end in layout.extents[ident])
-    if len(raw) > MAX_XMP:
-        raise unsupported("oversized XMP")
+def with_sources(sources, roots):
+    """The roots and, recursively, every image a derived image among them is built from."""
+    found, pending = set(roots), list(roots)
+    while pending:
+        for target in sources.get(pending.pop(), ()):
+            if target not in found:
+                found.add(target)
+                pending.append(target)
+    return found
+
+
+def hdr_packets(data, layout):
+    """{id: packet} for the XMP items: the packet reduced to its HDR fields and
+    padded with spaces to its old length, so no offsets move; b"" if no field
+    remains, and the error if it cannot be read, which matters only if the item
+    is kept. A packet too large to read is one that holds none: no HDR photo
+    keeps its few fields in megabytes. Items may name the same data any number
+    of times, and it is reduced once."""
+    reduced, packets, size = {}, {}, 0
+    for ident, item in layout.items.items():
+        if item.xmp:
+            spans = tuple(layout.extents[ident])
+            if spans not in reduced:
+                length = sum(end - start for start, end in spans)
+                size += length if length <= MAX_XMP else 0
+                if size > 4 * MAX_XMP:
+                    raise unsupported("XMP of more than %d bytes in all" % (4 * MAX_XMP))
+                raw = b"".join(data[start:end] for start, end in spans) if length <= MAX_XMP else b""
+                reduced[spans] = hdr_packet(raw) if raw else b""
+            packets[ident] = reduced[spans]
+    return packets
+
+
+def hdr_packet(raw):
     try:
         packet = xmp.hdr_packet(xmp.hdr_fields(raw))
     except xmp.XMPError as error:
-        raise unsupported("unreadable XMP: %s" % error)
+        return unsupported("unreadable XMP: %s" % error)
     if len(packet) > len(raw):
-        raise unsupported("reduced XMP exceeds its space")
+        return unsupported("reduced XMP exceeds its space")
     return packet and packet + b" " * (len(raw) - len(packet))
-
-
-def without_hdr_fields(data, layout, ident):
-    """Whether an XMP item has no HDR fields. An unreadable one only matters if
-    the item is kept, and is refused then."""
-    try:
-        return not hdr_xmp(data, layout, ident)
-    except StructureError:
-        return False
 
 
 def rewrite_tables(data, layout, deleted, live, result):
@@ -486,7 +512,7 @@ def item_properties(data, layout, live, kept):
     """iprp with every property but the kept ones turned into a free box, which
     keeps each property's index. A live item's other associations become index
     0, "no property", so the tables keep their size."""
-    parts = []
+    parts, listed_items = [], dict(layout.association_boxes)
     for part in bmff.boxes(data, layout.prop_box.content, layout.prop_box.end):
         if part.kind == b"ipco":
             parts.append(bmff.box(b"ipco", b"".join(bytes(data[prop.start:prop.end]) if index in kept else blank(prop)
@@ -496,7 +522,7 @@ def item_properties(data, layout, live, kept):
             id_width, index_width = (2 if data[part.content] == 0 else 4), (2 if data[part.content + 3] & 1 else 1)
             flag = 1 << (index_width * 8 - 1)  # marks a property as essential
             entries = []
-            for ident in next(idents for found, idents in layout.association_boxes if found == part):
+            for ident in listed_items[part]:
                 if ident in live:
                     indices = layout.associations[ident]
                     entries.append(ident.to_bytes(id_width, "big") + bytes([len(indices)]) + b"".join(
@@ -540,15 +566,29 @@ def fill(result, start, end, parts):
     result[start:end] = payload + (bmff.box(b"free", bytes(gap - 8)) if gap else b"")
 
 
-def item_profiles(data, layout, ident):
-    """The ICC profiles of the colr properties associated with an item."""
+def profile_spans(data, layout, ident):
+    """(start, end) of the ICC profile in each colr property associated with an item."""
     found = []
     for index in layout.associations.get(ident, []):
         if index:
             prop = layout.props[index]
             if prop.kind == b"colr" and data[prop.content:prop.content + 4] in (b"prof", b"rICC"):
-                found.append(data[prop.content + 4:prop.end])
+                found.append((prop.content + 4, prop.end))
     return found
+
+
+def item_profiles(data, layout, ident):
+    """The ICC profiles of the colr properties associated with an item."""
+    return [data[start:end] for start, end in profile_spans(data, layout, ident)]
+
+
+def profile_matches(original, wanted, rebuilt, found, known):
+    """Whether the profile at `found` in the rebuilt file is the one at `wanted`
+    in the original, sanitized. `known` holds the answers, one for each pair:
+    items may share a profile."""
+    if (wanted, found) not in known:
+        known[wanted, found] = rebuilt[found[0]:found[1]] == icc.sanitize(bytes(original[wanted[0]:wanted[1]]))
+    return known[wanted, found]
 
 
 def profiles(data, start, end):
@@ -607,7 +647,7 @@ def unused_media(data):
         if found.kind == b"moov":
             used += movie.movie_ranges(data, found)
     used.sort()
-    return [gap for start, end in media_spans(top, layout) for gap in gaps(used, start, end)]
+    return list(uncovered(used, sorted(media_spans(top, layout))))
 
 
 def media_spans(top, layout):
@@ -658,17 +698,22 @@ def check_cleaned_items(original, before, rebuilt, after):
     auxiliary = bmff.auxiliary_types(rebuilt, after)
     if set(auxiliary.values()) - DISPLAY_AUXILIARIES or any(kind == b"thmb" for kind, _, _ in after.references):
         fail("editing image or thumbnail kept")
-    checked = set()
+    # Items may name the same data or the same properties any number of times: each is looked at once.
+    checked, reduced, profiles, images = set(), {}, {}, set()
     for ident, item in after.items.items():
-        content = b"".join(rebuilt[a:b] for a, b in after.extents[ident])
+        spans = tuple(after.extents[ident])
         if item.xmp:
-            packet = content.rstrip(b" ")
-            if xmp.hdr_packet(xmp.hdr_fields(packet)) != packet:
+            if spans not in reduced:
+                packet = b"".join(rebuilt[a:b] for a, b in spans).rstrip(b" ")
+                reduced[spans] = xmp.hdr_packet(xmp.hdr_fields(packet)) == packet
+            if not reduced[spans]:
                 fail("XMP holds more than HDR fields")
         elif item.kind not in IMAGE_ITEMS:
             fail("metadata item kept")
-        elif content != b"".join(original[a:b] for a, b in before.extents[ident]):
-            fail("image item %d changed" % ident)
+        elif spans != tuple(before.extents[ident]):
+            fail("image item %d moved" % ident)
+        else:
+            images.update(spans)
         if rebuilt[item.name[0]:item.name[1]].strip(b" "):
             fail("item name kept")
         for index in after.associations.get(ident, []):
@@ -679,9 +724,12 @@ def check_cleaned_items(original, before, rebuilt, after):
                 check_size(rebuilt, prop)
                 checked.add(index)
         # Item tables may be compacted, so item profiles are matched by item.
-        if item_profiles(rebuilt, after, ident) != [icc.sanitize(profile)
-                                                    for profile in item_profiles(original, before, ident)]:
+        wanted, found = profile_spans(original, before, ident), profile_spans(rebuilt, after, ident)
+        if len(wanted) != len(found) or not all(profile_matches(original, a, rebuilt, b, profiles)
+                                                for a, b in zip(wanted, found)):
             fail("color profile of item %d not sanitized" % ident)
+    if not movie.same(original, rebuilt, movie.merged(images)):
+        fail("image data changed")
 
 
 def fail(detail):

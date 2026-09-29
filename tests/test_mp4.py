@@ -13,7 +13,7 @@ from unittest.mock import patch
 
 from magicdispel import core, exiftool
 from magicdispel.errors import FormatError, VerificationError
-from magicdispel.formats import bmff, mp4
+from magicdispel.formats import bmff, movie, mp4
 
 MARKER = b"MD_VIDEO_PRIVATE"
 TIMES = struct.pack(">II", 3_800_000_000, 3_800_000_001)
@@ -479,6 +479,20 @@ class TableTests(VideoTests):
         self.assertRefused(huge, "damaged")  # samples past the end of the file
         self.assertRefused(data.replace(b"stsd\0\0\0\0\0\0\0\1", b"stsd\0\0\0\0" + struct.pack(">I", billions)),
                            "damaged")
+
+    def test_tables_of_more_chunks_than_can_be_checked_are_refused_at_once(self):
+        # A hundred bytes of memory to check each: 6 million chunks in a 24 MB table took 1.6 GB.
+        with patch.object(movie, "MAX_CHUNKS", 0):
+            self.assertRefused(plain_video())
+        self.assertCleaned(plain_video())
+
+    def test_spare_spans_are_found_by_where_they_start(self):
+        # Every box of a movie asks for those inside it; asking of the whole list took minutes for a long one.
+        spare = [(10, 12), (20, 24), (30, 31), (30, 40), (50, 51)]
+        for found, expected in ((bmff.Box(b"x", 15, 20, 31), [(20, 24), (30, 31), (30, 40)]),
+                                (bmff.Box(b"x", 0, 8, 10), []), (bmff.Box(b"x", 0, 8, 100), spare)):
+            with self.subTest(found=found):
+                self.assertEqual(movie.spare_within(spare, found), expected)
 
     def test_sample_groups_stay_only_when_every_byte_is_checked(self):
         def sgpd(kind, descriptions, size, version=1, default=0):

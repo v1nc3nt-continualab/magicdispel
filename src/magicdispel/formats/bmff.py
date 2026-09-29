@@ -7,11 +7,16 @@ descriptions, thumbnails), and which properties each has (iprp: ipco holds
 the properties, ipma associates them with items). `layout` reads all of that
 without decoding any pixels, and checks it is consistent.
 """
+import itertools
 import struct
 from dataclasses import dataclass
 from typing import NamedTuple
 
 XMP_TYPE = b"application/rdf+xml\0"
+# What one file may hold of each: real ones have hundreds of boxes, and a file
+# that names millions, with a few bytes each, takes gigabytes of memory to read.
+MAX_BOXES = 1 << 18      # boxes in one container
+MAX_ENTRIES = 1 << 20    # item data extents, item references and their targets
 # Metadata item types. Programs that delete metadata in place, ExifTool among
 # them, leave such items with no data, so they may be empty.
 METADATA_ITEMS = {b"Exif", b"uri ", b"mime", b"jumb"}
@@ -71,7 +76,11 @@ class Layout:
 def boxes(data, start=0, end=None):
     """The boxes between start and end, in order."""
     end = len(data) if end is None else end
-    while start < end:
+    for count in itertools.count(1):
+        if start >= end:
+            return
+        if count > MAX_BOXES:
+            raise unsupported("more than %d boxes in one" % MAX_BOXES)
         if start + 8 > end:
             raise StructureError("truncated box")
         size, kind = struct.unpack_from(">I4s", data, start)
@@ -156,6 +165,7 @@ def layout(data):
         data, location, idat, {ident for ident, item in items.items() if item.kind in METADATA_ITEMS})
     if items.keys() != extents.keys():
         raise StructureError("item information and locations differ")
+    check_shared_data(extents)
     reference_box = one(b"iref", optional=True)
     references = read_references(data, reference_box, items) if reference_box else []
     prop_box = one(b"iprp", optional=True)
@@ -248,8 +258,10 @@ def read_locations(data, location, idat, empty_allowed=()):
         return value
 
     count = number(id_size)
+    if count > MAX_BOXES:
+        raise unsupported("%d items" % count)
     prefix = bytes(data[content:p - id_size])
-    entries, found = {}, {}
+    entries, found, total = {}, {}, 0
     for _ in range(count):
         begin = p
         ident = number(id_size)
@@ -257,7 +269,11 @@ def read_locations(data, location, idat, empty_allowed=()):
         reference = number(2)
         base = number(base_size)
         extents = []
-        for _ in range(number(2)):
+        wanted = number(2)
+        total += wanted  # before reading them: extents can be of no size, and 65535 of them cost nothing to name
+        if total > MAX_ENTRIES:
+            raise unsupported("more than %d item data extents" % MAX_ENTRIES)
+        for _ in range(wanted):
             index = number(index_size)
             relative, size = number(offset_size), number(length_size)
             if method not in (0, 1) or reference or index:
@@ -281,13 +297,22 @@ def read_locations(data, location, idat, empty_allowed=()):
     return prefix, id_size, entries, found
 
 
+def check_shared_data(extents):
+    """Items share item data only when they name it alike: of two ranges, one is
+    the other or the two are apart. Ranges that overlap otherwise would make
+    checking each item cost the size of the data again."""
+    spans = sorted({span for found in extents.values() for span in found if span[0] < span[1]})
+    if any(after[0] < before[1] for before, after in zip(spans, spans[1:])):
+        raise unsupported("item data of items that overlaps in part")
+
+
 def read_references(data, iref, items):
     """[(kind, origin, [targets])] from iref; every ID must be a known item."""
     content, end = iref.content, iref.end
     if end - content < 4 or data[content] not in (0, 1):
         raise unsupported("item reference version")
     width = 2 if data[content] == 0 else 4
-    references = []
+    references, total = [], 0
     for reference in boxes(data, content + 4, end):
         body, stop = reference.content, reference.end
         if body + width + 2 > stop:
@@ -296,6 +321,9 @@ def read_references(data, iref, items):
         count = int.from_bytes(data[body + width:body + width + 2], "big")
         if body + width + 2 + count * width != stop:
             raise StructureError("invalid item reference count")
+        total += 1 + count
+        if total > MAX_ENTRIES:
+            raise unsupported("more than %d item references" % MAX_ENTRIES)
         targets = [int.from_bytes(data[p:p + width], "big") for p in range(body + width + 2, stop, width)]
         if origin not in items or any(target not in items for target in targets):
             raise StructureError("dangling item reference")

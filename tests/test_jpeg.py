@@ -247,9 +247,51 @@ class RebuildTests(unittest.TestCase):
         rebuilt = self.assertRebuilt(data)
         kept = [marker for marker, _ in markers(rebuilt) if marker >= 0xE0]
         self.assertEqual(kept, [0xEA, 0xE2, 0xEE])  # the Adobe segment is needed for CMYK
+        points = jpeg.MAX_CURVE_POINTS + 1
+        long_curve = b"AROT\0\0" + struct.pack(">I", points) + bytes(4 * points)
+        for refused in (curve + MARKER, long_curve):
+            with self.subTest(size=len(refused)), self.assertRaises(FormatError) as caught:
+                jpeg.rebuild(with_segments(encode(gradient()), app(0xEA, refused)))
+            self.assertEqual(caught.exception.key, "unsupported_part")
+
+    def test_what_an_image_holds_once_is_kept_once(self):
+        curve = b"AROT\0\0" + struct.pack(">I", 2) + struct.pack(">2f", 0.5, 1.0) + bytes(8)
+        other_curve = b"AROT\0\0" + struct.pack(">I", 2) + struct.pack(">2f", 0.25, 2.0)
+        iso, other_iso = (ISO_NAMESPACE + iso_metadata(), ISO_NAMESPACE + iso_metadata(channels=3, common=True))
+        for image in (gradient("CMYK"), gradient()):
+            with self.subTest(mode=image.mode):
+                base = encode(image)
+                plain = self.assertRebuilt(with_segments(base, app(0xEA, curve), app(0xE2, iso)))
+                # The segments in the order of the file: the first of each kind is the one a decoder reads.
+                first = {m: base[s:e] for m, s, e, p in reversed(list(jpeg.segments(base))) if m in (0xE0, 0xEE)}
+                repeated = base
+                for marker, fake in ((0xE0, app(0xE0, b"JFIF\0\x01\x01\x01\x01\x2c\x01\x2c\0\0")),
+                                     (0xEE, app(0xEE, b"Adobe\0\x64\xff\xff\xff\xff\x00"))):
+                    if marker in first:
+                        repeated = repeated.replace(first[marker], first[marker] + fake * 3, 1)
+                repeated = with_segments(repeated, app(0xEA, curve), app(0xEA, other_curve), app(0xE2, iso),
+                                         app(0xE2, other_iso))
+                self.assertNotEqual(repeated, base)
+                self.assertEqual(self.assertRebuilt(repeated), plain)
+
+    def test_endless_segments_are_refused_at_once(self):
+        # 16 MB of empty segments took 18 seconds and 600 MB.
+        data = encode(gradient())
+        self.assertRebuilt(with_segments(data, *[app(0xE5, b"")] * 60000))
         with self.assertRaises(FormatError) as caught:
-            jpeg.rebuild(with_segments(encode(gradient()), app(0xEA, curve + MARKER)))
+            jpeg.rebuild(with_segments(data, *[app(0xE5, b"")] * 70000))
         self.assertEqual(caught.exception.key, "unsupported_part")
+
+    def test_an_extended_packet_too_large_to_read_is_ignored(self):
+        guid = b"2BA2AD3A56A6091B0E1B8F3A519AB2D0"
+        main = xmp_packet(b'xmpNote:HasExtendedXMP="' + guid + b'"',
+                          namespaces=b'xmlns:xmpNote="http://ns.adobe.com/xmp/note/"')
+        extension = xmp_packet(b'hdrgm:Version="1.0"', namespaces=b'xmlns:hdrgm="http://ns.adobe.com/hdr-gain-map/1.0/"')
+        for total, kept in ((len(extension), True), (jpeg.MAX_EXTENDED_XMP + 1, False)):
+            with self.subTest(total=total):
+                piece = app(0xE1, EXTENSION_ID + guid + struct.pack(">II", total, 0) + extension)
+                rebuilt = self.assertRebuilt(with_segments(encode(gradient()), app(0xE1, XMP_ID + main), piece))
+                self.assertEqual(b"hdrgm:Version" in rebuilt, kept)
 
     def test_iso_gain_map_metadata_keeps_the_fields_of_its_layout_only(self):
         namespace = b"urn:iso:std:iso:ts:21496:-1\0"

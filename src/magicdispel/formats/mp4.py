@@ -273,6 +273,8 @@ def top_boxes(data):
             found.append(next(bmff.boxes(data, position, len(data))))
         except StructureError:
             break
+        if len(found) > bmff.MAX_BOXES:
+            raise unsupported("more than %d boxes in one" % bmff.MAX_BOXES)
         position = found[-1].end
     if not found or found[0].kind != b"ftyp" and found[0].kind not in QUICKTIME_ATOMS:
         raise StructureError("no file type box")

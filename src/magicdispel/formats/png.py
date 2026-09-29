@@ -7,7 +7,13 @@ is sanitized and EXIF is reduced to the orientation. Everything else is
 dropped: text, time stamps, C2PA manifests, Apple's decoding hints (iDOT),
 private chunks and anything after IEND. An unknown critical chunk is refused,
 because the PNG rules forbid decoders from skipping it.
+
+A chunk that may come once is kept once, the first, and if it comes before the
+image data, as decoders read them; the suggested palette of a truecolor image
+is dropped. Image data is cut into chunks of one size and APNG sequence
+numbers are written afresh, so how a writer framed its data says nothing.
 """
+import itertools
 import struct
 import zlib
 
@@ -27,7 +33,13 @@ KEPT = {
     b"acTL": {8}, b"fcTL": {26}, b"fdAT": None,
 }
 REWRITTEN = {b"iCCP", b"eXIf"}
+# Chunks that come once, and of those the ones that must come before the image data.
+BEFORE_IMAGE = {b"gAMA", b"cHRM", b"sRGB", b"iCCP", b"cICP", b"sBIT", b"mDCV", b"cLLI", b"pHYs", b"bKGD", b"acTL"}
+ONCE = BEFORE_IMAGE | {b"eXIf"}
+FRAME = 1 << 16  # bytes of image data in each IDAT or fdAT chunk
 CHANNELS = {0: 1, 2: 3, 3: 1, 4: 2, 6: 4}
+# Payload sizes of the chunks whose size depends on the color type: bKGD, and sBIT (a byte per channel).
+BACKGROUND_SIZES = {0: 2, 2: 6, 3: 1, 4: 2, 6: 6}
 BIT_DEPTHS = {0: {1, 2, 4, 8, 16}, 2: {8, 16}, 3: {1, 2, 4, 8}, 4: {8, 16}, 6: {8, 16}}
 # Adam7 passes: first column, first row, column step, row step.
 ADAM7 = ((0, 0, 8, 8), (4, 0, 8, 8), (0, 4, 4, 8), (2, 0, 4, 4), (0, 2, 2, 4), (1, 0, 2, 2), (0, 1, 1, 2))
@@ -61,11 +73,20 @@ def check_structure(data):
 
 def selected_chunks(data):
     """The (type, payload) pairs a clean copy holds, in the original's order."""
-    parts = []
+    parts, seen = [], set()
     for index, (kind, payload, crc_ok) in enumerate(chunks(data)):
-        if index == 0 and kind != b"IHDR":
+        if (index == 0) != (kind == b"IHDR"):
             raise damaged()
         if (kind in KEPT or kind in REWRITTEN) and not crc_ok:
+            raise damaged()
+        if (kind in ONCE and kind in seen) or (kind in BEFORE_IMAGE and b"IDAT" in seen):
+            continue  # a decoder skips a chunk that comes again or too late
+        if kind in (b"fcTL", b"fdAT") and b"acTL" not in seen:
+            continue  # frames of an animation that is not declared
+        if kind == b"PLTE" and parts[0][1][9] in (2, 6):
+            continue  # a suggestion, of colors to use on a display of few
+        seen.add(kind)
+        if kind == b"fdAT" and len(payload) < 4:
             raise damaged()
         if kind in KEPT:
             if KEPT[kind] is not None and len(payload) not in KEPT[kind]:
@@ -79,7 +100,28 @@ def selected_chunks(data):
                 parts.append((kind, exif.build(exif.DisplayFields(orientation=orientation))))
         elif not kind[0] & 0x20:
             raise FormatError("unsupported_part", format="PNG", part=kind.decode())
-    return parts
+    return numbered(framed(parts))
+
+
+def framed(parts):
+    """`parts` with each run of IDAT chunks, and of fdAT chunks, cut again into
+    chunks of one size."""
+    result = []
+    for kind, run in itertools.groupby(parts, key=lambda part: part[0]):
+        if kind in (b"IDAT", b"fdAT"):
+            start = 4 if kind == b"fdAT" else 0  # after a sequence number
+            data = b"".join(payload[start:] for _, payload in run)
+            result += [(kind, bytes(start) + data[n:n + FRAME]) for n in range(0, len(data), FRAME)]
+        else:
+            result += run
+    return result
+
+
+def numbered(parts):
+    """`parts` with the sequence numbers of fcTL and fdAT chunks counting from 0, as APNG requires."""
+    count = itertools.count()
+    return [(kind, struct.pack(">I", next(count)) + payload[4:]) if kind in (b"fcTL", b"fdAT") else (kind, payload)
+            for kind, payload in parts]
 
 
 def is_animated(data):
@@ -140,6 +182,7 @@ def check_image_data(parts):
     if width * height > pixels.MEGAPIXELS * 1_000_000:  # before inflating anything
         raise FormatError("too_large", format="PNG", limit=pixels.MEGAPIXELS)
     check_palette(parts, color)
+    check_values(parts, color, depth)
     bits = CHANNELS[color] * depth
     check_stream([payload for kind, payload in parts if kind == b"IDAT"],
                  scanline_bytes(width, height, bits, interlace))
@@ -172,6 +215,30 @@ def check_palette(parts, color):
     # tRNS: a gray level (2 bytes), an RGB color (6), or up to one alpha per palette entry.
     if alphas and len(alphas[0]) not in {0: {2}, 2: {6}, 3: set(range(1, entries + 1))}.get(color, ()):
         raise damaged()
+
+
+def check_values(parts, color, depth):
+    """Chunks hold what their standard defines and no more: sizes that fit the
+    color type, and values within range."""
+    size = {0: 1, 2: 3, 3: 3, 4: 2, 6: 4}[color]  # of sBIT
+    entries = sum(len(payload) // 3 for kind, payload in parts if kind == b"PLTE")
+    for kind, payload in parts:
+        if kind == b"bKGD":
+            samples = [payload[0]] if color == 3 else struct.unpack(">%dH" % (len(payload) // 2), payload)
+            valid = len(payload) == BACKGROUND_SIZES[color] and all(
+                value < (entries if color == 3 else 1 << depth) for value in samples)
+        elif kind == b"sBIT":
+            valid = len(payload) == size and all(1 <= value <= (8 if color == 3 else depth) for value in payload)
+        elif kind == b"sRGB":
+            valid = payload[0] <= 3  # a rendering intent
+        elif kind == b"cICP":
+            valid = payload[2] == 0 and payload[3] <= 1  # RGB, not YCbCr; a full-range flag
+        elif kind == b"pHYs":
+            valid = payload[8] <= 1  # meters, or no unit
+        else:
+            continue
+        if not valid:
+            raise damaged()
 
 
 def scanline_bytes(width, height, bits, interlace):

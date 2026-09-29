@@ -28,6 +28,9 @@ SUFFIXES = {"JPEG": (".jpg", ".jpeg", ".jpe"), "PNG": (".png",), "APNG": (".png"
             "MP4": VIDEO_SUFFIXES, "MOV": (".mov",) + VIDEO_SUFFIXES}
 
 
+TIFF_SIGNATURES = (b"II*\0", b"MM\0*", b"II+\0", b"MM\0+")  # the last two are BigTIFF
+
+
 def identify(data):
     """The format name from a file's leading bytes, or None for other files."""
     if data[4:8] == b"ftyp":
@@ -42,11 +45,19 @@ def identify(data):
         return "WEBP"
     if data[:6] in (b"GIF87a", b"GIF89a"):
         return "GIF"
-    if data[:4] in (b"II*\0", b"MM\0*", b"II+\0", b"MM\0+"):  # the last two are BigTIFF
+    if data[:4] in TIFF_SIGNATURES:
         return "TIFF"
     if data[:2] == b"BM":
         return "BMP"
     return None
+
+
+def recognized(head):
+    """Whether a file's first bytes are those of a format read here. Any other
+    file can be refused on these alone, without reading the rest of it."""
+    return (head[4:8] == b"ftyp" or head[4:8] in mp4.QUICKTIME_ATOMS or head.startswith(png.SIGNATURE)
+            or head[:3] == b"\xff\xd8\xff" or (head[:4] == b"RIFF" and head[8:12] == b"WEBP")
+            or head[:6] in (b"GIF87a", b"GIF89a") or head[:4] in TIFF_SIGNATURES or head[:2] == b"BM")
 
 
 def video_format(head):

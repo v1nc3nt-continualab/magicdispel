@@ -144,6 +144,7 @@ PCM = set(PCM_BITS) | set(ENTRY_BITS) | ISO_PCM | {LPCM}
 PACKED = {b"ima4": (34, 64)}
 CHUNK = 1 << 20
 BLOCK = 1 << 16  # table entries read at a time
+MAX_CHUNKS = 1 << 21  # of one track: a sample to each makes 20 hours at 30 frames a second; more take gigabytes to check
 
 
 @dataclass(frozen=True)
@@ -731,6 +732,9 @@ def track_table(data, trak):
                     raise StructureError("invalid %s table" % kind.decode("latin-1"))
                 previous = number
     spare = check_sample_groups(data, parts, count)
+    for kind in (b"stsc", b"stco", b"co64"):
+        if kind in parts and int.from_bytes(data[parts[kind][0].content + 4:parts[kind][0].content + 8], "big") > MAX_CHUNKS:
+            raise unsupported("more than %d chunks in a track" % MAX_CHUNKS)
     runs = list(entries_of(data, stsc, ">III"))  # from chunk `first` on, each holds `samples` of description `index`
     offsets = parts.get(b"co64") or parts[b"stco"]
     chunks = [offset for offset, in entries_of(data, offsets[0], ">Q" if offsets[0].kind == b"co64" else ">I")]
@@ -1077,7 +1081,7 @@ def check(original, rebuilt, moov, policy):
         for kind, targets in track.references:
             if not set(targets) <= idents or (policy.references is not None and kind not in policy.references):
                 fail("reference to a removed track")
-    spare = [span for track in found for span in track_table(rebuilt, track.box).spare]
+    spare = sorted(span for track in found for span in track_table(rebuilt, track.box).spare)
     check_container(original, rebuilt, moov, policy, None, spare)
     return found
 
@@ -1110,9 +1114,14 @@ def check_container(original, rebuilt, container, policy, track_handler, spare):
             check_entries(original, rebuilt, found, policy, track_handler)
         else:
             check_layout(rebuilt, found)
-            cleared = cleared_fields(rebuilt, found) + [span for span in spare if found.content <= span[0] < found.end]
+            cleared = cleared_fields(rebuilt, found) + spare_within(spare, found)
             if not matches(original, rebuilt, found, cleared):
                 fail("box %r changed, or names or times kept" % found.kind)
+
+
+def spare_within(spare, found):
+    """The spans of the sorted `spare` that start inside a box."""
+    return spare[bisect.bisect_left(spare, (found.content,)):bisect.bisect_left(spare, (found.end,))]
 
 
 def rewritten(original, rebuilt, container, found, policy):

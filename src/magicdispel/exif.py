@@ -37,7 +37,7 @@ def display_fields(data):
     ifd0 = reader.directory(reader.first_directory())
     exif_ifd = reader.directory(reader.pointer(ifd0.get(EXIF_POINTER)))
     interop = reader.directory(reader.pointer(exif_ifd.get(INTEROP_POINTER)))
-    orientation = reader.number(ifd0.get(ORIENTATION), SHORT)
+    orientation = reader.small_number(ifd0.get(ORIENTATION))
     x, y = reader.rational(ifd0.get(X_RESOLUTION)), reader.rational(ifd0.get(Y_RESOLUTION))
     unit = reader.number(ifd0.get(RESOLUTION_UNIT), SHORT) or 2
     index = reader.text(interop.get(INTEROP_INDEX))
@@ -48,7 +48,7 @@ def display_fields(data):
         color_space=reader.number(exif_ifd.get(COLOR_SPACE), SHORT),
         interop_index=index if index in (b"R98", b"R03") else None,
         # The standard type is UNDEFINED; some writers (Pillow among them) use BYTE.
-        apple_hdr=apple_hdr_note(note[2]) if note and note[0] in (BYTE, UNDEFINED) else None,
+        apple_hdr=apple_hdr_note(reader.value(note)) if note and note[0] in (BYTE, UNDEFINED) else None,
     )
 
 
@@ -151,7 +151,9 @@ class _Reader:
         return header[1] if header and header[0] == 42 else None
 
     def directory(self, offset):
-        """{tag: (type, count, value bytes)} for one IFD; {} if unreadable."""
+        """{tag: (type, count, start, size)} for one IFD; {} if unreadable. The
+        values are read by `value` when wanted: a directory may name the same
+        large range for any number of its entries."""
         count = self.unpack("H", offset) if offset else None
         if not count:
             return {}
@@ -165,13 +167,23 @@ class _Reader:
             start = offset + 2 + 12 * index + 8 if size <= 4 else value
             if not size or start + size > len(self.data):
                 continue
-            entries[tag] = (kind, number, self.data[start:start + size])
+            entries[tag] = (kind, number, start, size)
         return entries
+
+    def value(self, entry):
+        _, _, start, size = entry
+        return self.data[start:start + size]
 
     def number(self, entry, kind):
         if entry is None or entry[0] != kind or entry[1] != 1:
             return None
-        return struct.unpack(self.order + {SHORT: "H", LONG: "I"}[kind], entry[2])[0]
+        return struct.unpack(self.order + {SHORT: "H", LONG: "I"}[kind], self.value(entry))[0]
+
+    def small_number(self, entry):
+        """A number that one byte, one short or one long holds: writers differ in which."""
+        if entry is None or entry[0] not in (BYTE, SHORT, LONG) or entry[1] != 1:
+            return None
+        return int.from_bytes(self.value(entry), "big" if self.order == ">" else "little")
 
     def pointer(self, entry):
         if entry is not None and entry[0] == IFD:
@@ -181,8 +193,8 @@ class _Reader:
     def rational(self, entry):
         if entry is None or entry[0] != RATIONAL or entry[1] != 1:
             return None
-        numerator, denominator = struct.unpack(self.order + "II", entry[2])
+        numerator, denominator = struct.unpack(self.order + "II", self.value(entry))
         return (numerator, denominator) if numerator and denominator else None
 
     def text(self, entry):
-        return entry[2].rstrip(b"\0") if entry and entry[0] == ASCII else None
+        return self.value(entry).rstrip(b"\0") if entry and entry[0] == ASCII else None

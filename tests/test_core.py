@@ -1,4 +1,5 @@
 """The cleaning pipeline: what has to pass before anything is saved."""
+import io
 import os
 import stat
 import tempfile
@@ -8,8 +9,8 @@ from unittest.mock import patch
 
 from PIL import Image
 
-from magicdispel import core
-from magicdispel.errors import FormatError, VerificationError
+from magicdispel import core, formats
+from magicdispel.errors import FormatError, InputError, VerificationError
 from magicdispel.formats import png
 
 
@@ -23,6 +24,29 @@ class PipelineTests(unittest.TestCase):
                 core.clean(str(photo))
             self.assertEqual(caught.exception.key, "verification_failed")
             self.assertEqual(sorted(path.name for path in Path(folder).iterdir()), ["photo.png"])
+
+    def test_a_file_of_another_kind_is_refused_without_reading_it(self):
+        # A large file that is not a photo must not be read into memory to be turned away.
+        with tempfile.TemporaryDirectory(prefix="core-") as folder:
+            for name, head in (("paper.pdf", b"%PDF-1.7\n"), ("archive.zip", b"PK\x03\x04"), ("empty.jpg", b"")):
+                path = Path(folder, name)
+                path.write_bytes(head + bytes(1 << 20))
+                with self.subTest(name), patch.object(Path, "read_bytes", side_effect=AssertionError("read")), \
+                        self.assertRaises(InputError) as caught:
+                    core.clean(str(path))
+                self.assertEqual(caught.exception.key, "unsupported_format")
+
+    def test_the_first_bytes_of_every_format_are_recognized(self):
+        photo = Image.new("RGB", (8, 8), "green")
+        for format in ("PNG", "JPEG", "GIF", "WEBP", "TIFF", "BMP"):
+            buffer = io.BytesIO()
+            photo.save(buffer, format)
+            with self.subTest(format=format):
+                self.assertTrue(formats.recognized(buffer.getvalue()[:core.HEAD]))
+                self.assertIsNotNone(formats.identify(buffer.getvalue()))
+        for head in (b"\0\0\0\x18ftypheic", b"\0\0\0\x14ftypqt  ", b"\0\0\0\x08wide", b"\xff\xd8\xff", b"II+\0"):
+            with self.subTest(head=head):
+                self.assertTrue(formats.recognized(head))
 
     def test_nothing_is_saved_when_a_file_cannot_be_cleaned(self):
         with tempfile.TemporaryDirectory(prefix="core-") as folder:
