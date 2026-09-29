@@ -306,7 +306,7 @@ clean the same way, keeping their scene illuminance. It also holds 396 small fil
 tests with FFmpeg, macOS's avconvert, AVAssetWriter and ImageIO, and ExifTool, of every codec,
 container and muxer option they offer: all but those refused by design clean with identical
 frames and sound, and every clean copy cleans to itself. A 4.7 GB video was cleaned in about five
-seconds on an Apple-silicon Mac, using about 25 MB of memory of its own: the video is mapped, so
+seconds on an Apple-silicon Mac, using about 40 MB of memory of its own: the video is mapped, so
 the system's file cache is not counted.
 
 For 0.2.3 a new audit read the code and tried to break it. Besides the unit tests, 330,000

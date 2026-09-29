@@ -105,7 +105,8 @@ Also:
 
 Known limits: a video's metadata box of fewer than 157 bytes, or of 158 to 164, has no room for
 the playback intent, which then goes with the rest; a WebP of 268 megapixels takes about 4 GB to
-check; a GIF or PNG animation takes about five times its size in memory.
+check, and a PNG of 200 megapixels 3.5 GB; a GIF or PNG animation takes about five times its
+size in memory.
 
 ## 0.2.2 (2026-09-26)
 
