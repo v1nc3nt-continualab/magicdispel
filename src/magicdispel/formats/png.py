@@ -188,6 +188,8 @@ def check_image_data(parts):
                  scanline_bytes(width, height, bits, interlace))
     frames = []  # APNG frames stored in fdAT chunks: (width, height, payloads)
     for kind, payload in parts:
+        if kind == b"acTL" and struct.unpack(">I", payload[:4])[0] != sum(part[0] == b"fcTL" for part in parts):
+            raise damaged()  # a frame count that is not the number of frames: the rest is not shown
         if kind == b"fcTL":
             frame_width, frame_height, x, y = struct.unpack_from(">IIII", payload, 4)
             if not frame_width or not frame_height or x + frame_width > width or y + frame_height > height:

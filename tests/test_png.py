@@ -201,6 +201,14 @@ class RebuildTests(unittest.TestCase):
                     for n, (k, p, _) in enumerate(png.chunks(data))]
         changed = png.SIGNATURE + b"".join(png.serialize(k, p) for k, p in shuffled)
         self.assertEqual(png.rebuild(changed), plain)
+        # A frame count that is not the number of frames leaves frames a decoder does not show.
+        count = next(p for k, p, _ in png.chunks(data) if k == b"acTL")
+        for wrong in (struct.pack(">I", 2) + count[4:], struct.pack(">I", 9) + count[4:]):
+            parts = [(k, wrong if k == b"acTL" else p) for k, p, _ in png.chunks(data)]
+            recount = png.SIGNATURE + b"".join(png.serialize(k, p) for k, p in parts)
+            with self.assertRaises(FormatError) as caught:
+                png.rebuild(recount)
+            self.assertEqual(caught.exception.key, "damaged")
         # Frames of an animation that acTL does not declare are not frames.
         without = png.SIGNATURE + b"".join(png.serialize(k, p) for k, p, _ in png.chunks(data) if k != b"acTL")
         self.assertEqual(kinds(png.rebuild(without)), [b"IHDR", b"IDAT", b"IEND"])
@@ -302,7 +310,8 @@ class BmpTests(unittest.TestCase):
         header = struct.pack("<IiiHHIIiiII", 124, 4, 2, 1, 24, 0, len(rows), 2835, 2835, 0, 0)
         header += struct.pack("<IIII", 0xFF0000, 0xFF00, 0xFF, 0) + struct.pack("<I", color_space) + bytes(48)
         header += struct.pack("<IIII", 8, 124 + len(rows), len(profile), 0)
-        return b"BM" + struct.pack("<IHHI", 14 + 124 + len(rows) + len(profile), 0, 0, 14 + 124) + header + rows + profile
+        size = 14 + 124 + len(rows) + len(profile)
+        return b"BM" + struct.pack("<IHHI", size, 0, 0, 14 + 124) + header + rows + profile
 
     def test_a_profile_a_version_5_header_embeds_is_kept(self):
         profile = ImageCms.ImageCmsProfile(ImageCms.createProfile("sRGB")).tobytes()

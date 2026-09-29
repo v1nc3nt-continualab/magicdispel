@@ -144,7 +144,7 @@ PCM = set(PCM_BITS) | set(ENTRY_BITS) | ISO_PCM | {LPCM}
 PACKED = {b"ima4": (34, 64)}
 CHUNK = 1 << 20
 BLOCK = 1 << 16  # table entries read at a time
-MAX_CHUNKS = 1 << 21  # of one track: a sample to each makes 20 hours at 30 frames a second; more take gigabytes to check
+MAX_CHUNKS = 1 << 21  # in a track: a sample to each makes 20 hours at 30 frames a second; more take gigabytes
 
 
 @dataclass(frozen=True)
@@ -240,14 +240,15 @@ def handler(data, trak):
 
 def track_references(data, trak):
     """[(type, [track IDs])] of a track's references; free boxes are no references."""
-    references = []
+    references, kinds = [], set()
     for found in bmff.boxes(data, trak.content, trak.end):
         if found.kind == b"tref":
             for reference in bmff.boxes(data, found.content, found.end):
                 if reference.kind == b"free":
                     continue
-                if (reference.end - reference.content) % 4:
+                if (reference.end - reference.content) % 4 or reference.kind in kinds:
                     raise StructureError("invalid track reference")
+                kinds.add(reference.kind)
                 references.append((reference.kind, [int.from_bytes(data[p:p + 4], "big")
                                                     for p in range(reference.content, reference.end, 4)]))
     return references
@@ -332,6 +333,8 @@ def clean_container(buffer, container, policy, track_handler, removed):
                 place(buffer, found, replacement)
         elif found.kind in (b"sgpd", b"sbgp") and grouping(buffer, found) not in groups:
             empty(buffer, found)  # a seeking hint this module cannot check
+        elif found.kind == b"sdtp" and track_handler not in VISUAL_HANDLERS:
+            empty(buffer, found)  # a hint for pictures: in a track of sound, each of its bytes could be anything
         elif found.kind in policy.boxes:
             clean_container(buffer, found, policy, handler(buffer, found) if found.kind == b"trak" else track_handler,
                             removed)
@@ -736,10 +739,11 @@ def track_table(data, trak):
                 if not previous < number <= count:
                     raise StructureError("invalid %s table" % kind.decode("latin-1"))
                 previous = number
+    if handler(data, trak) not in VISUAL_HANDLERS:
+        parts.pop(b"sdtp", None)  # cleared (see clean_container)
     spare = check_sample_groups(data, parts, count)
-    for kind in (b"stsc", b"stco", b"co64"):
-        if kind in parts and int.from_bytes(data[parts[kind][0].content + 4:parts[kind][0].content + 8], "big") > MAX_CHUNKS:
-            raise unsupported("more than %d chunks in a track" % MAX_CHUNKS)
+    if any(kind in parts and table_count(data, parts[kind][0]) > MAX_CHUNKS for kind in (b"stsc", b"stco", b"co64")):
+        raise unsupported("more than %d chunks in a track" % MAX_CHUNKS)
     runs = list(entries_of(data, stsc, ">III"))  # from chunk `first` on, each holds `samples` of description `index`
     offsets = parts.get(b"co64") or parts[b"stco"]
     chunks = [offset for offset, in entries_of(data, offsets[0], ">Q" if offsets[0].kind == b"co64" else ">I")]
@@ -783,10 +787,15 @@ def only(data, container, kind):
     return found[0]
 
 
+def table_count(data, table, before=4):
+    """The number of entries a table says it has, after its version, flags and `before` - 4 bytes."""
+    return int.from_bytes(data[table.content + before:table.content + before + 4], "big")
+
+
 def entries_of(data, table, layout, before=4):
     """The entries of a table after its version, flags and count, a block at a time."""
     size = struct.calcsize(layout)
-    count = int.from_bytes(data[table.content + before:table.content + before + 4], "big")
+    count = table_count(data, table, before)
     start = table.content + before + 4
     for first in range(0, count, BLOCK):
         stop = min(count, first + BLOCK)
@@ -1103,6 +1112,8 @@ def check_container(original, rebuilt, container, policy, track_handler, spare):
             continue
         if found.kind not in allowed or found.kind in (b"sgpd", b"sbgp") and grouping(rebuilt, found) not in groups:
             fail("box %r kept" % found.kind)
+        if found.kind == b"sdtp" and track_handler not in VISUAL_HANDLERS:
+            fail("dependencies of samples kept in a track with no pictures")
         if rebuilt[found.start:found.content] != original[found.start:found.content]:
             fail("box %r changed" % found.kind)
         if found.kind in policy.boxes:

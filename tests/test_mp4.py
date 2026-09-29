@@ -500,6 +500,34 @@ class TableTests(VideoTests):
             with self.subTest(found=found):
                 self.assertEqual(movie.spare_within(spare, found), expected)
 
+    def test_dependencies_of_samples_stay_only_in_tracks_of_pictures(self):
+        video = (1, b"vide", visual_entry(b"avc1", box(b"avcC", bytes(7))), VIDEO, b"", b"vmhd")
+        sound = (2, b"soun", sound_entry(False), [AUDIO], b"", b"smhd")
+        dependencies = full(b"sdtp", 0, bytes([0x10]))  # of the one sample of sound
+        data = inserted(movie_file(tracks=[sound, video]), STBL, dependencies)  # into the first track's stbl
+        rebuilt = self.assertCleaned(data)
+        self.assertNotIn(b"sdtp", rebuilt)
+        # Each byte of them could be anything, so a result that still has them is refused.
+        stbl = boxes_at(rebuilt, STBL)[0]
+        emptied = next(found for found in bmff.boxes(rebuilt, stbl.content, stbl.end) if found.kind == b"free")
+        kept = rebuilt[:emptied.start + 4] + b"sdtp" + rebuilt[emptied.start + 8:]
+        with self.assertRaises(VerificationError):
+            mp4.verify(data, kept)
+        pictures = inserted(movie_file(tracks=[video, sound]), STBL, full(b"sdtp", 0, bytes([0x20, 0x10])))
+        self.assertIn(b"sdtp", self.assertCleaned(pictures))
+
+    def test_a_track_names_each_type_of_reference_once(self):
+        chapters = (5, b"text", box(b"text", bytes(8) + MARKER), [b"CHAPTER"], b"", b"gmhd")
+        for count, key in ((1, None), (2, "damaged")):
+            video = (1, b"vide", visual_entry(b"avc1", box(b"avcC", bytes(7))), VIDEO,
+                     box(b"chap", struct.pack(">I", 5)) * count, b"vmhd")
+            data = movie_file(tracks=[video, chapters])
+            with self.subTest(count=count):
+                if key:
+                    self.assertRefused(data, key)
+                else:
+                    self.assertCleaned(data)
+
     def test_sample_groups_stay_only_when_every_byte_is_checked(self):
         def sgpd(kind, descriptions, size, version=1, default=0):
             return full(b"sgpd", version, kind + struct.pack(">I", size) + (struct.pack(">I", default) if version == 2
