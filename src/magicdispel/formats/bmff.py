@@ -289,6 +289,8 @@ def read_locations(data, location, idat, empty_allowed=()):
             if (not size and ident not in empty_allowed) or start + size > limit:
                 raise StructureError("invalid item data extent")
             extents.append((start, start + size))
+        if not extents and ident not in empty_allowed:  # no extent to check the size of
+            raise StructureError("invalid item data extent")
         if ident in found:
             raise StructureError("duplicate item location")
         entries[ident], found[ident] = bytes(data[begin:p]), extents

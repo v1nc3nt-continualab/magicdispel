@@ -33,7 +33,8 @@ def full(kind, version, payload):
 
 
 def heif_file(items, refs=(), auxiliary=None, names=None, properties=(), associations=None, in_idat=False,
-              overlap=False, group=(), meta_boxes=(), before_mdat=(), after_mdat=(), gap=b"", sharing=None):
+              overlap=False, group=(), meta_boxes=(), before_mdat=(), after_mdat=(), gap=b"", sharing=None, bare=(),
+              trailing=None):
     """A small HEIF file, built independently of the code under test.
 
     items are (id, type, payload), or (id, "mime", payload, content type) for
@@ -43,10 +44,11 @@ def heif_file(items, refs=(), auxiliary=None, names=None, properties=(), associa
     what an item gets. Item data goes in idat, or in an mdat after the
     `before_mdat` boxes, followed by `gap`; with `overlap`, item 2's data
     starts where item 1's does, and items in `sharing` ({id: source id}) name
-    the data of their source alike, and have none of their own. The handler
-    name is MARKER.
+    the data of their source alike, and have none of their own, and items in
+    `bare` list no extent at all, and `trailing` ({id: bytes}) is what follows an
+    item's name and type in its information. The handler name is MARKER.
     """
-    auxiliary, names, sharing = auxiliary or {}, names or {}, sharing or {}
+    auxiliary, names, sharing, trailing = auxiliary or {}, names or {}, sharing or {}, trailing or {}
     props = [box(b"ispe", bytes(4) + struct.pack(">II", 8, 8))]
     assigned = {ident: [1] for ident, kind, *_ in items if kind not in (b"Exif", b"mime", b"uri ")}
     for ident, urn in auxiliary.items():
@@ -58,7 +60,7 @@ def heif_file(items, refs=(), auxiliary=None, names=None, properties=(), associa
         struct.pack(">HB", ident, len(indices)) + bytes(indices) for ident, indices in assigned.items())
     infos = b"".join(box(b"infe", b"\x02\0\0\0" + struct.pack(">HH", ident, 0) + kind + names.get(ident, b"") + b"\0"
                          + {b"mime": (rest[0] if rest else b"application/rdf+xml") + b"\0\0",
-                            b"uri ": b"urn:test:private\0"}.get(kind, b""))
+                            b"uri ": b"urn:test:private\0"}.get(kind, b"") + trailing.get(ident, b""))
                      for ident, kind, _, *rest in items)
     tables = (box(b"hdlr", bytes(8) + b"pict" + bytes(12) + MARKER + b"\0")
               + full(b"pitm", 0, struct.pack(">H", 1))
@@ -67,22 +69,26 @@ def heif_file(items, refs=(), auxiliary=None, names=None, properties=(), associa
               + (full(b"iref", 0, b"".join(box(kind, struct.pack(">HH%dH" % len(targets), origin, len(targets), *targets))
                                            for kind, origin, targets in refs)) if refs else b""))
     grpl = box(b"grpl", full(b"altr", 0, struct.pack(">II%dI" % len(group), GROUP, len(group), *group))) if group else b""
-    data = b"".join(payload for ident, _, payload, *_ in items if ident not in sharing) + gap
+    own = [payload for ident, _, payload, *_ in items if ident not in sharing and ident not in bare]
+    data = b"".join(own) + gap
     ftyp = box(b"ftyp", b"heic\0\0\0\0mif1heic")
     extras = b"".join(before_mdat)
 
     def meta(base):
         entries, offset, spans = b"", 0, {}
         for ident, _, payload, *_ in items:
+            # Version 1 has a construction method: 1 is an offset into idat.
+            entries += struct.pack(">H", ident) + (b"\0\1" if in_idat else b"")
+            if ident in bare:
+                entries += struct.pack(">HH", 0, 0)
+                continue
             if ident in sharing:
                 start, length = spans[sharing[ident]]
             else:
                 start, length = (base if overlap and ident == 2 else base + offset), len(payload)
                 offset += len(payload)
             spans[ident] = start, length
-            # Version 1 has a construction method: 1 is an offset into idat.
-            entries += struct.pack(">H", ident) + (b"\0\1" if in_idat else b"") + struct.pack(">HHII", 0, 1, start,
-                                                                                               length)
+            entries += struct.pack(">HHII", 0, 1, start, length)
         iloc = full(b"iloc", int(in_idat), bytes([0x44, 0]) + struct.pack(">H", len(items)) + entries)
         return full(b"meta", 0, tables + iloc + (box(b"idat", data) if in_idat else b"") + grpl
                     + b"".join(meta_boxes))
@@ -112,6 +118,12 @@ class HeifTests(unittest.TestCase):
 
 
 class BoxTests(HeifTests):
+    def test_only_a_data_reference_stays_in_dinf(self):
+        dref = full(b"dref", 0, struct.pack(">I", 1) + box(b"url ", b"\0\0\0\1"))
+        rebuilt = self.assertRebuilt(heif_file([PRIMARY], meta_boxes=[box(b"dinf", dref + box(b"abcd", MARKER))]))
+        dinf = next(child for child in bmff.layout(rebuilt).children if child.kind == b"dinf")
+        self.assertEqual([found.kind for found in bmff.boxes(rebuilt, dinf.content, dinf.end)], [b"dref", b"free"])
+
     def test_extra_boxes_are_emptied_in_place_or_dropped_at_the_end(self):
         data = heif_file([PRIMARY], before_mdat=[box(b"uuid", bytes(16) + MARKER), box(b"free", MARKER)],
                          after_mdat=[box(b"uuid", bytes(16) + MARKER), box(b"skip", MARKER)])
@@ -270,7 +282,8 @@ class ItemTests(HeifTests):
         self.assertRefused(heif_file([(1, b"j2k1", b"\xff\x4f\xff\x51")]), "unsupported_part")
 
     def test_properties_hold_only_values_of_meaning(self):
-        for prop in (full(b"pixi", 0, bytes([3, 8, 8, 99])), box(b"a1op", b"\x40"),
+        big = box(b"vvcC", bytes(heif.UNCHECKED_SIZE + 1))  # of a codec this module has no layout for
+        for prop in (big, full(b"pixi", 0, bytes([3, 8, 8, 99])), box(b"a1op", b"\x40"),
                      box(b"colr", b"nclx" + struct.pack(">HHH", 1, 999, 1) + b"\0"),
                      box(b"auxC", bytes(4) + b"urn:mpeg:hevc:2015:auxid:1\0"
                          + bytes.fromhex("0000000c000000084e01a5040001fe40") + MARKER)):
@@ -278,6 +291,37 @@ class ItemTests(HeifTests):
                 self.assertRefused(heif_file([PRIMARY], properties=[prop], associations={1: [1, 2]}),
                                    "unsupported_part")
         self.assertRefused(heif_file([PRIMARY], associations={1: [1, 1]}), "damaged")  # a property twice
+        several = [box(b"vvcC", bytes(heif.UNCHECKED_SIZE)) for _ in range(heif.UNCHECKED_TOTAL // heif.UNCHECKED_SIZE)]
+        self.assertRebuilt(heif_file([PRIMARY], properties=several[:-1], associations={1: [1, 2, 3, 4]}))
+        self.assertRefused(heif_file([PRIMARY], properties=several + several[:1], associations={1: [1, 2, 3, 4, 5, 6]}),
+                           "unsupported_part")
+        # An nclx without its range byte, as some Android phones write it, is what video allows too.
+        short = box(b"colr", b"nclx" + struct.pack(">HHH", 1, 13, 1))
+        self.assertRebuilt(heif_file([PRIMARY], properties=[short], associations={1: [1, 2]}))
+        self.assertRefused(heif_file([PRIMARY], properties=[box(b"colr", b"nclx" + struct.pack(">HHH", 1, 999, 1))],
+                                     associations={1: [1, 2]}), "unsupported_part")
+
+    def test_what_follows_an_items_name_is_zeroed_but_for_the_type_of_xmp(self):
+        items = [PRIMARY, (2, b"mime", HDR_XMP)]
+        data = heif_file(items, trailing={1: MARKER, 2: MARKER})
+        rebuilt = self.assertRebuilt(data)
+        self.assertEqual(len(rebuilt), len(data))
+        layout = bmff.layout(rebuilt)
+        for ident, kept in ((1, b""), (2, bmff.XMP_TYPE)):
+            infe = layout.items[ident]
+            self.assertEqual(rebuilt[infe.name[1] + 1:infe.box.end].rstrip(b"\0"), kept.rstrip(b"\0"))
+        # Of the flags of an item's information only "hidden" stays.
+        flagged = data.replace(b"infe\x02\0\0\0\0\1", b"infe\x02\xff\xff\xff\0\1", 1)
+        self.assertNotEqual(flagged, data)
+        cleaned = self.assertRebuilt(flagged)
+        infe = bmff.layout(cleaned).items[1].box
+        self.assertEqual(cleaned[infe.content + 1:infe.content + 4], b"\0\0\1")
+
+    def test_an_image_with_no_extent_holds_no_picture(self):
+        # An entry of the location table that lists no extent at all is an image with no data.
+        self.assertRefused(heif_file([(1, b"hvc1", b"")], bare={1}), "damaged")
+        self.assertRefused(heif_file([PRIMARY, (2, b"hvc1", b"")], bare={2}), "damaged")
+        self.assertRebuilt(heif_file([PRIMARY, (2, b"Exif", b"")], bare={2}))  # ExifTool empties EXIF items so
 
     def test_metadata_in_a_jpeg_image_and_made_up_groups_are_refused(self):
         exif = b"\xff\xd8" + b"\xff\xe1" + struct.pack(">H", 2 + len(MARKER)) + MARKER + b"\xff\xda\0\2PIXELS\xff\xd9"

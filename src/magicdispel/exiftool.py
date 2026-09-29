@@ -35,7 +35,8 @@ TIFF_STRUCTURE = {
     "ColorMap", "HalftoneHints", "TileWidth", "TileLength", "TileOffsets", "TileByteCounts",
     "ExtraSamples", "SampleFormat", "SMinSampleValue", "SMaxSampleValue", "MinSampleValue",
     "MaxSampleValue", "JPEGTables", "JPEGProc", "YCbCrCoefficients", "YCbCrSubSampling",
-    "ReferenceBlackWhite", "Predictor", "InkSet", "NumberOfInks", "NewSubfileType", "SubfileType",
+    "ReferenceBlackWhite", "Predictor", "InkSet", "NumberofInks", "DotRange", "TransferRange",
+    "SubfileType", "OldSubfileType", "GrayResponseUnit", "GrayResponseCurve",
     # ExifTool's names for the strip offsets of JPEG-compressed TIFF
     "PreviewImageStart", "PreviewImageLength", "PreviewImage",
 }

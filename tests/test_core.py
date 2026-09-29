@@ -48,6 +48,13 @@ class PipelineTests(unittest.TestCase):
             with self.subTest(head=head):
                 self.assertTrue(formats.recognized(head))
 
+    def test_image_sequences_keep_their_extensions(self):
+        for name, kind in (("burst.heics", "HEIC"), ("burst.heifs", "HEIC"), ("loop.avifs", "AVIF"),
+                           ("photo.HEIC", "HEIC"), ("photo.jpg", "HEIC"), ("photo.avif", "AVIF")):
+            with self.subTest(name):
+                expected = Path(name).suffix if name != "photo.jpg" else ".heic"
+                self.assertEqual(core.output_suffix(Path(name), kind), expected)
+
     def test_nothing_is_saved_when_a_file_cannot_be_cleaned(self):
         with tempfile.TemporaryDirectory(prefix="core-") as folder:
             photo = Path(folder, "photo.jpg")

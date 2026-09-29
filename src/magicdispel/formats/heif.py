@@ -38,7 +38,7 @@ REFUSED = {b"moof", b"mfra"}
 # The item tables, and what they refer to: item data, data locations, image groups.
 META_KEPT = {b"hdlr", b"pitm", b"iinf", b"iloc", b"iref", b"iprp", b"idat", b"dinf", b"grpl"}
 EMPTIED = {b"udta", b"meta", b"uuid", b"free", b"skip"}
-CONTAINERS = {b"dinf"}  # boxes in meta whose own boxes are cleaned too
+CONTAINERS = {b"dinf": {b"dref"}}  # boxes in meta whose own boxes are cleaned too, and what they keep
 # What an image sequence keeps, by container: headers, tracks and their
 # references and edits, and the sample tables (ISO/IEC 14496-12); the tracks
 # it is shown from, its pictures and auxiliary tracks such as alpha; and in
@@ -95,6 +95,9 @@ PROPERTY_SIZES = {b"ispe": 12, b"irot": 1, b"imir": 1, b"pasp": 8, b"clap": 32, 
                   b"a1op": 1, b"lsel": 2, b"tols": 6, b"iscl": 12, b"rloc": 12, b"amve": 8}
 FULL_PROPERTIES = {b"ispe", b"pixi", b"tols", b"iscl", b"rloc"}  # of version 0 and no flags
 RESERVED_BITS = {b"irot": 0xFC, b"imir": 0xFE, b"a1lx": 0xFE, b"cclv": 0xC3}  # of the first byte
+# Properties of codecs this module has no layout for: the configurations of VVC, JPEG 2000 and uncompressed
+# images, and layered HEVC's operating points. Real ones are small; more than this is not checked.
+UNCHECKED, UNCHECKED_SIZE, UNCHECKED_TOTAL = {b"vvcC", b"j2kH", b"uncC", b"cmpd", b"oinf"}, 2048, 8192
 COLORS = {b"nclx", b"prof", b"rICC"}  # coded primaries and transfer, or an ICC profile
 HEVC_ALPHA = b"urn:mpeg:hevc:2015:auxid:1"
 # What may follow HEVC's alpha type in auxC: a prefix SEI NAL unit's header
@@ -385,13 +388,18 @@ def rewrite_tables(data, layout, deleted, live, result):
 
 def item_information(data, layout, live):
     """iinf with only the live items. Names are blanked, not shortened:
-    shortening alone could leave a gap of 1 to 7 bytes, too small for a free box."""
+    shortening alone could leave a gap of 1 to 7 bytes, too small for a free box.
+    What follows a name is zeroed but for the type of an XMP item, and of the
+    flags only "hidden" stays."""
     entries = []
     for ident, item in layout.items.items():
         if ident in live:
             name, terminator = item.name
-            entries.append(bmff.box(b"infe", data[item.box.content:name] + b" " * (terminator - name)
-                                    + data[terminator:item.box.end]))
+            content = item.box.content
+            tail = bmff.XMP_TYPE if item.xmp else b""
+            entries.append(bmff.box(b"infe", data[content:content + 1] + bytes([0, 0, data[content + 3] & 1])
+                                    + data[content + 4:name] + b" " * (terminator - name) + b"\0" + tail
+                                    + bytes(item.box.end - terminator - 1 - len(tail))))
     info = layout.info
     return bmff.box(b"iinf", data[info.content:info.content + 4]
                     + len(entries).to_bytes(layout.count_size, "big") + b"".join(entries))
@@ -420,13 +428,16 @@ def item_references(data, layout, deleted, live):
 
 def kept_properties(data, layout, live):
     """The indices of the properties the live items keep: those needed to show them."""
-    kept = set()
+    kept, unchecked = set(), 0
     for ident in live:
         for index in layout.associations.get(ident, []):
             prop = layout.props.get(index)  # index 0 means no property
             if prop and prop.kind in DISPLAY_PROPERTIES:
                 if index not in kept:  # a property may be many items'
                     check_size(data, prop)
+                    unchecked += prop.end - prop.content if prop.kind in UNCHECKED else 0
+                    if unchecked > UNCHECKED_TOTAL:
+                        raise unsupported("over %d bytes of unchecked item properties" % UNCHECKED_TOTAL)
                 kept.add(index)
             elif prop and index in layout.essential[ident] and prop.kind not in DESCRIPTIVE_PROPERTIES:
                 raise unsupported("item property " + listed([prop.kind]))
@@ -446,10 +457,12 @@ def check_size(data, prop):
                                                                               for bits in depths) else None
     elif prop.kind == b"colr":
         kind = bytes(data[prop.content:prop.content + 4])
-        if kind not in COLORS or kind == b"nclx" and size == 11 and (data[prop.content + 10] & 0x7F or max(
-                struct.unpack_from(">HHH", data, prop.content + 4)) > NCLX_CODES):
+        if kind not in COLORS or kind == b"nclx" and size in (10, 11) and (
+                max(struct.unpack_from(">HHH", data, prop.content + 4)) > NCLX_CODES
+                or size == 11 and data[prop.content + 10] & 0x7F):
             raise unsupported("item property colr of type " + kind.decode("latin-1"))
-        expected = 11 if kind == b"nclx" else size  # primaries, transfer, matrix and range
+        # Primaries, transfer, matrix and range; some Android phones leave out the range byte, as in video.
+        expected = (10 if size == 10 else 11) if kind == b"nclx" else size
     elif prop.kind == b"a1lx":  # three layer sizes, of 16 bits or, when large, 32
         expected = 13 if first & 1 else 7
     elif prop.kind == b"cclv":  # the primaries, and the luminances its flags say are present
@@ -458,6 +471,8 @@ def check_size(data, prop):
         expected = size if alpha_information(data, prop) else None
     elif prop.kind == b"jpgC":
         expected = size if jpeg_header(data[prop.content:prop.end]) else None
+    elif prop.kind in UNCHECKED:
+        expected = size if size <= UNCHECKED_SIZE else None
     else:
         expected = PROPERTY_SIZES.get(prop.kind, size)
     if size != expected or prop.kind in FULL_PROPERTIES and any(data[prop.content:prop.content + 4]) or \
@@ -616,27 +631,28 @@ def children(found):
     return found.content + (4 if found.kind == b"meta" else 0)
 
 
-def clean_boxes(buffer, start, end):
+def clean_boxes(buffer, start, end, kept=None):
     """Empty user data, metadata and uuid boxes, and clear times, names and
-    data reference locations, in the boxes from start to end and below."""
+    data reference locations, in the boxes from start to end and below. In a
+    container that keeps only `kept`, other boxes are emptied too."""
     for found in bmff.boxes(buffer, start, end):
-        if found.kind in EMPTIED:
+        if found.kind in EMPTIED or kept is not None and found.kind not in kept:
             empty(buffer, found)
         elif found.kind in CONTAINERS:
-            clean_boxes(buffer, found.content, found.end)
+            clean_boxes(buffer, found.content, found.end, CONTAINERS[found.kind])
         else:
             movie.clear(buffer, movie.cleared_fields(buffer, found))
 
 
-def check_boxes(data, start, end):
+def check_boxes(data, start, end, kept=None):
     for found in bmff.boxes(data, start, end):
-        if found.kind in EMPTIED - {b"free"}:
+        if found.kind in EMPTIED - {b"free"} or kept is not None and found.kind not in kept | {b"free"}:
             fail("user data or metadata box kept")
         if not zeroed(data, movie.cleared_fields(data, found)) or (found.kind == b"free"
                                                                    and not zeroed(data, [(found.content, found.end)])):
             fail("names or times kept")
         if found.kind in CONTAINERS:
-            check_boxes(data, found.content, found.end)
+            check_boxes(data, found.content, found.end, CONTAINERS[found.kind])
 
 
 def unused_media(data):
@@ -716,6 +732,11 @@ def check_cleaned_items(original, before, rebuilt, after):
             images.update(spans)
         if rebuilt[item.name[0]:item.name[1]].strip(b" "):
             fail("item name kept")
+        tail = rebuilt[item.name[1] + 1:item.box.end]  # the content type of XMP, then nothing
+        kept_type = bmff.XMP_TYPE if item.xmp else b""
+        if tail[:len(kept_type)] != kept_type or any(tail[len(kept_type):]) or any(
+                rebuilt[item.box.content + 1:item.box.content + 3]) or rebuilt[item.box.content + 3] > 1:
+            fail("item information kept")
         for index in after.associations.get(ident, []):
             prop = after.props.get(index)
             if prop and prop.kind not in DISPLAY_PROPERTIES:

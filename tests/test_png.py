@@ -295,6 +295,40 @@ class RebuildTests(unittest.TestCase):
 
 
 class BmpTests(unittest.TestCase):
+    @staticmethod
+    def version_5(color_space, profile=b""):
+        """A BMP of 4 x 2 pixels with a version 5 header, and `profile` after the pixels."""
+        rows = b"".join(bytes([n * 40, 20, 200 - n * 40]) for n in range(4)) * 2
+        header = struct.pack("<IiiHHIIiiII", 124, 4, 2, 1, 24, 0, len(rows), 2835, 2835, 0, 0)
+        header += struct.pack("<IIII", 0xFF0000, 0xFF00, 0xFF, 0) + struct.pack("<I", color_space) + bytes(48)
+        header += struct.pack("<IIII", 8, 124 + len(rows), len(profile), 0)
+        return b"BM" + struct.pack("<IHHI", 14 + 124 + len(rows) + len(profile), 0, 0, 14 + 124) + header + rows + profile
+
+    def test_a_profile_a_version_5_header_embeds_is_kept(self):
+        profile = ImageCms.ImageCmsProfile(ImageCms.createProfile("sRGB")).tobytes()
+        rebuilt = bmp.rebuild(self.version_5(0x4D424544, profile))
+        chunks = dict((k, p) for k, p, _ in png.chunks(rebuilt))
+        self.assertEqual(zlib.decompress(chunks[b"iCCP"][7:]), icc.sanitize(profile))
+        self.assertNotIn(b"iCCP", dict((k, p) for k, p, _ in png.chunks(bmp.rebuild(self.version_5(0x73524742)))))
+        for damaged in (self.version_5(0x4D424544), self.version_5(0x4D424544, profile)[:-10]):
+            with self.assertRaises(FormatError) as caught:
+                bmp.rebuild(damaged)
+            self.assertEqual(caught.exception.key, "damaged")
+
+    def test_a_profile_in_a_file_of_its_own_cannot_be_kept(self):
+        with self.assertRaises(FormatError) as caught:
+            bmp.rebuild(self.version_5(0x4C494E4B, b"C:\\colors\\Private Name.icm\0"))
+        self.assertEqual(caught.exception.key, "unsupported_variant")
+
+    def test_run_length_of_four_bits_is_refused_as_pillow_decodes_it_wrongly(self):
+        header = struct.pack("<IiiHHIIiiII", 40, 4, 1, 1, 4, 2, 6, 2835, 2835, 16, 0)
+        palette = b"".join(bytes([n * 16, 0, 255 - n * 16, 0]) for n in range(16))
+        data = b"BM" + struct.pack("<IHHI", 14 + 40 + 64 + 6, 0, 0, 14 + 40 + 64) + header + palette \
+            + bytes([4, 0x12, 0, 0, 0, 1])
+        with self.assertRaises(FormatError) as caught:
+            bmp.rebuild(data)
+        self.assertEqual(caught.exception.key, "unsupported_variant")
+
     def test_bmp_becomes_png_with_same_pixels_and_dpi(self):
         for mode in ("RGB", "P", "L", "1"):
             with self.subTest(mode=mode):

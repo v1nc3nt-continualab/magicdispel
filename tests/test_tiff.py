@@ -4,10 +4,14 @@ import struct
 import tracemalloc
 import unittest
 
-from PIL import Image
+from PIL import Image, TiffImagePlugin
 
+from magicdispel import exiftool
 from magicdispel.errors import FormatError, VerificationError
 from magicdispel.formats import tiff
+
+EXIFTOOL = exiftool.find()
+SECOND_CHECK = EXIFTOOL if EXIFTOOL and exiftool.usable(exiftool.version(EXIFTOOL)) else None
 
 MARKER = "MD_TIFF_PRIVATE"
 
@@ -101,6 +105,50 @@ class TiffTests(unittest.TestCase):
         with Image.open(io.BytesIO(rebuilt)) as image:
             self.assertEqual(image.getexif()[0x0112], 6)
             self.assertEqual(tuple(round(v) for v in image.info["dpi"]), (300, 300))
+
+    @unittest.skipUnless(SECOND_CHECK, "needs ExifTool 12.73 or newer")
+    def test_every_kept_tag_is_one_exiftool_may_list_in_a_clean_file(self):
+        # ExifTool's names for the rarer tags (NumberofInks, DotRange...) once made it refuse such files.
+        info = TiffImagePlugin.ImageFileDirectory_v2()
+        for tag, kind, value in ((254, 4, 0), (255, 3, 1), (290, 3, 2), (291, 3, tuple(range(256))), (301, 3, tuple(
+                range(3 * 256))), (321, 3, (0, 0)), (334, 3, 1), (336, 3, (0, 255)), (342, 3, (0, 255) * 3)):
+            info[tag] = value
+            info.tagtype[tag] = kind
+        data = encode(Image.new("L", (4, 3), 100), tiffinfo=info)
+        rebuilt = self.assertRebuilt(data)
+        _, pages = tiff.parse(rebuilt)
+        self.assertTrue({254, 255, 290, 291, 301, 321, 334, 336, 342} <= set(pages[0]["tags"]))
+        exiftool.second_opinion(SECOND_CHECK, rebuilt, "TIFF")
+
+    @staticmethod
+    def tagged(image, **tags):
+        """A TIFF of `image` with more tags: {tag number: (type, values)}."""
+        info = TiffImagePlugin.ImageFileDirectory_v2()
+        for tag, (kind, values) in tags.items():
+            info[int(tag[1:])] = values
+            info.tagtype[int(tag[1:])] = kind
+        return encode(image, tiffinfo=info)
+
+    def test_jpeg_tables_and_palettes_stay_only_where_they_are_used(self):
+        tables, palette = (7, b"\xff\xd8" + MARKER.encode() + b"\xff\xd9"), (3, tuple(range(768)))
+        rgb = self.assertRebuilt(self.tagged(gradient(), t347=tables, t320=palette))
+        self.assertFalse({347, 320} & set(tiff.parse(rgb)[1][0]["tags"]))
+        paletted = self.assertRebuilt(self.tagged(gradient("P"), t347=tables))
+        self.assertIn(320, tiff.parse(paletted)[1][0]["tags"])
+        self.assertNotIn(347, tiff.parse(paletted)[1][0]["tags"])
+        jpeg = tiff.parse(encode(gradient(), compression="jpeg"))[1][0]["tags"]
+        self.assertIn(347, jpeg)  # the tables of JPEG-compressed strips are what decodes them
+        self.assertIn(347, tiff.parse(tiff.rebuild(encode(gradient(), compression="jpeg")))[1][0]["tags"])
+
+    def test_values_of_a_type_their_tag_does_not_call_for_are_refused(self):
+        fractions = (12, tuple(float(n) for n in range(2)))  # DOUBLE, where PageNumber holds two shorts
+        transfer = (12, tuple(float(n) for n in range(768)))  # where the curve holds shorts
+        for name, data in (("page number as doubles", self.tagged(gradient(), t297=fractions)),
+                           ("transfer function as doubles", self.tagged(gradient(), t301=transfer)),
+                           ("chromaticities as doubles", self.tagged(gradient(), t319=(12, (0.5,) * 6)))):
+            with self.subTest(name), self.assertRaises(FormatError) as caught:
+                tiff.rebuild(data)
+            self.assertEqual(caught.exception.key, "damaged")
 
     def test_pages_compressions_and_sample_layouts(self):
         pages = [gradient(shift=n * 60) for n in range(3)]

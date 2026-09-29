@@ -692,7 +692,12 @@ def track_table(data, trak):
     description, none of them empty or sharing its bytes with another, and
     every description used. Tables of samples are read a block at a time: a
     long video has millions."""
-    stbl = only(data, only(data, only(data, trak, b"mdia"), b"minf"), b"stbl")
+    minf = only(data, only(data, trak, b"mdia"), b"minf")
+    for dinf in bmff.boxes(data, minf.content, minf.end):
+        for dref in bmff.boxes(data, dinf.content, dinf.end) if dinf.kind == b"dinf" else ():
+            if dref.kind == b"dref":  # media in another file is refused as that, not as samples past the end
+                data_references(data, dref)
+    stbl = only(data, minf, b"stbl")
     parts = {}
     for found in bmff.boxes(data, stbl.content, stbl.end):
         if found.kind in TABLE_PARTS:

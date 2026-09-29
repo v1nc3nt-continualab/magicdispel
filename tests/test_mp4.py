@@ -417,6 +417,12 @@ class MovieTests(VideoTests):
         self.assertRefused(movie_file(tracks=[(1, b"soun", sound_entry(False), [AUDIO], b"", b"smhd")]), "no_video")
         external = movie_file(tracks=[video]).replace(b"alis\0\0\0\1", b"alis\0\0\0\0")
         self.assertRefused(external)
+        # A reference movie has its samples elsewhere: so far past the end of this file that it is not
+        # damage that is found first.
+        farther = bytearray(external)
+        for stco in boxes_at(external, STBL + [b"stco"]):
+            struct.pack_into(">I", farther, stco.content + 8, len(external) + 1000)
+        self.assertRefused(bytes(farther))
         # Samples outside any media data box: a damaged or truncated file.
         moved = movie_file(tracks=[video])
         mdat = moved.index(b"mdat")

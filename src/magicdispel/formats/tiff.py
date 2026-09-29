@@ -12,23 +12,25 @@ metadata inside JPEG-compressed strips. So are RAW photos built on TIFF (DNG,
 CR2, NEF...): their first page is only a preview.
 
 Nothing kept may carry extra bytes: every kept tag holds exactly the number of
-values the specification gives it, a page holds exactly the strips or tiles
-its image needs, and uncompressed ones have exactly their size.
+values the specification gives it, of a type it may have, a page holds exactly
+the strips or tiles its image needs, and uncompressed ones have exactly their
+size. JPEG tables are kept for JPEG compression alone, and a palette for
+palette images.
 """
 import struct
 from math import ceil
 
 from .. import icc
 from ..errors import FormatError, VerificationError
-from ..exif import LONG, SHORT, TYPE_SIZES, UNDEFINED
+from ..exif import BYTE, LONG, RATIONAL, SHORT, TYPE_SIZES, UNDEFINED
 from . import jpeg
 
 CLASSIC, BIG = 42, 43  # the version after the byte order; 43 is BigTIFF
 NEW_SUBFILE_TYPE, WIDTH, HEIGHT, BITS, COMPRESSION, PHOTOMETRIC = 254, 256, 257, 258, 259, 262
 SAMPLES, ROWS_PER_STRIP, PLANAR, TILE_WIDTH, TILE_LENGTH = 277, 278, 284, 322, 323
 STRIPS, STRIP_COUNTS, TILES, TILE_COUNTS = 273, 279, 324, 325
-UNCOMPRESSED, OLD_JPEG, JPEG_COMPRESSION, YCBCR = 1, 6, 7, 6
-JPEG_TABLES, ICC = 347, 34675
+UNCOMPRESSED, OLD_JPEG, JPEG_COMPRESSION, YCBCR, PALETTE = 1, 6, 7, 6, 3
+JPEG_TABLES, ICC, COLOR_MAP = 347, 34675, 320
 SUB_IFDS, DNG_VERSION = 330, 50706
 MAX_PAGES = 10000
 MAX_SAMPLES = 4096  # samples per pixel: a LONG could say 4 billion, and lists of that many values would follow
@@ -53,6 +55,21 @@ KEPT = {
     529, 530, 531, 532,            # YCbCr coefficients, subsampling, positioning, reference black/white
     ICC,
 }
+# The types the values of kept tags may have: whole numbers, fractions, any number, or bytes. Another
+# type would only be a way to hold more bytes than the values need.
+WHOLE, NUMBERS, BYTES = {BYTE, SHORT, LONG}, set(TYPE_SIZES) - {2, UNDEFINED, 13}, {BYTE, UNDEFINED}
+TYPES = {tag: WHOLE for tag in KEPT}
+TYPES.update({tag: {RATIONAL} for tag in (282, 283, 318, 319, 529)})
+TYPES.update({532: WHOLE | {RATIONAL}, 340: NUMBERS, 341: NUMBERS, JPEG_TABLES: BYTES, ICC: BYTES})
+
+
+def kept_tags(tags, order):
+    """The tags of a page that a clean copy holds: those it is decoded by. JPEG
+    tables serve JPEG compression alone, and a palette a palette image."""
+    compression, photometric = value(tags, COMPRESSION, UNCOMPRESSED, order), value(tags, PHOTOMETRIC, 0, order)
+    return {tag: entry for tag, entry in tags.items() if tag in KEPT
+            and (tag != JPEG_TABLES or compression == JPEG_COMPRESSION)
+            and (tag != COLOR_MAP or photometric == PALETTE)}
 
 
 def rebuild(data):
@@ -62,7 +79,7 @@ def rebuild(data):
     output = bytearray((b"II*\0" if order == "<" else b"MM\0*") + b"\0" * 4)
     link = 4  # where the offset of the next page's directory goes
     for page in pages:
-        entries = {tag: value for tag, value in page["tags"].items() if tag in KEPT}
+        entries = kept_tags(page["tags"], order)
         if ICC in entries:
             try:
                 entries[ICC] = (UNDEFINED, icc.sanitize(entries[ICC][1]))
@@ -91,7 +108,7 @@ def verify(original, rebuilt):
     for source, page in zip(source_pages, pages):
         if page["blocks"] != source["blocks"]:
             fail("TIFF image data differs")
-        expected = {tag: value for tag, value in source["tags"].items() if tag in KEPT and tag not in (STRIPS, TILES)}
+        expected = {tag: value for tag, value in kept_tags(source["tags"], order).items() if tag not in (STRIPS, TILES)}
         if ICC in expected:
             expected[ICC] = (UNDEFINED, icc.sanitize(expected[ICC][1]))
         found = {tag: value for tag, value in page["tags"].items() if tag not in (STRIPS, TILES)}
@@ -214,8 +231,8 @@ def check_counts(tags, order):
                    else {2, 2 * samples} if tag == 336                # dot range
                    else {1 << bits} if tag == 291                     # gray response curve
                    else {1 << bits, 3 << bits} if tag == 301          # transfer function
-                   else {3 << bits} if tag == 320 else None)          # palette
-        if tag in KEPT and allowed is not None and count not in allowed:
+                   else {3 << bits} if tag == COLOR_MAP else None)    # palette
+        if tag in KEPT and (kind not in TYPES[tag] or allowed is not None and count not in allowed):
             raise damaged()
 
 
@@ -288,9 +305,10 @@ def value(tags, tag, default, order):
 
 def integers(entry, order):
     kind, value = entry
-    if kind not in (SHORT, LONG):
+    if kind not in WHOLE:
         raise damaged()
-    return list(struct.unpack(order + ("%dH" if kind == SHORT else "%dI") % (len(value) // TYPE_SIZES[kind]), value))
+    code = {BYTE: "B", SHORT: "H", LONG: "I"}[kind]
+    return list(struct.unpack(order + "%d" % (len(value) // TYPE_SIZES[kind]) + code, value))
 
 
 def unpack(data, fmt, offset):
