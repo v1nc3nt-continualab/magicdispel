@@ -64,6 +64,23 @@ class PipelineTests(unittest.TestCase):
                 core.clean(str(photo))
             self.assertEqual(sorted(path.name for path in Path(folder).iterdir()), ["photo.jpg"])
 
+    def test_a_photo_gets_its_name_only_when_it_is_whole(self):
+        with tempfile.TemporaryDirectory(prefix="core-") as folder:
+            photo = Path(folder, "photo.png")
+            Image.new("RGB", (8, 8), "green").save(photo)
+
+            def stopped(partial, *arguments):
+                # Where a crash or a full disk would leave things: the bytes under a name that says so.
+                self.assertEqual(sorted(path.name for path in Path(folder).iterdir() if path != photo),
+                                 [partial.name])
+                self.assertIn(".unfinished", partial.name)
+                self.assertGreater(partial.stat().st_size, 0)
+                raise OSError("stopped")
+
+            with patch.object(core, "rename", side_effect=stopped), self.assertRaises(OSError):
+                core.clean(str(photo))
+            self.assertEqual(sorted(path.name for path in Path(folder).iterdir()), ["photo.png"])
+
     def test_an_existing_file_is_never_replaced(self):
         with tempfile.TemporaryDirectory(prefix="core-") as folder:
             photo = Path(folder, "photo.png")

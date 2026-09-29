@@ -151,22 +151,16 @@ def file_digest(path):
 
 
 def publish(data, source, suffix, naming="plain"):
-    """Write data next to source under a new name; never overwrite anything."""
-    for name in names.candidates(source.stem, suffix, naming):
-        destination = source.with_name(name)
-        try:
-            output = create(destination)
-        except FileExistsError:
-            continue
-        try:
-            with output:
-                output.write(data)
-            clear_attributes(destination)  # while it can still be written: the original may not be
-            os.chmod(destination, permissions(source))
-            return destination
-        except BaseException:
-            destination.unlink(missing_ok=True)
-            raise
+    """Write data next to source under a new name; never overwrite anything.
+    The name is given to a finished file (see reserve): one cut short by a
+    crash or a full disk never has it."""
+    partial = reserve(source, suffix)
+    try:
+        with partial.open("wb") as output:
+            output.write(data)
+        return rename(partial, source, suffix, naming)
+    finally:
+        partial.unlink(missing_ok=True)
 
 
 def rename(path, source, suffix, naming="plain", noun="photo"):

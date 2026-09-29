@@ -1,4 +1,5 @@
 """Names of cleaned copies: no date or time from the original's name."""
+import itertools
 import unittest
 
 from magicdispel import names
@@ -59,6 +60,15 @@ class NameTests(unittest.TestCase):
         self.assertEqual(first("Screenshot 2026-09-23 at 15.14.15", "original", 1),
                          ["Screenshot 2026-09-23 at 15.14.15_clean.png"])
         self.assertRegex(first("IMG_1234", "anonymous", 1)[0], r"^photo_[0-9a-f]{32}\.png$")
+
+    def test_a_name_that_would_be_too_long_is_cut_short(self):
+        for stem in ("v" * 300, "é" * 200, "图" * 90, "a" * 245):
+            for name in itertools.islice(names.candidates(stem, ".jpeg", "original"), 12):
+                with self.subTest(stem=stem[:3], name=len(name)):
+                    self.assertLessEqual(len(name.encode()), names.MAX_NAME)
+                    self.assertTrue(name.startswith(stem[0]) and name.endswith(".jpeg"))
+        self.assertEqual(next(names.candidates("v" * 300, ".jpeg", "original")), "v" * 244 + "_clean.jpeg")
+        self.assertEqual(len({name for name in itertools.islice(names.candidates("é" * 200, ".png"), 12)}), 12)
 
 
 if __name__ == "__main__":

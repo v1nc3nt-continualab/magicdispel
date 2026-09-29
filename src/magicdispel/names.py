@@ -31,6 +31,7 @@ TIME = re.compile(r"(?<![\w.:])(?:[01]?\d|2[0-3])(?P<sep>[.:])[0-5]\d(?P=sep)[0-
 # Unix time in seconds or milliseconds, 2001 to 2033 ("mmexport1714567890123").
 TIMESTAMP = re.compile(r"(?<!\d)1\d{9}(?:\d{3})?(?!\d)")
 SEPARATORS = " _-."
+MAX_NAME = 255  # bytes: the longest name most file systems allow
 
 
 def candidates(stem, suffix, naming="plain", noun="photo"):
@@ -42,9 +43,18 @@ def candidates(stem, suffix, naming="plain", noun="photo"):
         while True:
             yield noun + "_" + secrets.token_hex(16) + suffix.lower()
     base = stem if naming == "original" else without_dates(stem) or noun
-    yield base + "_clean" + suffix
+    yield fitted(base, "_clean", suffix)
     for index in itertools.count(1):
-        yield base + "_clean_" + str(index) + suffix
+        yield fitted(base, "_clean_" + str(index), suffix)
+
+
+def fitted(base, tail, suffix):
+    """base + tail + suffix, with the end of base cut off when the name would
+    be longer than file systems allow."""
+    room = MAX_NAME - len((tail + suffix).encode())
+    while len(base.encode()) > room:
+        base = base[:-1]
+    return base + tail + suffix
 
 
 def without_dates(stem):
