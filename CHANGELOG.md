@@ -1,8 +1,9 @@
 # Changelog
 
-## Unreleased
+## 0.2.4 (2026-10-01)
 
 An audit of 0.2.3 found two things that 0.2.3 brought in. Neither lets metadata through.
+Upgrading is recommended if you clean JPEGs that others send you.
 
 - JPEG: a run of fill bytes inside compressed data took time growing with the square of its
   length, as the patterns that looked for the end of the data were tried again from each of its

@@ -276,15 +276,15 @@ When anonymity matters, share a separate copy and look at what it shows.
 ## Validation status
 
 On macOS, the unit tests and a local corpus of real and synthetic samples (60 at 0.1.1, 559 at
-0.2.3) pass: every output
-renders identically in macOS ImageIO/ColorSync (pixels, sRGB and Display P3 renders, SDR, HDR,
-gain maps, orientation and DPI), and 11 synthetic leak probes come out clean. Files built by an
-independent review to hide data where 0.1.1 did not look (a preview in a multi-picture JPEG,
-bytes after an ICC curve, in ISO gain-map metadata and in an image-sequence box) are cleaned or
-refused since 0.1.2, and 634 ICC profiles from macOS and the corpus sanitized exactly as
-before (checked for 0.1.2). For 0.2.1, 124 distinct profiles found in macOS and the corpus were
-sanitized and compared: the same ones are refused as before, and LittleCMS and macOS ColorSync
-convert colors through each of the 107 that an image can use as they did.
+0.2.4) pass: every output renders identically in macOS ImageIO/ColorSync (pixels, sRGB and
+Display P3 renders, SDR, HDR, gain maps, orientation and DPI), and 11 synthetic leak probes come
+out clean. Files built by an independent review to hide data where 0.1.1 did not look (a
+preview in a multi-picture JPEG, bytes after an ICC curve, in ISO gain-map metadata and in an
+image-sequence box) are cleaned or refused since 0.1.2, and 634 ICC profiles from macOS and the
+corpus sanitized exactly as before (checked for 0.1.2). For 0.2.1, 124 distinct profiles found
+in macOS and the corpus were sanitized and compared: the same ones are refused as before, and
+LittleCMS and macOS ColorSync convert colors through each of the 107 that an image can use as
+they did.
 
 Since 0.1.4 the corpus also holds 27 photos straight from, or exported from, 21 current phones
 and cameras, taken from Wikimedia Commons: Samsung Galaxy S25 Ultra and S24, Google Pixel 8a
