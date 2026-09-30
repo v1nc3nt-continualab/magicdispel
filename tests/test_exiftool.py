@@ -63,8 +63,8 @@ class BigMovieTests(unittest.TestCase):
 class FindTests(unittest.TestCase):
     """Where ExifTool is looked for: the folders of PATH given in full, never the current directory."""
 
-    def program(self, folder, name="exiftool"):
-        path = Path(folder, name + (".exe" if sys.platform == "win32" else ""))
+    def program(self, folder, name="exiftool", extension=".exe" if sys.platform == "win32" else ""):
+        path = Path(folder, name + extension)
         path.write_bytes(b"#!/bin/sh\n")
         path.chmod(path.stat().st_mode | stat.S_IXUSR)
         return str(path)
@@ -106,6 +106,15 @@ class FindTests(unittest.TestCase):
             with patch.dict(os.environ, {"MAGICDISPEL_EXIFTOOL": os.path.join(folder, "missing")}), \
                     self.assertRaises(UserError):
                 exiftool.find()
+
+    def test_a_name_with_an_extension_of_pathext_is_looked_for_as_it_is(self):
+        # MAGICDISPEL_EXIFTOOL=exiftool.exe on Windows is exiftool.exe, not exiftool.exe.EXE.
+        with tempfile.TemporaryDirectory(prefix="find-") as folder:
+            found = self.program(folder, extension=".exe")
+            windows = {"PATH": folder, "PATHEXT": os.pathsep.join([".COM", ".EXE"]),
+                       "MAGICDISPEL_EXIFTOOL": "exiftool.exe"}
+            with patch.dict(os.environ, windows), patch.object(sys, "platform", "win32"):
+                self.assertSamePath(exiftool.find(), found)
 
 
 if __name__ == "__main__":

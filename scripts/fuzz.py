@@ -5,9 +5,9 @@ crashes, stalls or fools the program.
 
 Each worker makes files (Pillow's encoders, and the builders of the unit tests for HEIC and video),
 damages one at random and cleans it in this process, without ExifTool. Two kinds of damage: bytes are
-changed, cut, doubled, swapped, or set to values that break sizes; and, so that the files get past the first
-checks, chunks, segments, blocks, boxes and TIFF entries are doubled, dropped, swapped, retyped and given
-other contents, with their sizes and checksums made right again.
+changed, cut, doubled, swapped, set to values that break sizes, or given long runs of one byte; and, so that
+the files get past the first checks, chunks, segments, blocks, boxes and TIFF entries are doubled, dropped,
+swapped, retyped and given other contents, with their sizes and checksums made right again.
 
 Reported, with the file saved in the folder of --keep: an exception that is not a refusal (a bug), a file
 that takes more than 8 seconds, and a clean copy that does not clean to itself. Exit code 1 if any is.
@@ -108,7 +108,7 @@ def damage(rng, data):
         size = len(data)
         if size < 16:
             break
-        kind = rng.randrange(9)
+        kind = rng.randrange(10)
         if kind == 0:
             for _ in range(rng.randint(1, 4)):
                 data[rng.randrange(size)] = rng.randrange(256)
@@ -135,6 +135,9 @@ def damage(rng, data):
             if second + length <= size and first + length <= second:
                 one, other = bytes(data[first:first + length]), bytes(data[second:second + length])
                 data[first:first + length], data[second:second + length] = other, one
+        elif kind == 8:
+            start = rng.randrange(size)
+            data[start:start] = long_run(rng)
         else:
             start = rng.randrange(size)
             data[start:start + rng.choice([1, 2, 4, 8, 32])] = bytes(rng.choice([1, 2, 4, 8, 32]))
@@ -145,10 +148,17 @@ def random_bytes(rng, size=None):
     return bytes(rng.randrange(256) for _ in range(rng.choice([0, 1, 2, 4, 8, 16, 40]) if size is None else size))
 
 
+def long_run(rng):
+    """One byte many times, then perhaps a zero or another byte: code that looks over a run again from each of
+    its bytes, to see what follows it, takes minutes."""
+    run = bytes([rng.choice([0x00, 0xFF, rng.randrange(256)])]) * rng.choice([256, 4096, 1 << 16])
+    return run + rng.choice([b"", b"\x00", random_bytes(rng, 1)])
+
+
 def change(rng, payload):
     """`payload` with some of its bytes changed, cut, added or replaced."""
     payload = bytearray(payload)
-    kind = rng.randrange(6)
+    kind = rng.randrange(7)
     if kind == 0 and payload:
         for _ in range(rng.randint(1, 3)):
             payload[rng.randrange(len(payload))] = rng.randrange(256)
@@ -161,6 +171,9 @@ def change(rng, payload):
         payload[start:start] = payload[start:start + rng.choice([1, 4, 16])]
     elif kind == 4:
         payload = bytearray(random_bytes(rng))
+    elif kind == 5:
+        start = rng.randrange(len(payload) + 1)
+        payload[start:start] = long_run(rng)
     elif payload:
         payload[rng.randrange(len(payload))] = rng.choice([0, 0xFF])
     return bytes(payload)

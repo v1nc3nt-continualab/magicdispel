@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased
+
+An audit of 0.2.3 found two things that 0.2.3 brought in. Neither lets metadata through.
+
+- JPEG: a run of fill bytes inside compressed data took time growing with the square of its
+  length, as the patterns that looked for the end of the data were tried again from each of its
+  bytes: 32,000 of them took 8 seconds before the file was refused, and 5.5 before a restart
+  marker, where they are accepted; twice as many took four times as long. Each run is read once
+  now, and 16 million take a fiftieth of a second.
+- On Windows, `MAGICDISPEL_EXIFTOOL=exiftool.exe` was looked for as `exiftool.exe.EXE` and the
+  like, and not found. A name that has an extension of `PATHEXT` is looked for as it is.
+
+Also:
+
+- `scripts/fuzz.py` puts long runs of one byte into files as well. With them it finds the first
+  of these in 0.2.3; 380,000 variants of this version were each cleaned or refused in less than
+  eight seconds, and each clean copy cleaned to itself.
+
 ## 0.2.3 (2026-09-29)
 
 An audit of 0.2.2 by a new model read the whole code base and tried to make it misbehave. It

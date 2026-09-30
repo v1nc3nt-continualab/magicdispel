@@ -314,10 +314,13 @@ damaged variants of small files of every format were cleaned, made by changing, 
 doubling and swapping bytes, and by doubling, dropping, swapping and retyping chunks, segments,
 blocks, boxes and TIFF entries, with their sizes and checksums made right again: each was
 refused or cleaned, none crashed the program or took more than eight seconds, and every clean
-copy cleaned to itself (`scripts/fuzz.py`). Files built to hide data in tables, fill, repeated
-segments and chunks, and dependency tables of sound are cleaned or refused since 0.2.3, and 18
-JPEGs made with libjpeg-turbo, FFmpeg and macOS, and the 48 JPEGs of the corpus, come out byte for
-byte as before.
+copy cleaned to itself (`scripts/fuzz.py`). None of them held a long run of one byte, and the
+next audit found that in 0.2.3 a long run of fill bytes inside a JPEG's compressed data took
+time growing with the square of its length (32,000 took 8 seconds). The variants hold such runs
+as well now, which find that in 0.2.3; after the fix, 380,000 more passed as above. Files built
+to hide data in tables, fill, repeated segments and chunks, and dependency tables of sound are
+cleaned or refused since 0.2.3, and 18 JPEGs made with libjpeg-turbo, FFmpeg and macOS, and the
+48 JPEGs of the corpus, come out byte for byte as before.
 
 On macOS, Windows and Linux, CI runs the unit tests with Python 3.10, 3.13 and 3.14, with and
 without ExifTool, once more with the oldest dependencies pyproject.toml allows, and installs

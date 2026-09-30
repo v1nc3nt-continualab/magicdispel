@@ -70,14 +70,17 @@ class ExifToolError(Exception):
 
 
 def which(name):
-    """The program `name` in the folders of PATH, or None. Only folders given
-    in full count: a relative or empty entry stands for the current directory,
-    which Windows searches first even without one (as shutil.which does), so a
+    """The program `name` in the folders of PATH, or None; on Windows, with
+    each extension of PATHEXT unless it has one. Only folders given in full
+    count: a relative or empty entry stands for the current directory, which
+    Windows searches first even without one (as shutil.which does), so a
     program planted in a folder the user happens to be in would be run."""
     extensions = [""]
     if sys.platform == "win32":
-        extensions = [extension for extension in os.environ.get("PATHEXT", ".COM;.EXE;.BAT;.CMD").split(os.pathsep)
-                      if extension]
+        listed = [extension for extension in os.environ.get("PATHEXT", ".COM;.EXE;.BAT;.CMD").split(os.pathsep)
+                  if extension]
+        if os.path.splitext(name)[1].upper() not in {extension.upper() for extension in listed}:
+            extensions = listed
     for folder in os.environ.get("PATH", "").split(os.pathsep):
         if not os.path.isabs(folder):
             continue

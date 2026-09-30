@@ -36,8 +36,8 @@ MAX_EXTENDED_XMP = 1 << 20  # an extended packet larger than this is not read: i
 MAX_CURVE_POINTS = 1024  # Apple's HDR gain curve has about 250
 FILL_RUN = re.compile(rb"\xff+")
 MAX_FILL = 1024  # bytes of fill before a marker: no encoder writes more than a few
-SCAN_END = re.compile(rb"\xff+[^\x00\xd0-\xd7\xff]", re.DOTALL)  # fill bytes and a marker that is none of those
-FILL = re.compile(rb"\xff{2,}(?=[\xd0-\xd7])")  # fill bytes before a restart marker
+UNSTUFFED = re.compile(rb"\xff[^\x00\xd0-\xd7]")  # in compressed data: fill bytes, or a marker that ends it
+FILL = re.compile(rb"\xff{2,}")  # in compressed data, where a lone FF is data (FF 00) or begins a marker
 EXIF_ID, XMP_ID = b"Exif\0\0", b"http://ns.adobe.com/xap/1.0/\0"
 XMP_EXTENSION_ID = b"http://ns.adobe.com/xmp/extension/\0"
 EXTENSION_HEADER = len(XMP_EXTENSION_ID) + 32 + 8  # then a GUID, the full length and an offset
@@ -366,10 +366,12 @@ def plain_scan(scan):
     """Compressed data without the fill bytes before its restart markers. Fill
     before anything else is refused: no encoder writes it, and one decoder may
     skip it where another reads a marker."""
-    scan = FILL.sub(b"\xff", scan)
-    if b"\xff\xff" in scan:
-        raise damaged()
-    return scan
+    def restart(fill):
+        if fill.end() == len(scan) or scan[fill.end()] not in RESTART:
+            raise damaged()
+        return b"\xff"
+
+    return FILL.sub(restart, scan)
 
 
 def coding_hash(data):
@@ -427,11 +429,14 @@ def walk(data):
 
 def scan_end(data, position):
     """Where compressed scan data ends: the first FF that is neither stuffing
-    (FF 00) nor a restart marker (FF D0-D7), each perhaps after fill bytes."""
-    found = SCAN_END.search(data, position)
-    if not found:
-        raise damaged()
-    return found.start()
+    (FF 00) nor a restart marker (FF D0-D7), each perhaps after fill bytes.
+    A run of fill bytes is read once, from its start: a pattern tried at each
+    of its bytes would take a time that grows as the square of its length."""
+    while found := UNSTUFFED.search(data, position):
+        position = FILL_RUN.match(data, found.start()).end()
+        if position < len(data) and data[position] != 0 and data[position] not in RESTART:
+            return found.start()
+    raise damaged()
 
 
 def images(data, strict=False):

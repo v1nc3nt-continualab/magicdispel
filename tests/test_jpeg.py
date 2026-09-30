@@ -355,6 +355,18 @@ class RebuildTests(unittest.TestCase):
             jpeg.rebuild(data[:stuffed] + b"\xff" + data[stuffed:])
         self.assertEqual(caught.exception.key, "damaged")
 
+    def test_a_long_run_of_fill_bytes_inside_compressed_data_is_read_once(self):
+        # Patterns tried at each of 32,000 of them took 8 seconds, and four times as long for twice as many.
+        data = encode(gradient(size=(64, 48)), restart_marker_rows=1)
+        scan = data.index(b"\xff\xda")
+        restart, stuffed = data.index(b"\xff\xd0", scan), data.index(b"\xff\x00", scan)
+        run = b"\xff" * (1 << 20)
+        self.assertEqual(jpeg.rebuild(data[:restart] + run + data[restart:]), jpeg.rebuild(data))
+        for tampered in (data[:stuffed] + run + data[stuffed:], data[:restart] + run):  # before stuffing, at the end
+            with self.subTest(size=len(tampered)), self.assertRaises(FormatError) as caught:
+                jpeg.rebuild(tampered)
+            self.assertEqual(caught.exception.key, "damaged")
+
     def test_iso_gain_map_metadata_keeps_the_fields_of_its_layout_only(self):
         namespace = b"urn:iso:std:iso:ts:21496:-1\0"
 
